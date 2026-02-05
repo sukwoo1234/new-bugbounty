@@ -30,3 +30,37 @@
 ## Phase 5: 안정화
 - 샘플 리포트 1개 확정
 - 문서 보강 및 TODO 업데이트
+
+---
+
+## Phase 종료 체크리스트 (공통)
+- `cargo build` 통과
+- 기본 CLI 동작: `tool --help`, `tool run/triage/report` 실행 성공
+- 기본 경로 확인: `./data`, `./seeds`
+- 최소 스모크 테스트 1개(더미 입력/더미 실행)
+- Phase 종료 시 리팩토링 1회 수행
+
+## Phase별 추가 체크(예시)
+- Phase 1: CLI 인자/옵션 파싱 안정, 에러 메시지 기본 일관성
+- Phase 2: 타깃 다운로드/해시 기록 1건 성공
+- Phase 3: 재현 3회 로직/프레임 비교 동작
+- Phase 4: 리포트 샘플 1개 생성
+
+## 로그 포맷 (권장)
+- JSON Lines (구조화 로그)
+- 필드 예: `ts`, `level`, `event`, `msg`, `target`, `run_id`, `crash_id`
+- 이벤트 예: `run.start`, `triage.start`, `repro.ok`, `report.write`
+
+## 에러 코드 규약 (권장)
+- 1xxx: CLI/입력
+- 2xxx: 파일/스토리지
+- 3xxx: 실행/컨테이너
+- 4xxx: 재현/검증
+- 5xxx: 리포트
+
+## 1.0 릴리즈 기준 (배포 가능 상태)
+- CLI 전 기능 동작
+- 재현 3회/프레임 비교 검증 통과
+- 리포트 생성 1개 이상
+- 정책/스코프 준수 체크 완료
+- 기본 에러/로그 표준 적용 완료
