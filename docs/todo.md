@@ -10,6 +10,78 @@
 - [x] 기술 스택 선정 근거 문서화
 - [x] 로드맵 Phase 체크리스트/릴리즈 기준 문서화
 - [x] 리팩토링 타이밍 기준 문서화
+- [x] 퍼징 실행(찾기) 방법 문서화
+- [x] 결정 목록/TBD 닫기 순서 문서화
+- [x] 리포트 자동 생성 파이프라인 문서화
+- [x] 리포트 자동 생성 규칙 상세화
+- [x] 로그/스택 축약 N값 및 중요 키워드 확정
+- [x] 파일 큐 무결성 정책 문서화
+- [x] 파일 큐 체크섬/중복 처리 규칙 확정
+- [x] 하네스 리셋/메모리 캡 정책 문서화
+- [x] 하네스 리셋 기준값/ASan 옵션 확정
+- [x] 스택 정규화/중복 제거 보강 문서화
+- [x] 스택 정규화 기본 스킵 확정
+- [x] 중복 제거 보조 기준 확정
+- [x] Disk Full GC 우선순위 문서화
+- [x] 스키마 버전/타깃 바이너리 해시 문서화
+- [x] PoC 최소화 정책 문서화
+- [x] ACE 수동 검증 지원/증거 요건 문서화
+- [x] Exploitability triage 문서화
+- [x] ASan vs Release 교차 검증 문서화
+- [x] Evidence Bundle 고정 정책 문서화
+- [x] 하네스 빌드 파이프라인 문서화
+- [x] 아키텍처 데이터 흐름 확정
+- [x] 재현 환경 고정 정책 확정
+- [x] 하네스/뮤테이터 전략 확정
+- [x] 실패 모드 확장 확정
+- [x] 데이터 스키마 확정
+- [x] Stale Job Recovery 정책 문서화
+- [x] failed/ 디렉터리 및 재시도 정책 문서화
+- [x] 헤더 보호/딕셔너리 강화 문서화
+- [x] GGUF/ONNX 헤더 고정 범위 확정
+- [x] ASan/Release 교차 검증 기준 완화 문서화
+- [x] LLM 역할 축소 및 템플릿 스크립트 문서화
+- [x] 플랫폼 자체 테스트(Self-Test) 문서화
+- [x] 관찰성/헬스(heartbeat/status) 문서화
+- [x] 플랫폼 trait 인터페이스 설계 문서화
+- [x] 설정/비밀 관리 정책 문서화
+- [x] Crash Loop Detection 문서화
+- [x] 빌드 타임 단축 전략(pre-built base/ccache) 문서화
+- [x] Exploitability 대체 수단 정책 문서화
+- [x] 큐 스캔/rename 레이스 처리 정책 문서화
+- [x] heartbeat 기반 stale job 판단 정책 문서화
+- [x] 퍼징 실행 네트워크 차단 정책 문서화
+- [x] corpus merge 리소스 제한 정책 문서화
+- [x] LibFuzzer 종료 코드 정책 문서화
+- [x] 아티팩트 볼륨 분리/동기화 정책 문서화
+- [x] done/ 디렉터리 샤딩 정책 문서화
+- [x] 로그 로테이션 정책 문서화
+- [x] 타임아웃 마진 정책 문서화
+- [x] tmpfs 기반 임시 파일 정책 문서화
+- [x] merge job type 운용 정책 문서화
+- [x] bootstrap seed 정책 문서화
+- [x] 컨테이너 종료 코드(OOM) 기록 정책 문서화
+- [x] 코퍼스 동기화/재로드 정책 문서화
+- [x] pending 스캔 샤딩 정책 문서화
+- [x] Manual Review 큐 정책 문서화
+- [x] Watchdog 컨테이너 정리/--init 정책 문서화
+- [x] job history 추적 정책 문서화
+- [x] 워커 역할 분리 정책 문서화
+- [x] pending 임의 선택/파티션 제거 정책 문서화
+- [x] custom mutator 우선순위 상향 및 fixup 로직 문서화
+- [x] Dev Container 기반 local 모드 문서화
+- [x] Global Error Rate 집계 정책 문서화
+- [x] 스레드 억제/CPU pinning 정책 문서화
+- [x] job type별 네트워크 정책 문서화
+- [x] 손상 job 격리 정책 문서화
+- [x] 타깃 바이너리 해시 사전 검증 문서화
+- [x] job type별 네트워크 기본값 확정
+- [x] 스레드 억제 환경 변수 목록 확정
+- [x] OOM 137 분기 정책 확정
+- [x] MVP 최소 구현 범위 문서화
+- [ ] 코드 주석: zombie fencing(결과 쓰기 전 processing 파일 존재 확인)
+- [ ] 코드 주석: corpus reload(재실행 루프 사이 신규 코퍼스 로드 확인)
+- [ ] 코드 주석: OOM 137 triage 분기(DoS vs 인프라)
 
 ## 1.0 목표 (고정)
 - [x] 타깃 포맷: GGUF / ONNX / safetensors
@@ -30,9 +102,11 @@
 - [ ] 포맷은 유지, 구현 라이브러리는 재선정(성능/안정성 기준)
 - [ ] 대시보드 UI 도입
 - [ ] 타깃 포맷 확장
+- [ ] corpus distillation(`tool merge`, LibFuzzer -merge=1) 옵션 추가
+- [ ] local 개발 모드(--local) 추가
 
 ## 오픈 이슈
-- [ ] 리포트 템플릿 상세 필드 확장
+- [x] 리포트 템플릿 상세 필드 확장
 - [ ] 하네스 내부 경로(구체 API/함수) 확정 (개발 1주차)
 - [ ] 법적/정책 체크리스트 구체화
 - [x] 운영 지표 정의(커버리지/크래시/유효율)
