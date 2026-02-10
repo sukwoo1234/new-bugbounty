@@ -115,6 +115,7 @@
 - 메모리 상한: 4GB (컨테이너 레벨)
 - ASan 옵션: abort_on_error=1, symbolize=1, detect_leaks=0
 - 헤더 보호 범위: GGUF 8바이트, ONNX 4바이트
+- safetensors 헤더 JSON 길이/오프셋 필드 변형은 범위 내로 제한한다
 - custom mutator 우선순위: 1.5
 - fixup 허용: 헤더 매직 복구, 길이/오프셋 보정
 - 스레드 억제 환경 변수: OMP_NUM_THREADS, MKL_NUM_THREADS, OPENBLAS_NUM_THREADS, NUMEXPR_NUM_THREADS, VECLIB_MAXIMUM_THREADS
@@ -124,6 +125,8 @@
 ### 3.1) Harness Constraints
 - GGUF 헤더 보호 범위: 8바이트 고정
 - ONNX 헤더 보호 범위: 4바이트 고정
+- safetensors 헤더 JSON 길이/오프셋 필드는 손상 방지를 위해 범위 내 변형만 허용한다
+- safetensors는 헤더 JSON 크기와 텐서 데이터 오프셋/길이의 합이 파일 크기를 초과하지 않도록 유지한다
 - 스레드 억제: OMP_NUM_THREADS, MKL_NUM_THREADS, OPENBLAS_NUM_THREADS, NUMEXPR_NUM_THREADS, VECLIB_MAXIMUM_THREADS = 1
 - 입력 정책: 하네스는 로컬 파일만 사용하고, 다운로드는 별도 단계로 분리한다
 - 필요 시 CPU pinning을 적용한다

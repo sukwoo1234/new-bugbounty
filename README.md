@@ -6,12 +6,19 @@
 - 설계/결정: [first.md](first.md)
 - 구현 명세: [docs/specs.md](docs/specs.md)
 
-## 왜 만드는가 (Why & Value)
-- **Deep & Structured Fuzzing**: GGUF/ONNX 구조를 인식하는 변형으로 얕은 파싱 에러가 아니라 깊은 메모리 오염을 유도한다.
-- **Auto-Verification**: 발견 즉시 격리 컨테이너에서 3회 재현 검증을 수행하고, 증거 번들과 리포트를 자동 생성한다.
-- **Exploitability Triage**: 단순 크래시가 아니라 RCE 가능성을 자동 분류해 제출 가능한 품질로 정리한다.
+## 기존 툴 대비 차별점 (Differentiators)
+- **Deep & Structured Fuzzing**: 구조 인지형 mutator/harness로 얕은 파싱 에러가 아니라 깊은 경로의 메모리 오염을 겨냥한다.
+- **Auto-Verification**: 동일 컨테이너에서 3회 재현 검증하고, 증거 번들/리포트를 자동 생성해 제출 품질을 보장한다.
+- **Exploitability Triage**: ASan/Release 교차 검증과 스택/레지스터 분석으로 RCE 가능성을 등급화한다.
+- **Reproducibility by Design**: 환경 고정/해시 기록으로 재현성을 강화한다.
+- **LLM Assist (Out of Loop)**: 퍼징 루프 외부에서 Seed/Dictionary/Mutation guide를 보조한다.
+
+### 목표 (Goals)
+- 구조 인지형 mutator/harness로 더 깊은 경로를 타겟한다.
+- 기존 툴 대비 재현 성공률/제출 승인률을 수치로 개선한다.
 
 ## RCE 탐지 방법론 (요약)
+- 핵심 본체는 **하네스/뮤테이터/triage**이며, 자세한 정책은 [first.md](first.md)와 [docs/specs.md](docs/specs.md)에 정리한다.
 - **Format-Aware Mutator**: 헤더/메타/오프셋/길이 필드를 의도적으로 변조해 깊은 경로를 자극한다.
 - **Targeted Harness**: mmap/텐서 디코딩/메모리 할당 경로를 직접 통과하도록 하네스를 설계한다.
 - **Exploitability Triage**: 레지스터/스택/PC 오염 여부를 분석해 RCE 후보 등급을 부여한다.
@@ -35,7 +42,7 @@
 - 개발 TODO: [docs/dev-todo.md](docs/dev-todo.md)
 - 리포트 샘플: [docs/report-sample.md](docs/report-sample.md)
 
-## CLI (계획)
+## CLI (확정)
 - `tool run`, `tool triage`, `tool report`
 - 결과 조회: `list`, `show <id>`, `export <id>`
 
