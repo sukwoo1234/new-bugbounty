@@ -12,6 +12,8 @@
 2. **결정 로그**: 주요 결정과 근거
 3. **상세 설계**: 아키텍처/파이프라인/정책/운영
 
+세부 수치/규칙/필드/경로 등 구현 명세는 [docs/specs.md](docs/specs.md)에 분리한다.
+
 ## 결정 목록 (TBD 닫기 순서)
 - [x] 아키텍처 데이터 흐름(컴포넌트 간 통신, Job Queue, Artifact Store)
 - [x] 재현 환경 고정 정책(이미지/라이브러리/환경 변수/PRNG)
@@ -92,6 +94,24 @@
 
 ---
 
+## 4.5 차별점 (Why & Value)
+- 단순 크래시 발견을 넘어 **깊은 버그 탐지 + 완결된 검증 자동화**를 동시에 달성한다.
+- **Deep & Structured Fuzzing**: GGUF/ONNX 구조를 인식하는 custom mutator/fixup으로 얕은 파싱 에러가 아니라 **깊은 로직의 메모리 오염**을 유도한다.
+- **Full-Cycle Automation**: 발견 즉시 격리 컨테이너에서 3회 재현 검증을 수행하고, 증거 번들과 리포트를 자동 생성한다.
+
+## 4.6 RCE 탐지 방법론 (Methodology)
+- 우연에 기대지 않고 **설계된 입력 변형 + 경로 타겟팅**으로 RCE 가능성을 끌어낸다.
+- **Format-Aware Mutator**: 헤더/메타/오프셋/길이 필드를 의도적으로 변조해 유효 구조를 유지하면서 깊은 경로를 자극한다.
+- **Targeted Harness**: 단순 로더 호출이 아닌 mmap/텐서 디코딩/메모리 할당 경로를 직접 통과하도록 하네스를 설계한다.
+- **Exploitability Triage**: 크래시 발생 시 레지스터/스택/PC 오염 여부와 쓰기 가능성을 분석해 RCE 후보 등급을 부여한다.
+
+## 4.7 CVE 확정 기준 (정책 + 기술)
+- **정책 기준**: 동일 입력/환경에서 3회 재현 + top3 frame 동일 + 증거 번들(PoC/로그/스택/환경) 완비.
+- **기술 기준**: 메모리 오염 증거(ASan/UBSan 로그) + exploitability triage 결과(RCE 후보/High Confidence).
+- 조건 미달 시 폐기하지 않고 Manual Review로 이동한다.
+
+---
+
 ## 5) 최소 기능 목록 (MVP v2 기준)
 ### A. 타깃 준비
 - 공식 배포본 다운로드/검증/보관 워크플로우
@@ -114,6 +134,8 @@
 ### E. 리포트
 - 플랫폼 템플릿 출력
 - 필요한 정보 자동 수집(로그, 스택, 환경, 타깃 해시)
+
+> 우선순위는 **발견(퍼징) → 검증(재현) → 보고** 순서이며, 재현은 발견 결과를 전제로 수행한다.
 
 ---
 
@@ -172,63 +194,16 @@
 - Artifact Store는 `./data/artifacts`에 크래시/재현/로그를 저장한다.
 
 ## A.2) 파일 큐 무결성 (확정)
-- 상태 전이는 디렉터리 이동으로 관리한다: `pending/` -> `processing/` -> `done/`
-- 원자적 이동(atomic rename)을 기본으로 하고, 동일 작업 중복 처리는 파일명 기반으로 방지한다
-- 스캔-선택-이동 과정의 충돌은 정상으로 간주하고 재시도 로직을 둔다
- - 스캔 전 0~100ms 랜덤 딜레이를 적용한다
- - rename 실패(이미 이동됨, 파일 없음)는 즉시 다음 파일로 넘어간다
- - 실패는 에러가 아닌 정상 흐름으로 기록한다
-- 파일 잠금은 최소화하고, 필요 시에만 적용한다(락은 보조 수단)
-- 무결성 검증 강화를 위해 job 파일 내부에 `payload_checksum`을 포함한다
- - `payload_checksum`: job payload의 canonical JSON(필수 필드 고정 순서) SHA-256
- - 워커는 처리 전 checksum을 검증하고, 불일치 시 `quarantine/`으로 이동 후 처리 중단
-- 파일명/중복 처리 규칙을 고정한다
- - `job_id` = payload canonical JSON의 SHA-256
- - 파일명: `<job_id>.json`
- - 동일 `job_id`가 이미 존재하면 중복으로 판단하고 신규 job은 드롭한다
- - 동일 `job_id`인데 checksum 불일치가 발생하면 손상으로 간주하고 `quarantine/`으로 이동한다
-- payload canonical JSON에 포함할 필드를 고정한다
- - `schema_version`
- - `job_type` (run/triage/report)
- - `target` (name, version, target_binary_hash)
- - `input` (path, sha256)
- - `engine` (libfuzzer/aflpp)
- - `seed` (prng_seed)
- - `timeout` (exec_timeout, hang_timeout)
- - `container_image` (name, digest)
- - `options` (정렬된 key-value, 존재할 때만 포함)
- - `created_at`은 canonical JSON에서 제외한다
- - `history`는 canonical JSON에서 제외한다
-- `quarantine/`에 이동된 job은 `quarantine/<job_id>.json`으로 보관하고, 같은 이름의 `reason.txt`에 원인(ChecksumMismatch, SchemaMismatch)을 기록한다
-- 워커 좀비화 방지를 위해 Stale Job Recovery를 둔다
- - Fuzz Manager는 `processing/`과 heartbeat를 함께 본다
- - heartbeat가 60초 이상 끊긴 job만 stale로 판단한다
- - stale job은 `failed/`로 이동한다
- - 재시도는 1회만 허용하며, 재시도 시 `pending/`으로 되돌린 뒤 `retry_count`를 증가한다
-- JSON 파싱 불가/읽기 실패/0바이트 파일은 `quarantine/broken/`으로 격리한다
-- done/ 디렉터리는 샤딩하여 inode 폭증을 방지한다
- - 예: `done/YYYY/MM/DD/` 또는 `done/af/3d/`
-- 워커는 컨테이너 종료 코드를 기록해 시스템 킬을 식별한다
- - exit code 137은 OOM으로 판단하고 `reason.txt`에 기록한다
-- pending 스캔은 파티셔닝 없이 임의 선택으로 처리한다
- - 모든 워커는 pending 내 임의 파일을 선택해 atomic rename을 시도한다
- - 파티셔닝은 워커 장애 시 지연을 유발하므로 MVP에서는 사용하지 않는다
-- job 이동 이력을 추적하기 위해 `history` 배열을 둔다
- - 상태 전이와 타임스탬프를 기록한다
+- 파일 기반 큐로 상태 전이(pending -> processing -> done)를 관리한다.
+- atomic rename 기반의 중복/레이스 허용 정책을 적용한다.
+- checksum, job_id, quarantine, stale recovery, sharding, history를 운영한다.
+- 세부 규칙/필드/임계값은 [docs/specs.md](docs/specs.md)에 정의한다.
 
 ## A.3) 플랫폼 인터페이스 설계 (확정)
-- 확장 계획을 코드 레벨에서 지원하기 위해 핵심 컴포넌트는 trait로 분리한다
-- QueueTrait: enqueue, claim, ack, nack, heartbeat
-- EngineTrait: run_fuzz, minimize, triage
-- ExecutorTrait: run_container, collect_exit, stream_logs, record_exit_reason
-- run_container는 job type에 따라 network_policy(none/bridge/host)를 적용한다
-- network_policy 기본값을 고정한다
- - run: none
- - triage: none
- - report: bridge
-- StorageTrait: put_artifact, get_artifact, list_artifacts
-- 구현 선택은 config 기반 factory로 분리해 if-else 분기를 최소화한다
-- 기본 구현은 파일 큐/컨테이너 실행/로컬 스토리지로 시작한다
+- 확장 계획을 코드 레벨에서 지원하기 위해 핵심 컴포넌트는 trait로 분리한다.
+- 구현 선택은 config 기반 factory로 분리한다.
+- 기본 구현은 파일 큐/컨테이너 실행/로컬 스토리지로 시작한다.
+- 세부 인터페이스/기본값은 [docs/specs.md](docs/specs.md)에 정의한다.
 
 ### 확장 계획 (조건부)
 - 퍼저 수 증가로 **큐 처리 지연**이 발생하면: SQLite로 메타를 분리하고 파일 스토어는 유지
@@ -236,140 +211,56 @@
 - 서비스 분리/멀티 팀 운영이 필요하면: gRPC 서비스 + DB로 단계적 전환
 
 ## B) 타깃 파일 파이프라인
-- 다운로드 소스 정책 (정식 배포/공개 모델 허용 범위)
-- 해시/버전/라이선스 메타데이터 저장
-- 샌드박스에서 파일 파싱/로딩
-- 타깃 선정 기준: huntr “Model File Formats” 목록 기반
- - 정책: **공식 배포본 우선**
- - 라이선스는 해당 배포본의 공개 사용/테스트 허용 범위 확인(정책 위반 방지)
- - 공식 배포 채널(예시)
-	 - llama.cpp Releases: https://github.com/ggml-org/llama.cpp/releases
-	 - onnxruntime Releases: https://github.com/microsoft/onnxruntime/releases
-	 - safetensors Releases: https://github.com/huggingface/safetensors/releases
- - 버전 고정(문서 기준 최신 안정)
-	 - llama.cpp: **b7921**
-	 - onnxruntime: **v1.23.2**
-	 - safetensors: **v0.7.0**
- - 버전 변경 시: 문서/메타 갱신 + 파일 해시 재기록
+- 공식 배포본 기반으로 다운로드/검증/보관하며 해시/버전/라이선스 메타데이터를 기록한다.
+- 타깃 선정은 huntr “Model File Formats” 목록을 기준으로 한다.
+- 공식 채널/버전 고정/변경 규칙은 [docs/specs.md](docs/specs.md)에 정의한다.
 
 ## B.1) 퍼징 실행(찾기) 파이프라인
 - 기본 엔진: LibFuzzer 우선, 필요 시 AFL++ 보조
-- 입력 전략: seed + dictionary 기반, custom mutator는 2차
-- 하네스 범위: 파서/로더 + 메타데이터 순회
 - 실행 흐름: 입력 생성 → 타깃 실행 → 크래시 수집 → 중복 제거
-- 실행 전 타깃 바이너리 해시를 검증한다
- - 컨테이너 내부에서 sha256을 계산해 job 명세와 비교한다
- - 불일치 시 작업을 즉시 중단하고 reason을 기록한다
-- 크래시 수집: ASan/UBSan 로그 + 종료코드 + 스택 상위 3프레임
-- 퍼징 실행 컨테이너는 네트워크를 차단한다
- - 다운로드 단계는 별도 스테이지로 분리한다
- - 실행 단계는 `--network none` 또는 루프백만 허용한다
-- 아티팩트는 별도 writeable 볼륨으로 즉시 호스트에 동기화한다
- - seed 입력은 read-only 볼륨으로 마운트한다
- - 크래시/로그 출력은 host bind mount에 기록한다
-- 퍼징 임시 파일은 `/dev/shm`을 활용해 IO 병목을 줄이고, 유의미한 결과만 볼륨으로 이동한다
-- 새 코퍼스는 호스트 공유 볼륨에 저장하고 재실행 시 재사용한다
- - `-artifact_prefix=/output/` 등으로 신규 입력을 즉시 저장한다
- - 재실행 시 `seeds/`와 `new_corpus/`를 함께 로드한다
+- 실행 전 해시 검증, 네트워크 차단, 아티팩트 동기화, 코퍼스 재사용을 적용한다.
+- 세부 실행 정책은 [docs/specs.md](docs/specs.md)에 정의한다.
 
 ## B.2) 하네스/뮤테이터 전략 (확정)
-- 현실적인 최적 조합: **안정성 + 속도 + 깊은 버그 + 오염 최소화**
-- 기본: LibFuzzer + dictionary
-- GGUF/ONNX는 헤더 손상을 방지하기 위해 헤더 고정 또는 token-level dictionary를 필수로 적용한다
- - GGUF: 헤더 고정 범위는 8바이트로 한다
- - ONNX: 헤더 고정 범위는 4바이트로 한다
- - token-level dictionary를 병행 적용한다
-- 상태 오염 최소화: 주기적 프로세스 리셋(기준 TBD)
-- 깊은 버그 탐색: 타깃별 custom mutator를 필수(1.5차)로 격상한다
-- 구조적 보정을 위한 fixup 로직을 허용한다
- - 헤더 매직 바이트 복구
- - 파일 길이/오프셋 필드 보정
-- 재현성을 위해 스레드를 억제한다
- - OMP/MKL 등 스레드 관련 환경 변수를 1로 고정한다
-	- 기본 대상: OMP_NUM_THREADS, MKL_NUM_THREADS, OPENBLAS_NUM_THREADS, NUMEXPR_NUM_THREADS, VECLIB_MAXIMUM_THREADS
- - 필요 시 라이브러리 옵션으로 intra/inter op 스레드를 1로 설정한다
- - 불가한 경우 컨테이너 실행 시 CPU pinning을 적용한다
-- LLM 보조 사용(옵션): 퍼징 루프 외부에서만 사용
- - Seed 생성
- - Dictionary/스키마 추출
- - Mutation guide 생성
-- Bootstrap seed를 기본 제공한다
- - GGUF/ONNX는 파서가 에러 없이 로딩 가능한 최소 유효 파일을 `./seeds`에 배치한다
- - 최소 파일 생성 스크립트를 타깃 준비 단계에 포함한다
+- 기본: LibFuzzer + dictionary, 형식 인식형 mutator를 병행한다.
+- 헤더 보호/스레드 억제/bootstrapped seed를 적용한다.
+- fixup 허용 및 LLM 보조는 퍼징 루프 외부에서만 사용한다.
+- 세부 수치/목록은 [docs/specs.md](docs/specs.md)에 정의한다.
 
 ## B.3) 하네스 리셋/메모리 캡 (확정)
-- LibFuzzer는 실행 횟수 기준으로 주기적 프로세스 리셋을 한다(기준값: 10,000회)
-- 리셋은 컨테이너 재시작이 아니라 바이너리 재실행으로 처리한다
- - LibFuzzer에 `-runs=10000`을 적용하고, 종료 후 Fuzz Manager가 즉시 바이너리를 재실행한다
-- 종료 코드 정책을 고정한다
- - `-error_exitcode=77`로 크래시 종료 코드를 통일한다
- - 0: 정상 종료, 재실행 루프 진행
- - 77: 크래시로 간주하고 아티팩트 수집을 수행한다
- - 그 외: 시스템 오류로 간주하고 컨테이너 상태 점검 후 재시도 또는 failed 처리
-- 무한 크래시 루프를 방지하기 위해 Crash Loop Detection을 둔다
- - 최근 5초 내 10회 이상 비정상 종료 시 job을 `failed/`로 이동하고 재시도를 중단한다
- - 해당 이벤트는 관찰성 로그에 기록한다
-- 메모리 상한은 컨테이너 레벨에서 고정한다(기본값: 4GB)
-- ASan 핵심 옵션은 고정한다: `abort_on_error=1`, `symbolize=1`, `detect_leaks=0`
+- 프로세스 리셋/종료 코드 정책/Crash Loop Detection/메모리 캡/ASan 옵션을 고정한다.
+- 세부 값은 [docs/specs.md](docs/specs.md)에 정의한다.
 
 ## C) 재현 파이프라인 DoD
-- 동일 컨테이너에서 입력을 3회 재실행
-- 재현 로그/스택/입력 파일 자동 저장
-- 재현 실패 시 재시도/보류 정책 적용
- - 동일 입력 판정: **입력 바이트 해시가 동일**
- - 스택 프레임 판정: **상위 3프레임 동일**
- - 스택 정규화: 주소/오프셋 제거, 모듈명+심볼 기준 비교
+- 동일 컨테이너에서 입력을 3회 재실행한다.
+- 상위 3프레임 동일성으로 재현 성공을 판정한다.
+- 재현 로그/스택/입력 파일을 자동 저장한다.
+- 세부 재시도/정규화 기준은 [docs/specs.md](docs/specs.md)에 정의한다.
 
 ## C.2) 스택 정규화/중복 제거 보강 (확정)
-- 스택 프레임 스킵은 기본 스킵으로 시작한다: asan, libc, libstdc++, libgcc, libfuzzer
-- 운영하면서 타깃 특성에 맞게 확장 스킵으로 발전시킨다
-- 사용자 라이브러리의 첫 유효 프레임부터 상위 3프레임을 추출한다
-- 중복 제거 보조 기준은 모듈+심볼 해시로 시작한다
-- 더 세밀한 분리가 필요하면 모듈+심볼+입력 해시로 확장한다
+- 스택 정규화/중복 제거 정책을 둔다.
+- 스킵 목록/해시 기준 등 세부 규칙은 [docs/specs.md](docs/specs.md)에 정의한다.
 
 ## C.1) 재현 환경 고정 정책 (확정)
-- 기본 정책: **Strict by default**
- - 컨테이너 이미지/라이브러리 버전 고정
- - 환경 변수는 화이트리스트만 허용
- - PRNG 시드 고정 및 기록
-- 디버그 정책: **Debug override 허용**
- - 재현 목적의 한시적 환경 변수/시드 변경 허용
- - 변경 내역은 로그/메타에 반드시 기록
+- 기본은 Strict, 필요 시 Debug override를 허용한다.
+- 세부 화이트리스트/기록 규칙은 [docs/specs.md](docs/specs.md)에 정의한다.
 
 ## D) 리포트 템플릿 DoD
-- 플랫폼별 필수 필드 자동 채움
-- 재현 단계 자동 생성
-- 환경 정보(컨테이너 이미지/버전/커밋) 포함
+- 플랫폼별 필수 필드를 자동 채움하고 재현 단계를 생성한다.
+- 환경 정보(이미지/버전/커밋)를 포함한다.
+- 템플릿/매핑 규칙은 [docs/specs.md](docs/specs.md)에 정의한다.
 
 ## D.1) 리포트 템플릿 구조 (확정)
-- Summary → Reproduction Steps → PoC → Impact → Exploit Scenario → Value
-- Summary: 타깃/버전 + 취약점 유형 + 결과를 1줄로 요약
-- Reproduction Steps: 컨테이너 이미지/해시/시드/타임아웃 포함
-- PoC: 입력 파일 해시 + 실행 커맨드 + 기대 결과 포함
-- Impact: 재현 로그/스택 근거에 기반한 영향만 기술
-- Value: 재현 가능성/범용 포맷 영향/회귀 위험 등 근거 중심
+- 템플릿 구조를 정의하고 세부 필드는 [docs/specs.md](docs/specs.md)에 둔다.
 
 ## D.2) 리포트 자동 생성 파이프라인 (확정)
-- 입력: crash/repro 기록 + 로그/스택 + 환경 메타
-- 매핑: 필수 필드 자동 채움 규칙
-- 출력: 템플릿 렌더링(텍스트/Markdown/JSON)
+- 입력/매핑/출력 흐름을 정의하고 세부 규칙은 [docs/specs.md](docs/specs.md)에 둔다.
 
 ## D.3) ASan vs Release 교차 검증 (확정)
-- ASan 빌드에서 크래시 발생 시 Release 빌드로 동일 입력을 재실행한다
-- 성공 기준: Release 빌드에서 비정상 종료(SEGV/Abort 등) 발생
-- 기준 미달 시 폐기하지 않고 Manual Review 큐로 이동한다
-- ASan/Release 모두 성공한 항목만 High Confidence로 분류한다
+- ASan/Release 교차 검증을 수행한다.
+- 성공/실패 처리 기준은 [docs/specs.md](docs/specs.md)에 정의한다.
 
-## D.2.1) 리포트 자동 생성 규칙 (v1, 추후 디벨롭)
-- 매핑 우선순위: 로그/스택 > 재현 기록 > 환경 메타
-- Summary: 타깃/버전 + 취약점 유형 + 결과를 1줄로 구성
-- Reproduction Steps: 이미지 태그+해시, PRNG 시드, 타임아웃, 실행 커맨드 순서 고정
-- PoC: 입력 파일은 상대 경로, 해시는 SHA-256, 실행 커맨드/기대 결과 포함
-- Impact/Exploit Scenario: 재현 근거가 있는 범위만 기술
-- 로그/스택 축약: 본문은 상위 50줄 + 하위 50줄, 전체는 첨부로 분리
-- 중요 라인은 별도 섹션으로 강제 포함한다
- - 키워드: ERROR, WARNING, FATAL, SUMMARY, AddressSanitizer, UBSAN, SEGV, SIGABRT, panic, stack trace, backtrace, OOM, out of memory, timeout, hang, assert, abort, leak
-- 출력 포맷: 공통 필드 집합 유지, 포맷별 렌더링 규칙만 변경
+
 
 ## E) 운영/관찰성
 - 퍼저 상태, 크래시 수, 유효 판정 수 집계
@@ -379,37 +270,20 @@
 - **CLI 우선** (안정화 후 대시보드로 확장)
 
 ## E.2) 운영 지표 (초안)
-- 커버리지: **시간당 신규 경로 수**
-- 크래시: **시간당 신규 크래시 수**
-- 유효율: **유효 크래시 / 전체 크래시**
+- 운영 지표(커버리지/크래시/유효율)를 정의한다.
+- 세부 정의는 [docs/specs.md](docs/specs.md)에 둔다.
 
 ## E.3) 관찰성/헬스 (확정)
-- 워커는 `processing/<job_id>.alive` 파일의 타임스탬프를 10초마다 갱신한다
-- Fuzz Manager는 60초 이상 갱신이 없는 워커를 dead로 표시하고 경보 로그를 기록한다
-- dead 상태의 job은 Stale Job Recovery 정책에 따라 정리한다
-- 전체 상태 스냅샷을 `./data/status.json`으로 주기 저장한다
- - 큐 상태: pending/processing/done/failed/quarantine 카운트
- - 워커 상태: last_heartbeat, 현재 job_id
- - 최근 오류 요약: 마지막 N개 에러 코드/이유
-- Fuzz Manager는 최근 5분의 Global Error Rate를 계산해 콘솔에 출력한다
+- 관찰성은 heartbeat/status.json/Global Error Rate를 중심으로 설계한다.
+- 세부 규칙은 [docs/specs.md](docs/specs.md)에 둔다.
 
 ## E.4) 플랫폼 자체 테스트 (확정)
-- `tool self-test`로 파이프라인 전체를 검증한다
-- Mock Fuzzer 바이너리를 사용해 즉시 크래시/타임아웃/성공 시나리오를 재현한다
-- 의도적 오류 시나리오를 포함한다
- - checksum mismatch로 `quarantine/` 전환
- - timeouts로 `failed/` + 1회 재시도
- - 빈 `processing/` 상태 감지
+- `tool self-test`로 파이프라인 전체를 검증한다.
+- 시나리오/규칙은 [docs/specs.md](docs/specs.md)에 둔다.
 
 # P) CLI 명령/플로우 (확정)
-- 기본 명령: `tool run`, `tool triage`, `tool report`
-- 결과 조회: `list`, `show <id>`, `export <id>`
-- 기본 저장 경로: `./data`
-- 기본 입력 디렉터리: `./seeds`
-- 기본 타임아웃: 60초
-- 워커 역할 분리를 지원한다
- - triage 전용 워커를 최소 1개 유지한다
- - report 전용 워커를 옵션으로 둔다
+- 기본 명령/결과 조회/기본 경로를 제공한다.
+- 워커 역할 분리와 기본 타임아웃 등 세부 기본값은 [docs/specs.md](docs/specs.md)에 둔다.
 
 ---
 
@@ -524,111 +398,6 @@
 - stdout/stderr 로그는 대형 파일부터 삭제한다
 - stdout/stderr 로그는 워커 레벨에서 로테이션한다(예: 10MB 단위)
 
-# M) 데이터 스키마 (확정)
-## M.1) 크래시 기록 (필수)
-- id: 사람이 읽기 쉬운 경로 기반 ID
-- target: 타깃/버전(예: onnxruntime v1.23.2)
-- schema_version: 스키마 버전(예: 1.0)
-- target_binary_hash: 실행 타깃 바이너리 SHA-256
-- input: 입력 파일 경로 + 해시
-- stack_top3: 스택 상위 3프레임(정규화 후)
-- signal_exit: SEGV/Abort 등 종료 이유
-- time: 발생 시간(UTC)
-
-## M.2) 재현 기록 (필수)
-- repro_count: 3회 중 성공 횟수(예: 3/3)
-- container_image: 이미지 이름 + 해시
-- repro_env: 재현 시 환경(화이트리스트)
-
-## M.3) 리포트 기록 (필수)
-- summary: 요약
-- steps: 재현 단계
-- impact: 영향
-- vuln_category: 취약점 분류(예: Heap Buffer Overflow)
-- component: 영향 컴포넌트
-- function: 문제가 발생한 함수
-
-## M.4) 분류/ID 규칙 (확정)
-- 디렉터리 우선 분류: `./data/bugs/<target>/<vuln_type>/`
-- 파일 이름: `YYYYMMDD-HHMMSS-XX`(시간 순 정렬, XX는 동일 시간 내 증가)
-- crash_id는 경로+파일명으로 정의
- - 예: `onnx/RCE/20260206-153012-01`
-- 동일 크래시 묶음 기준: `stack_top3` 해시
-
-## M.5) 운영 규모 확대 시 추가 필드
-- fuzz_run_id: 어떤 퍼징 실행에서 나왔는지
-- dedup_hash: 중복 제거용 해시
-- artifact_paths: 로그/입력/재현 스크립트 경로
-
-# M) 저장 구조 (초안)
-- 장기 보관 전제: 입력/로그/스택/환경 정보를 분리 저장
-- 크래시 단위 디렉터리 구조 (타깃/해시/타임스탬프 기준)
-- 재현 가능한 최소 세트(입력+환경+재현 커맨드) 우선 보관
- - 보관 기간: **30일** (보고서 제출 목표)
- - 코어덤프: **기본 OFF** (옵션으로만 활성화)
- - 압축 정책: **로그 zstd 압축**, 입력 파일은 원본 유지
- - 실패/플레이키 크래시는 보관하지 않음
-
-# N) 정책/법적 범위
-- HackerOne 정책 준수 (스코프/허용 테스트 범위 내)
-
-# Q) 리스크/스코프 문서화 (확정)
-- 스코프: **HackerOne 일반 정책 준수**
-- 허용 범위 밖 테스트 금지 (대상/환경/데이터)
-- 법적/정책 위반 가능성 있는 자동화는 기본 OFF
-
-# O) 초기 하네스 구조 (TBD)
-- 타깃 로더/파서 진입점 정의 필요
-
-## O.1) 최소 하네스 공통 흐름 (초안)
-1. 입력 파일 로드
-2. 포맷 식별/매직 확인
-3. 파서/로더 진입
-4. 핵심 경로 1~2개 호출 (메타데이터 파싱, 텐서 인덱싱 등)
-5. 결과 요약(성공/실패/크래시) 기록
- - 입력 정책: 다운로드는 별도 단계, 하네스는 **로컬 파일만 사용**
- - 버전 정책: **최신 안정 버전 고정** + 문서에 버전 기록
- - 구체 API/함수: **개발 1주차에 확정**
-
-## O.2) GGUF 하네스 (초안)
-- 목표: 헤더/메타데이터/텐서 인덱스 파싱 경로
-- 흐름: 파일 열기 → 헤더 파싱 → KV 메타 파싱 → 텐서 디렉터리 순회
-- 확인: 크래시/ASan 로그/파서 에러
- - 라이브러리(1.0): **llama.cpp 파서 사용**
-
-## O.3) ONNX 하네스 (초안)
-- 목표: protobuf 디코드 + 그래프/노드 순회
-- 흐름: 파일 로드 → protobuf 파싱 → Graph/Node 순회 → 기본 검증
-- 확인: 크래시/ASan 로그/파서 에러
- - 라이브러리(1.0): **onnxruntime 사용**
-
-## O.4) safetensors 하네스 (초안)
-- 목표: 헤더 JSON 파싱 + 텐서 메타 확인
-- 흐름: 파일 로드 → 헤더 JSON 파싱 → 각 텐서 오프셋/크기 검증
-- 확인: 크래시/ASan 로그/파서 에러
- - 라이브러리(1.0): **공식 safetensors 라이브러리 사용**
-
-## O.5) 1.0 이후 전략
-- 포맷만 고정하고, 구현 라이브러리는 추후 재선정
-
-## O.6) 하네스 빌드 파이프라인 (확정)
-- Dockerfile 템플릿으로 ASan/UBSan 빌드를 표준화한다
-- 타깃별로 fuzz_target 파일만 교체해 퍼징 이미지를 생성한다
-- 빌드 타임 단축을 위해 pre-built base image를 기본 전략으로 둔다
- - base 이미지에는 컴파일러/의존성/빌드 도구를 포함한다
- - 타깃 소스 레이어는 최소화한다
- - 선택적으로 ccache 볼륨 마운트를 지원한다
-
-## O.7) 개발 편의 모드 (초안)
-- 로컬 개발 환경은 Dev Container로 통일한다
-- local 모드는 Dev Container 내부에서만 사용한다
-- `--local` 플래그로 호스트(컨테이너 내부) 바이너리를 직접 실행한다
-- local 모드는 self-test와 파이프라인 검증용으로 제한한다
-
-# R) 운영 편의 옵션 (초안)
-- 장시간 운영 시 seed 폭증을 완화하기 위해 corpus distillation 옵션을 둔다
-- `tool merge`로 LibFuzzer `-merge=1` 작업을 주기 실행할 수 있다
-- merge 작업은 별도 리소스 제한 하에서 실행한다
- - merge 전 RAM 여유분을 체크한다
- - 필요 시 퍼징 워커를 일시 중단하고 merge를 수행한다
-- merge는 별도의 job type으로 발행하고 유휴 워커가 처리한다
+# M) 데이터/저장/하네스/정책 요약
+- 데이터 스키마, 저장 구조, 하네스 설계, 운영 옵션은 [docs/specs.md](docs/specs.md)에 정의한다.
+- 스코프/정책은 HackerOne 일반 정책 준수를 기본으로 한다.
