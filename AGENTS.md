@@ -10,6 +10,16 @@
 ## Boundaries
 - Do not run installs or heavy automation unless requested.
 - Keep proposals outside requested scope as optional.
+- Prefer the simplest solution that satisfies the request.
+- Avoid speculative abstractions or unrequested features.
+- Limit edits to lines directly related to the current request.
+
+## Execution Quality
+- State assumptions explicitly before implementation when ambiguity exists.
+- If requirements are unclear or conflicting, ask before coding.
+- Define verifiable success criteria for each task and validate before closing.
+- If a simpler approach exists, present it before implementing a complex one.
+- If your change creates unused code/imports, clean up only what your change introduced.
 
 ## Git Conventions
 - Branches: `main`, `feat/<topic>`, `fix/<topic>`, `docs/<topic>`

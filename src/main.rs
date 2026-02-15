@@ -69,9 +69,21 @@ struct RunArgs {
 
 #[derive(Args)]
 struct TriageArgs {
+    /// Target type: gguf | onnx | safetensors
+    #[arg(long, value_enum)]
+    target: TargetKind,
+
     /// Input file to reproduce
     #[arg(long)]
     input: PathBuf,
+
+    /// Reproduction attempts (default: 3)
+    #[arg(long, default_value_t = 3)]
+    repro_retries: u32,
+
+    /// Per-attempt timeout in seconds (default: 60)
+    #[arg(long, default_value_t = 60)]
+    timeout_sec: u64,
 }
 
 #[derive(Args)]
@@ -146,7 +158,10 @@ fn main() -> ExitCode {
             }
         }
         Commands::Triage(args) => {
-            print_stub_with_input("triage", &app_paths.data_dir, &app_paths.seeds_dir, &args.input);
+            if let Err(err) = run_triage_pipeline(&app_paths, &args) {
+                eprintln!("triage error: {err}");
+                return ExitCode::from(6);
+            }
         }
         Commands::Report(_args) => {
             print_stub("report", &app_paths.data_dir, &app_paths.seeds_dir);
@@ -229,6 +244,12 @@ enum HarnessExecResult {
     Success(String),
     Failed(String),
     Timeout(String),
+}
+
+struct TriageAttempt {
+    attempt: u32,
+    result: String,
+    signature_top3: Vec<String>,
 }
 
 impl AppPaths {
@@ -611,6 +632,207 @@ fn now_unix() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn run_triage_pipeline(app_paths: &AppPaths, args: &TriageArgs) -> Result<(), String> {
+    if !args.input.exists() || !args.input.is_file() {
+        return Err(format!("input is invalid: {}", args.input.display()));
+    }
+    if args.repro_retries == 0 {
+        return Err("repro_retries must be >= 1".to_string());
+    }
+
+    let triage_id = now_unix();
+    let triage_dir = app_paths
+        .data_dir
+        .join("triage")
+        .join(format!("triage-{triage_id}"));
+    fs::create_dir_all(&triage_dir)
+        .map_err(|e| format!("failed to create triage dir '{}': {e}", triage_dir.display()))?;
+
+    let timeout_available = command_exists("timeout");
+    let mut attempts = Vec::new();
+
+    for attempt in 1..=args.repro_retries {
+        let exec = execute_triage_subprocess(
+            &args.target,
+            &args.input,
+            args.timeout_sec,
+            timeout_available,
+        )?;
+        let (result_label, merged_output) = match exec {
+            HarnessExecResult::Success(s) => ("success".to_string(), s),
+            HarnessExecResult::Failed(s) => ("failed".to_string(), s),
+            HarnessExecResult::Timeout(s) => ("timeout".to_string(), s),
+        };
+        let signature_top3 = extract_signature_top3(&merged_output);
+
+        let log_path = triage_dir.join(format!("attempt-{}.log", attempt));
+        let log_body = format!(
+            "attempt: {}\nresult: {}\nsignature_top3: {:?}\n{}\n",
+            attempt, result_label, signature_top3, merged_output
+        );
+        fs::write(&log_path, log_body)
+            .map_err(|e| format!("failed to write '{}': {e}", log_path.display()))?;
+
+        attempts.push(TriageAttempt {
+            attempt,
+            result: result_label,
+            signature_top3,
+        });
+    }
+
+    let timeout_count = attempts.iter().filter(|a| a.result == "timeout").count();
+    let success_count = attempts.iter().filter(|a| a.result == "success").count();
+    let failed_count = attempts.iter().filter(|a| a.result == "failed").count();
+
+    let mut signature_consistent = true;
+    if let Some(first) = attempts.first().map(|a| &a.signature_top3) {
+        signature_consistent = attempts.iter().all(|a| &a.signature_top3 == first);
+    }
+
+    let verdict = if timeout_count > 0 {
+        "timeout"
+    } else if success_count == attempts.len() && signature_consistent {
+        "reproduced"
+    } else if success_count <= 1 {
+        "flaky"
+    } else if !signature_consistent {
+        "flaky_stack_mismatch"
+    } else {
+        "failed"
+    };
+
+    let summary_path = triage_dir.join("summary.json");
+    let attempts_json = attempts
+        .iter()
+        .map(|a| {
+            let sig = a
+                .signature_top3
+                .iter()
+                .map(|s| format!("\"{}\"", json_escape(s)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "    {{\"attempt\": {}, \"result\": \"{}\", \"signature_top3\": [{}]}}",
+                a.attempt, a.result, sig
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+
+    let summary = format!(
+        "{{\n  \"triage_id\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"repro_retries\": {},\n  \"timeout_sec\": {},\n  \"success_count\": {},\n  \"failed_count\": {},\n  \"timeout_count\": {},\n  \"signature_consistent\": {},\n  \"verdict\": \"{}\",\n  \"attempts\": [\n{}\n  ]\n}}\n",
+        triage_id,
+        target_label(&args.target),
+        json_escape(&args.input.display().to_string()),
+        args.repro_retries,
+        args.timeout_sec,
+        success_count,
+        failed_count,
+        timeout_count,
+        if signature_consistent { "true" } else { "false" },
+        verdict,
+        attempts_json
+    );
+    fs::write(&summary_path, summary)
+        .map_err(|e| format!("failed to write '{}': {e}", summary_path.display()))?;
+
+    println!("[triage] done");
+    println!("target: {}", target_label(&args.target));
+    println!("input: {}", args.input.display());
+    println!("success_count: {success_count}");
+    println!("failed_count: {failed_count}");
+    println!("timeout_count: {timeout_count}");
+    println!("signature_consistent: {signature_consistent}");
+    println!("verdict: {verdict}");
+    println!("summary: {}", summary_path.display());
+
+    Ok(())
+}
+
+fn execute_triage_subprocess(
+    target: &TargetKind,
+    input: &Path,
+    timeout_sec: u64,
+    timeout_available: bool,
+) -> Result<HarnessExecResult, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
+    let mut cmd = if timeout_available {
+        let mut c = Command::new("timeout");
+        c.arg(format!("{}s", timeout_sec));
+        c.arg(&exe);
+        c
+    } else {
+        Command::new(&exe)
+    };
+
+    cmd.arg("harness")
+        .arg("--target")
+        .arg(target_label(target))
+        .arg("--input")
+        .arg(input.display().to_string())
+        .env("OMP_NUM_THREADS", "1")
+        .env("MKL_NUM_THREADS", "1")
+        .env("OPENBLAS_NUM_THREADS", "1")
+        .env("NUMEXPR_NUM_THREADS", "1")
+        .env("VECLIB_MAXIMUM_THREADS", "1");
+
+    let out = cmd
+        .output()
+        .map_err(|e| format!("failed to execute triage subprocess: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let merged = format!("{}\n{}", stdout, stderr);
+
+    if timeout_available && out.status.code() == Some(124) {
+        return Ok(HarnessExecResult::Timeout(merged));
+    }
+    if out.status.success() {
+        return Ok(HarnessExecResult::Success(merged));
+    }
+    Ok(HarnessExecResult::Failed(merged))
+}
+
+fn extract_signature_top3(output: &str) -> Vec<String> {
+    let mut selected = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if contains_stack_hint(trimmed) {
+            selected.push(trimmed.to_string());
+        }
+        if selected.len() == 3 {
+            return selected;
+        }
+    }
+
+    // fallback: grab first 3 non-empty lines for stable comparison
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        selected.push(trimmed.to_string());
+        if selected.len() == 3 {
+            break;
+        }
+    }
+    selected
+}
+
+fn contains_stack_hint(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("stack")
+        || lower.contains("frame")
+        || lower.contains("backtrace")
+        || lower.contains("addresssanitizer")
+        || lower.contains("segv")
+        || lower.contains("sigabrt")
+        || lower.contains("onnxruntimeerror")
+        || lower.contains("load_fail")
 }
 
 fn run_harness(args: &HarnessArgs) -> Result<(), String> {
@@ -1112,13 +1334,6 @@ fn ensure_data_layout(data_dir: &Path) -> std::io::Result<()> {
 
 fn print_stub(command: &str, data_dir: &Path, seeds_dir: &Path) {
     println!("[{}] not implemented yet", command);
-    println!("data_dir: {}", data_dir.display());
-    println!("seeds_dir: {}", seeds_dir.display());
-}
-
-fn print_stub_with_input(command: &str, data_dir: &Path, seeds_dir: &Path, input: &Path) {
-    println!("[{}] not implemented yet", command);
-    println!("input: {}", input.display());
     println!("data_dir: {}", data_dir.display());
     println!("seeds_dir: {}", seeds_dir.display());
 }

@@ -1,2 +1,4 @@
 /target
 /data
+/.venv
+/tools/llama.cpp

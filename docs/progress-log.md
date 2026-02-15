@@ -43,8 +43,8 @@
 - URL 정책 위반 입력 시 실패 메시지 확인
 
 ### 제한 사항
-- 현재 실행 환경에서 DNS 해석이 실패하여 실제 원격 다운로드는 미검증
-  - 예: `Could not resolve host: github.com`
+- Codex 샌드박스에서는 DNS/네트워크 제한이 있어 원격 다운로드 검증이 어려울 수 있음
+- 사용자 WSL 환경에서는 네트워크 정상 확인(`curl`, `nslookup`)
 
 ## Phase 3: 하네스 통합 (1차)
 
@@ -90,14 +90,10 @@
 
 ### 검증
 - `cargo build --offline` 성공
-- `tool harness` 3포맷 실행 시 `direct_step` 출력 확인
-  - onnxruntime: `No module named 'onnxruntime'`
-  - safetensors: `No module named 'safetensors'`
-  - gguf: `llama-cli not installed`
+- 초기 검증에서 `direct_step` 미설치 사유 출력 확인
 
 ### 제한 사항
-- 현재 환경에서는 네트워크/DNS 제한으로 필요한 패키지 설치 및 다운로드가 불가해
-  직접 연결이 "코드 경로 준비 + 미설치 감지" 단계까지 진행됨
+- 초기에는 미설치 상태로 인해 직접 연결이 "코드 경로 준비 + 미설치 감지" 단계였음
 
 ## Phase 3: 하네스 통합 (경로 자동 탐지 보강)
 
@@ -115,10 +111,29 @@
 ### 검증
 - `cargo build --offline` 통과
 
+## Phase 3: 하네스 통합 (WSL 설치 후 재검증)
+
+### 태스크
+- 실제 설치된 로컬 라이브러리 기준으로 direct probe 재검증
+
+### 완료 기준
+- `direct_step`이 미설치가 아닌 "실제 라이브러리 로더 실행 결과"를 반환
+
+### 결과
+- ONNX: `onnxruntime` 모듈 로드 후 모델 파싱 경로 실행 확인
+- safetensors: `safetensors` 모듈 로드 후 헤더 파싱 경로 실행 확인
+- GGUF: `llama-cli` 실행 경로 확인(샘플 입력 파싱 실패는 데이터 품질 이슈로 분리)
+
+### 검증
+- 사용자 WSL 실행 결과 기준:
+  - ONNX: `ModelProto does not have a graph` (로더 실행됨)
+  - safetensors: `missing field 'shape'` (로더 실행됨)
+  - GGUF: `failed to read key-value pairs` (llama-cli 실행됨)
+
 ## 다음 우선순위
-1. 하네스 실제 라이브러리 연결(Phase 3 잔여)
-2. 퍼징 실행 파이프라인(Phase 4)
-3. 재현/검증 파이프라인(Phase 5)
+1. 재현/검증 파이프라인(Phase 5)
+2. 리포트/보관 자동화(Phase 6)
+3. 운영 지표 수집(Phase 7)
 
 ## Phase 4: 퍼저 실행 파이프라인
 
@@ -143,3 +158,27 @@
 
 ### 검증
 - `cargo build --offline` 통과
+- `tool run --target onnx --corpus-dir /tmp/bugbounty-corpus --workers 8 --timeout-sec 5 --restart-limit 1 --max-jobs 2` 스모크 실행 성공
+
+## Phase 5: 재현/검증 파이프라인
+
+### 태스크
+- `tool triage`를 3회 재현 검증 파이프라인으로 구현
+- 시그니처 top3 비교 로직 추가
+- 실패 모드 분기(`flaky`, `timeout`) 반영
+
+### 완료 기준
+- 입력 1건에 대해 반복 실행(기본 3회) 수행
+- 시도별 시그니처 top3를 수집하고 일관성 판정
+- 결과 요약을 파일로 저장
+
+### 결과
+- `triage` 명령 인자 추가: `--target`, `--input`, `--repro-retries`, `--timeout-sec`
+- 시도별 로그 저장: `data/triage/triage-<unix>/attempt-<n>.log`
+- 요약 저장: `data/triage/triage-<unix>/summary.json`
+- 판정 로직: `reproduced`, `flaky`, `flaky_stack_mismatch`, `timeout`, `failed`
+
+### 검증
+- `cargo build --offline` 통과
+- `tool triage --target onnx --input /tmp/bugbounty-harness-samples/sample.onnx --repro-retries 3 --timeout-sec 10` 실행 성공
+- `summary.json`에 시도별 signature_top3 및 verdict 기록 확인
