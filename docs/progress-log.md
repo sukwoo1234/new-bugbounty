@@ -288,3 +288,87 @@
 - `tool harness --target gguf --input /tmp/phase3-connect/min.gguf` 실행
 - `tool harness --target onnx --input /tmp/phase3-connect/min.onnx` 실행
 - `tool harness --target safetensors --input /tmp/phase3-connect/min.safetensors` 실행
+
+## v1.0 TODO 마감: 코드 주석 3항목
+
+### 태스크
+- TODO에 남아 있던 코드 주석 3개 항목(zombie fencing/corpus reload/OOM 137 triage 분기) 반영
+
+### 완료 기준
+- `src/main.rs`에 3개 주석이 명시적으로 추가되고 빌드 성공
+- `docs/todo.md` 체크 상태 갱신
+
+### 결과
+- `run_fuzz_pipeline`에 `corpus reload` 주석 추가(시작 시 스냅샷 고정 + 확장 지점 명시)
+- `run_fuzz_pipeline` 상태 저장 구간에 `zombie fencing` 주석 추가(in-memory 단일 소유권 + file-queue 확장 시 처리 기준 명시)
+- `execute_triage_subprocess`에 `OOM 137 triage 분기` 주석 추가 및 `infra_oom:exit_137` 힌트 문자열 기록
+- `docs/todo.md`의 코드 주석 3개 항목 `[x]` 처리
+
+### 검증
+- `cargo build --offline` 통과
+
+## v1.0 안정화: 에러 코드 규약 적용
+
+### 태스크
+- CLI 오류 출력에 에러 코드 식별자(E1xxx~E5xxx) 적용
+
+### 완료 기준
+- 주요 명령 실패 시 오류 메시지에 코드 접두사 출력
+- 빌드 및 실패 경로 스모크 검증 통과
+
+### 결과
+- `main` 오류 출력 경로에 코드 접두사 추가
+  - `E1001`: config prepare
+  - `E2001`: prepare-target
+  - `E3001`: run pipeline
+  - `E3002`: harness execution
+  - `E4001`: triage pipeline
+  - `E5001`: report pipeline
+- 종료 코드는 기존 동작을 유지하고, 메시지 표준화만 우선 적용
+
+### 검증
+- `cargo build --offline` 통과
+- `tool harness --target onnx --input /tmp/does-not-exist.onnx` 실행 시 `[E3002]` 출력 확인
+- 빈 data-dir에서 `tool report` 실행 시 `[E5001]` 출력 확인
+
+## v1.0 마감: 오픈 이슈 2건 종료
+
+### 태스크
+- 하네스 내부 경로(구체 API/함수) 확정
+- 법적/정책 체크리스트 구체화
+
+### 완료 기준
+- `docs/specs.md`에 타깃별 실제 호출 경로 명시
+- `docs/rules.md`에 v1.0 정책 체크리스트 추가
+- `docs/todo.md` 오픈 이슈 2건 체크 완료
+
+### 결과
+- `docs/specs.md` 13.2/13.3/13.4에 v1.0 구현 경로 확정 문구 추가
+  - GGUF: `llama-cli -m <input> -n 1 -p hi`
+  - ONNX: `onnxruntime.InferenceSession(...)`
+  - safetensors: `safe_open(..., framework=\"pt\", device=\"cpu\")`
+- `docs/rules.md`에 v1.0 제출 전 정책 체크리스트 6개 항목 추가
+- `docs/todo.md` 오픈 이슈 2건 `[x]` 반영
+
+### 검증
+- 문서 간 정합성 확인(`docs/specs.md`, `docs/rules.md`, `docs/todo.md`)
+
+## v1.0 릴리즈 준비: 차별점 검증 체크리스트
+
+### 태스크
+- 차별점을 수치 근거로 제시할 수 있는 운영 지표/증거 체크리스트 작성
+
+### 완료 기준
+- 핵심 4개 지표(시간당 신규 crash, 유효 crash 비율, 고유 시그니처 수, 제출 가능 리포트 수) 포함
+- 각 지표에 수집 방법/판정 기준/증거 파일 경로 명시
+- README에서 체크리스트 위치 링크 가능
+
+### 결과
+- `docs/roadmap.md`에 `차별점 검증 체크리스트 (릴리즈 이후)` 섹션 추가
+- 지표 표에 핵심 4개 + 보조 지표(재현 성공률, 리포트 성공률, triage p95, FP 비율) 정의
+- `README.md` 목표 섹션에 체크리스트 문서 링크 추가
+- `docs/todo.md` 문서화 항목에 체크리스트 완료 항목 추가
+
+### 검증
+- 문서 내 핵심 4개 지표 키워드 존재 확인
+- README에서 roadmap 체크리스트 링크 확인

@@ -64,3 +64,24 @@
 - 리포트 생성 1개 이상
 - 정책/스코프 준수 체크 완료
 - 기본 에러/로그 표준 적용 완료
+
+## 차별점 검증 체크리스트 (릴리즈 이후)
+- 목적: README 차별점(Deep/Auto-Verification/Exploitability/Reproducibility)을 수치 근거로 제시
+- 수집 기간: 최소 7일 이상 동일 타깃/동일 리소스 조건
+- 비교 대상: 기존 베이스라인(이전 툴/이전 설정)과 동일 corpus로 A/B 비교
+
+| 지표 | 수집 방법 | 목표/판정 기준 | 근거 파일 |
+| --- | --- | --- | --- |
+| 시간당 신규 crash 수 | `data/metrics/latest.json`의 `new_crashes_per_hour` 추적 | 베이스라인 대비 증가 또는 동등 + 유효율 개선 | `data/metrics/latest.json`, `data/metrics/events.jsonl` |
+| 유효 crash 비율 | `valid_crash_ratio = reproduced / total_crashes` | 베이스라인 대비 상승 | `data/metrics/latest.json`, `data/triage/triage-*/summary.json` |
+| 중복 제거 후 고유 시그니처 수 | `summary.json`의 `signature_top3` 해시 유니크 집계 | 동일 실행시간 대비 고유 시그니처 증가 | `data/triage/triage-*/summary.json` |
+| 실제 제출 가능한 리포트 수 | 정책 체크 + 증거 번들 충족 리포트 카운트 | 주간 제출 후보 수 증가 | `data/reports/report-*/report.md`, `data/reports/report-*/meta.json` |
+| 재현 성공률 | triage verdict 중 `reproduced` 비율 | 베이스라인 대비 상승 | `data/triage/triage-*/summary.json` |
+| 자동 리포트 성공률 | triage 완료 대비 report 생성 성공 비율 | 95% 이상 | `data/reports/report-*`, 실행 로그 |
+| triage 처리시간 p95 | triage 시작~summary 저장 시간 측정 | 베이스라인 대비 악화 없음 | `data/triage/triage-*` 타임스탬프 |
+| False Positive 비율 | 제출 전 수동 검토에서 반려된 비율 | 지속 하락 | 내부 리뷰 로그/제출 이력 |
+
+### 제출용 산출물 체크
+- 지표 요약 1페이지: 핵심 4개 지표(신규 crash/유효율/고유 시그니처/제출 가능 리포트 수)
+- 대표 증거 3건: `summary.json`, `report.md`, `repro.sh` 각 1건
+- 비교 그래프: 베이스라인 vs 현재(최소 7일)
