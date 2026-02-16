@@ -182,3 +182,109 @@
 - `cargo build --offline` 통과
 - `tool triage --target onnx --input /tmp/bugbounty-harness-samples/sample.onnx --repro-retries 3 --timeout-sec 10` 실행 성공
 - `summary.json`에 시도별 signature_top3 및 verdict 기록 확인
+
+## Phase 6: 리포트/보관 파이프라인
+
+### 태스크
+- `tool report` 자동 생성 구현
+- 보관 정책 적용(30일, 로그 zstd, core dump OFF)
+
+### 완료 기준
+- 최신 triage 결과를 기준으로 report/evidence 파일 자동 생성
+- 30일 초과 로그 압축(zstd) 및 30일 초과 run/triage/report 디렉터리 정리
+- 하네스/triage/direct probe 외부 실행 시 core dump 비활성화 기본 적용
+
+### 결과
+- `report` 명령을 stub에서 파이프라인으로 전환
+- 최신 `data/triage/triage-*/summary.json` 자동 탐색 후 산출물 생성
+  - `data/reports/report-<unix>/report.md`
+  - `data/reports/report-<unix>/crash_report.txt`
+  - `data/reports/report-<unix>/repro.sh`
+  - `data/reports/report-<unix>/meta.json`
+- 보관 정책 함수 추가
+  - 30일 초과 `.log` 파일 zstd 압축(`--rm`)
+  - 30일 초과 `run-*`, `triage-*`, `report-*` 디렉터리 삭제
+  - `zstd` 미설치 시 skip 카운트 기록
+- core dump OFF 기본 정책 추가
+  - 가능 시 `prlimit --core=0 -- <cmd>` 래핑
+  - `ASAN_OPTIONS`에 `disable_coredump=1` 강제 포함
+
+### 검증
+- `cargo build --offline` 통과
+- `tool report` 실행 성공
+- `data/reports/report-*/` 경로에 `report.md`, `crash_report.txt`, `repro.sh`, `meta.json` 생성 확인
+
+## Phase 7: 운영 지표 수집 정의
+
+### 태스크
+- run/triage 결과를 기반으로 운영 지표를 파일로 수집
+- 1시간/5분 윈도우 기준 집계 스냅샷 생성
+
+### 완료 기준
+- 이벤트 누적 파일과 최신 지표 스냅샷 파일 생성
+- 최소 지표(신규 경로/신규 크래시/유효율/5분 에러율) 계산
+
+### 결과
+- 지표 이벤트 append 로직 추가: `data/metrics/events.jsonl`
+  - `run` 이벤트: `total`, `errors`, `new_paths(proxy=success)`
+  - `triage` 이벤트: `total`, `errors`, `new_crashes`, `valid_crashes`
+- 스냅샷 생성 로직 추가: `data/metrics/latest.json`
+  - `new_paths_per_hour`
+  - `new_crashes_per_hour`
+  - `valid_crash_ratio`
+  - `global_error_rate_5m`
+- 숫자 필드 파서가 공백 없는 JSONL 형식도 처리하도록 보강
+
+### 검증
+- `cargo build --offline` 통과
+- `tool run --target onnx --corpus-dir /tmp/bugbounty-corpus --workers 1 --timeout-sec 5 --restart-limit 0 --max-jobs 1` 실행
+- `tool triage --target onnx --input /tmp/bugbounty-corpus/min.onnx --repro-retries 2 --timeout-sec 5` 실행
+- `data/metrics/latest.json` 생성 및 지표 값 갱신 확인
+
+## Refactor: 기능 모듈 분리
+
+### 태스크
+- 코드 구조 규칙을 기능 기준 모듈 분리로 고정
+- Phase 6/7 로직을 `main.rs`에서 모듈로 분리
+
+### 완료 기준
+- `report/retention/metrics` 기능이 각각 독립 파일로 이동
+- `main.rs`는 엔트리 + 오케스트레이션 중심으로 축소
+- 기존 run/triage/report 동작 동일성 유지
+
+### 결과
+- 규칙 문서 갱신: `docs/rules.md`에 코드 구조 규칙 추가
+- 신규 모듈 파일 추가:
+  - `src/report.rs`
+  - `src/retention.rs`
+  - `src/metrics.rs`
+- `src/main.rs`는 모듈 선언 + 위임 호출 중심으로 정리
+
+### 검증
+- `cargo build --offline` 통과
+- `tool run --target onnx --corpus-dir /tmp/bugbounty-corpus --workers 1 --timeout-sec 5 --restart-limit 0 --max-jobs 1` 성공
+- `tool triage --target onnx --input /tmp/bugbounty-corpus/min.onnx --repro-retries 2 --timeout-sec 5` 성공
+- `tool report` 성공 및 산출물 생성 확인
+
+## Phase 3: 하네스 통합 (라이브러리 연결 마무리)
+
+### 태스크
+- GGUF/ONNX/safetensors 하네스의 라이브러리 연결 단계를 core path로 고정
+
+### 완료 기준
+- `tool harness` 출력에 라이브러리 연결 단계가 명시되고 타깃별 연결 경로가 실행됨
+- 필요 시 strict 모드(`TOOL_REQUIRE_LIBRARY_CONNECT=1`)로 미연결을 실패 처리 가능
+
+### 결과
+- `direct_step`를 `library_step`으로 전환하고 core path 문구를 실제 라이브러리 경로로 변경
+  - GGUF: `llama.cpp parser`
+  - ONNX: `onnxruntime session loader`
+  - safetensors: `safetensors safe_open`
+- strict 옵션 추가: `TOOL_REQUIRE_LIBRARY_CONNECT=1`
+- GGUF 연결 판정 보강: `prlimit` 래핑 시 "failed to execute ... No such file"를 미설치로 처리
+
+### 검증
+- `cargo build --offline` 통과
+- `tool harness --target gguf --input /tmp/phase3-connect/min.gguf` 실행
+- `tool harness --target onnx --input /tmp/phase3-connect/min.onnx` 실행
+- `tool harness --target safetensors --input /tmp/phase3-connect/min.safetensors` 실행
