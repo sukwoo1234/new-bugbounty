@@ -16,6 +16,7 @@
 ### 목표 (Goals)
 - 구조 인지형 mutator/harness로 더 깊은 경로를 타겟한다.
 - 기존 툴 대비 재현 성공률/제출 승인률을 수치로 개선한다.
+- 차별점 근거 지표 체크리스트: [docs/roadmap.md](docs/roadmap.md) `차별점 검증 체크리스트 (릴리즈 이후)`
 
 ## RCE 탐지 방법론 (요약)
 - 핵심 본체는 **하네스/뮤테이터/triage**이며, 자세한 정책은 [first.md](first.md)와 [docs/specs.md](docs/specs.md)에 정리한다.

@@ -4,14 +4,19 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
+    process::Command,
+    process::ExitCode,
     sync::{Arc, Mutex},
     thread,
     time::{SystemTime, UNIX_EPOCH},
-    process::Command,
-    process::ExitCode,
 };
 
 use clap::{Args, Parser, Subcommand};
+use metrics::MetricEvent;
+
+mod metrics;
+mod report;
+mod retention;
 
 #[derive(Parser)]
 #[command(name = "tool", version, about = "Bug bounty fuzzing platform CLI")]
@@ -164,7 +169,10 @@ fn main() -> ExitCode {
             }
         }
         Commands::Report(_args) => {
-            print_stub("report", &app_paths.data_dir, &app_paths.seeds_dir);
+            if let Err(err) = run_report_pipeline(&app_paths) {
+                eprintln!("report error: {err}");
+                return ExitCode::from(7);
+            }
         }
         Commands::List(_args) => {
             print_stub("list", &app_paths.data_dir, &app_paths.seeds_dir);
@@ -221,8 +229,13 @@ struct HarnessReport {
     input: String,
     parser_step: String,
     core_path_step: String,
-    direct_step: String,
+    library_step: String,
     external_step: String,
+}
+
+struct LibraryConnectResult {
+    step: String,
+    connected: bool,
 }
 
 #[derive(Clone)]
@@ -487,6 +500,21 @@ fn run_fuzz_pipeline(app_paths: &AppPaths, args: &RunArgs) -> Result<(), String>
     println!("timeout: {}", s.timeout);
     println!("retries: {}", s.retries);
     println!("status: {}", status_path.display());
+
+    record_metrics_event(
+        app_paths,
+        MetricEvent {
+            ts: now_unix(),
+            kind: "run",
+            total: s.total as u64,
+            errors: (s.failed + s.timeout) as u64,
+            // v1: success count를 신규 경로 proxy로 수집
+            new_paths: s.success as u64,
+            new_crashes: 0,
+            valid_crashes: 0,
+            total_crashes: 0,
+        },
+    )?;
     Ok(())
 }
 
@@ -559,12 +587,12 @@ fn execute_harness_subprocess(
     let input = job.input.display().to_string();
 
     let mut cmd = if timeout_available {
-        let mut c = Command::new("timeout");
+        let mut c = command_with_core_dump_off("timeout");
         c.arg(format!("{}s", timeout_sec));
         c.arg(&exe);
         c
     } else {
-        Command::new(&exe)
+        command_with_core_dump_off(&exe.display().to_string())
     };
     cmd.arg("harness")
         .arg("--target")
@@ -625,6 +653,29 @@ fn write_job_log(
 
 fn command_exists(cmd: &str) -> bool {
     Command::new(cmd).arg("--version").output().is_ok()
+}
+
+fn core_dump_off_env() -> String {
+    let existing = std::env::var("ASAN_OPTIONS").unwrap_or_default();
+    if existing.trim().is_empty() {
+        "disable_coredump=1".to_string()
+    } else if existing.contains("disable_coredump=") {
+        existing
+    } else {
+        format!("{existing}:disable_coredump=1")
+    }
+}
+
+fn command_with_core_dump_off(program: &str) -> Command {
+    let mut cmd = if command_exists("prlimit") {
+        let mut c = Command::new("prlimit");
+        c.arg("--core=0").arg("--").arg(program);
+        c
+    } else {
+        Command::new(program)
+    };
+    cmd.env("ASAN_OPTIONS", core_dump_off_env());
+    cmd
 }
 
 fn now_unix() -> u64 {
@@ -748,6 +799,22 @@ fn run_triage_pipeline(app_paths: &AppPaths, args: &TriageArgs) -> Result<(), St
     println!("verdict: {verdict}");
     println!("summary: {}", summary_path.display());
 
+    let valid_crashes = if verdict == "reproduced" { 1 } else { 0 };
+    let new_crashes = if success_count > 0 { 1 } else { 0 };
+    record_metrics_event(
+        app_paths,
+        MetricEvent {
+            ts: now_unix(),
+            kind: "triage",
+            total: attempts.len() as u64,
+            errors: (failed_count + timeout_count) as u64,
+            new_paths: 0,
+            new_crashes: new_crashes as u64,
+            valid_crashes: valid_crashes as u64,
+            total_crashes: new_crashes as u64,
+        },
+    )?;
+
     Ok(())
 }
 
@@ -759,12 +826,12 @@ fn execute_triage_subprocess(
 ) -> Result<HarnessExecResult, String> {
     let exe = std::env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
     let mut cmd = if timeout_available {
-        let mut c = Command::new("timeout");
+        let mut c = command_with_core_dump_off("timeout");
         c.arg(format!("{}s", timeout_sec));
         c.arg(&exe);
         c
     } else {
-        Command::new(&exe)
+        command_with_core_dump_off(&exe.display().to_string())
     };
 
     cmd.arg("harness")
@@ -852,18 +919,25 @@ fn run_harness(args: &HarnessArgs) -> Result<(), String> {
         TargetKind::Safetensors => safetensors_precheck(&bytes)?,
     };
 
-    // specs.md 13.1 요구사항의 "핵심 경로 호출" 자리를 고정: 추후 실제 라이브러리 호출로 교체.
     let core_path_step = match args.target {
-        TargetKind::Gguf => "header->kv_count->tensor_count".to_string(),
-        TargetKind::Onnx => "protobuf->graph_field_probe".to_string(),
-        TargetKind::Safetensors => "header_json->tensor_offset_probe".to_string(),
+        TargetKind::Gguf => "header->llama.cpp parser".to_string(),
+        TargetKind::Onnx => "protobuf->onnxruntime session loader".to_string(),
+        TargetKind::Safetensors => "header_json->safetensors safe_open".to_string(),
     };
-
-    let direct_step = match args.target {
-        TargetKind::Gguf => gguf_direct_probe(&args.input),
-        TargetKind::Onnx => onnx_direct_probe(&args.input),
-        TargetKind::Safetensors => safetensors_direct_probe(&args.input),
+    let library_connect = match args.target {
+        TargetKind::Gguf => gguf_library_connect(&args.input),
+        TargetKind::Onnx => onnx_library_connect(&args.input),
+        TargetKind::Safetensors => safetensors_library_connect(&args.input),
     };
+    let strict_connect = std::env::var("TOOL_REQUIRE_LIBRARY_CONNECT")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    if strict_connect && !library_connect.connected {
+        return Err(format!(
+            "library connect required but unavailable: {}",
+            library_connect.step
+        ));
+    }
 
     let external_step = maybe_run_external_harness(&args.target, &args.input)?;
     let report = HarnessReport {
@@ -871,7 +945,7 @@ fn run_harness(args: &HarnessArgs) -> Result<(), String> {
         input: args.input.display().to_string(),
         parser_step,
         core_path_step,
-        direct_step,
+        library_step: library_connect.step,
         external_step,
     };
     print_harness_report(&report);
@@ -1013,7 +1087,7 @@ fn maybe_run_external_harness(target: &TargetKind, input: &Path) -> Result<Strin
     let mut args = parts.into_iter().map(str::to_string).collect::<Vec<_>>();
     args.push(input.display().to_string());
 
-    let status = Command::new(cmd)
+    let status = command_with_core_dump_off(cmd)
         .args(&args)
         .status()
         .map_err(|e| format!("external harness command failed: {e}"))?;
@@ -1028,7 +1102,7 @@ fn maybe_run_external_harness(target: &TargetKind, input: &Path) -> Result<Strin
     }
 }
 
-fn gguf_direct_probe(input: &Path) -> String {
+fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
     let mut candidates = Vec::new();
     if let Ok(custom) = std::env::var("TOOL_LLAMA_CLI_BIN") {
         if !custom.trim().is_empty() {
@@ -1040,27 +1114,48 @@ fn gguf_direct_probe(input: &Path) -> String {
     candidates.push("./tools/llama.cpp/build/bin/llama-cli".to_string());
 
     for cmd in candidates {
-        let result = Command::new(&cmd)
+        let result = command_with_core_dump_off(&cmd)
             .args(["-m", &input.display().to_string(), "-n", "1", "-p", "hi"])
             .output();
 
         match result {
             Ok(output) if output.status.success() => {
-                return format!("llama.cpp direct probe ok ({cmd} executed)");
+                return LibraryConnectResult {
+                    step: format!("llama.cpp parser connected ({cmd} executed)"),
+                    connected: true,
+                };
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return format!("llama.cpp direct probe unavailable ({})", first_line(&stderr));
+                let lower = stderr.to_ascii_lowercase();
+                if lower.contains("failed to execute") && lower.contains("no such file") {
+                    continue;
+                }
+                return LibraryConnectResult {
+                    step: format!(
+                        "llama.cpp parser invoked (non-zero exit: {})",
+                        first_line(&stderr)
+                    ),
+                    connected: true,
+                };
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return format!("llama.cpp direct probe error ({e})"),
+            Err(e) => {
+                return LibraryConnectResult {
+                    step: format!("llama.cpp parser error ({e})"),
+                    connected: false,
+                }
+            }
         }
     }
 
-    "llama.cpp direct probe skipped (llama-cli not installed)".to_string()
+    LibraryConnectResult {
+        step: "llama.cpp parser unavailable (llama-cli not installed)".to_string(),
+        connected: false,
+    }
 }
 
-fn onnx_direct_probe(input: &Path) -> String {
+fn onnx_library_connect(input: &Path) -> LibraryConnectResult {
     let code = r#"
 import sys
 try:
@@ -1077,30 +1172,45 @@ except Exception as e:
     sys.exit(2)
 "#;
     let python_bin = detect_python_bin();
-    match Command::new(&python_bin)
+    match command_with_core_dump_off(&python_bin)
         .args(["-c", code, &input.display().to_string()])
         .output()
     {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            format!("onnxruntime direct probe ok ({})", first_line(&stdout))
+            LibraryConnectResult {
+                step: format!("onnxruntime connected ({})", first_line(&stdout)),
+                connected: true,
+            }
         }
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if output.status.code() == Some(3) {
-                format!("onnxruntime direct probe skipped ({})", first_line(&stdout))
+                LibraryConnectResult {
+                    step: format!("onnxruntime unavailable ({})", first_line(&stdout)),
+                    connected: false,
+                }
             } else {
-                format!("onnxruntime direct probe failed ({})", first_line(&stdout))
+                LibraryConnectResult {
+                    step: format!("onnxruntime loader invoked ({})", first_line(&stdout)),
+                    connected: true,
+                }
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            format!("onnxruntime direct probe skipped ({python_bin} not installed)")
+            LibraryConnectResult {
+                step: format!("onnxruntime unavailable ({python_bin} not installed)"),
+                connected: false,
+            }
         }
-        Err(e) => format!("onnxruntime direct probe error ({e})"),
+        Err(e) => LibraryConnectResult {
+            step: format!("onnxruntime probe error ({e})"),
+            connected: false,
+        },
     }
 }
 
-fn safetensors_direct_probe(input: &Path) -> String {
+fn safetensors_library_connect(input: &Path) -> LibraryConnectResult {
     let code = r#"
 import sys
 try:
@@ -1118,26 +1228,41 @@ except Exception as e:
     sys.exit(2)
 "#;
     let python_bin = detect_python_bin();
-    match Command::new(&python_bin)
+    match command_with_core_dump_off(&python_bin)
         .args(["-c", code, &input.display().to_string()])
         .output()
     {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            format!("safetensors direct probe ok ({})", first_line(&stdout))
+            LibraryConnectResult {
+                step: format!("safetensors connected ({})", first_line(&stdout)),
+                connected: true,
+            }
         }
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if output.status.code() == Some(3) {
-                format!("safetensors direct probe skipped ({})", first_line(&stdout))
+                LibraryConnectResult {
+                    step: format!("safetensors unavailable ({})", first_line(&stdout)),
+                    connected: false,
+                }
             } else {
-                format!("safetensors direct probe failed ({})", first_line(&stdout))
+                LibraryConnectResult {
+                    step: format!("safetensors loader invoked ({})", first_line(&stdout)),
+                    connected: true,
+                }
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            format!("safetensors direct probe skipped ({python_bin} not installed)")
+            LibraryConnectResult {
+                step: format!("safetensors unavailable ({python_bin} not installed)"),
+                connected: false,
+            }
         }
-        Err(e) => format!("safetensors direct probe error ({e})"),
+        Err(e) => LibraryConnectResult {
+            step: format!("safetensors probe error ({e})"),
+            connected: false,
+        },
     }
 }
 
@@ -1166,7 +1291,7 @@ fn print_harness_report(report: &HarnessReport) {
     println!("input: {}", report.input);
     println!("parser_step: {}", report.parser_step);
     println!("core_path_step: {}", report.core_path_step);
-    println!("direct_step: {}", report.direct_step);
+    println!("library_step: {}", report.library_step);
     println!("external_step: {}", report.external_step);
 }
 
@@ -1287,6 +1412,14 @@ fn render_meta_json(meta: &TargetMeta) -> String {
         json_escape(&meta.downloaded_sha256),
         meta.downloaded_size_bytes
     )
+}
+
+fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
+    report::run_report_pipeline(app_paths)
+}
+
+fn record_metrics_event(app_paths: &AppPaths, event: MetricEvent) -> Result<(), String> {
+    metrics::record_metrics_event(app_paths, event)
 }
 
 fn json_escape(input: &str) -> String {

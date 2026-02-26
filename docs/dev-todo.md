@@ -12,9 +12,9 @@
 ## 3) 하네스 통합
 - [x] 공통 하네스 라우팅 + 포맷 프리체크 구현 (`tool harness`)
 - [x] 직접 연결 재시도 경로 추가 (onnxruntime/safetensors Python probe, llama.cpp probe)
-- [ ] GGUF 하네스: llama.cpp 파서 연결
-- [ ] ONNX 하네스: onnxruntime 연결
-- [ ] safetensors 하네스: 공식 라이브러리 연결
+- [x] GGUF 하네스: llama.cpp 파서 연결
+- [x] ONNX 하네스: onnxruntime 연결
+- [x] safetensors 하네스: 공식 라이브러리 연결
 
 ## 4) 퍼징 실행
 - [x] 퍼저 실행 파이프라인
@@ -27,9 +27,9 @@
 - [x] 실패 모드(플레이키/타임아웃) 처리
 
 ## 6) 리포트/보관
-- [ ] 리포트 자동 생성
-- [ ] 보관 정책 적용 (30일, 로그 zstd, core dump OFF)
+- [x] 리포트 자동 생성
+- [x] 보관 정책 적용 (30일, 로그 zstd, core dump OFF)
 - [x] 리포트 샘플 1개 작성
 
 ## 7) 운영 지표
-- [ ] 커버리지/크래시/유효율 수집 정의
+- [x] 커버리지/크래시/유효율 수집 정의
