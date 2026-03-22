@@ -1,5 +1,7 @@
 # TODO (v1.0 제출 기준)
 
+추가 트랙: 레거시 이식 기반 업그레이드 TODO는 `docs/dev-todo-legacy-upgrade.md`를 따른다.
+
 ## 문서화 (완료 기준: 다른 사람이 봐도 이해 가능한 수준)
 - [x] 문서 구조 3층 확정
 - [x] 저장 구조 상세 설계
@@ -83,6 +85,9 @@
 - [x] 코드 주석: corpus reload(재실행 루프 사이 신규 코퍼스 로드 확인)
 - [x] 코드 주석: OOM 137 triage 분기(DoS vs 인프라)
 - [x] 차별점 검증 지표/증거 체크리스트 문서화
+- [x] 유효 코퍼스 준비 SOP 문서화
+- [x] 장시간 퍼징 실행/완료 Discord 알림 스크립트 추가
+- [x] 절대시간 루프 기반 1시간 퍼징 종료/알림 검증
 
 ## 1.0 목표 (고정)
 - [x] 타깃 포맷: GGUF / ONNX / safetensors
@@ -104,7 +109,7 @@
 - [ ] 대시보드 UI 도입
 - [ ] 타깃 포맷 확장
 - [ ] corpus distillation(`tool merge`, LibFuzzer -merge=1) 옵션 추가
-- [ ] local 개발 모드(--local) 추가
+- [x] local 개발 모드(--local) 추가
 
 ## 오픈 이슈
 - [x] 리포트 템플릿 상세 필드 확장

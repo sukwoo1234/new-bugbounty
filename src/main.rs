@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fs,
     fs::OpenOptions,
     io::Write,
@@ -17,6 +17,15 @@ use metrics::MetricEvent;
 mod metrics;
 mod report;
 mod retention;
+mod ui;
+
+const E_CONFIG_PREPARE: &str = "E1001";
+const E_PREPARE_TARGET: &str = "E2001";
+const E_RUN_PIPELINE: &str = "E3001";
+const E_HARNESS_EXEC: &str = "E3002";
+const E_TRIAGE_PIPELINE: &str = "E4001";
+const E_REPORT_PIPELINE: &str = "E5001";
+const E_UI_SERVER: &str = "E6001";
 
 #[derive(Parser)]
 #[command(name = "tool", version, about = "Bug bounty fuzzing platform CLI")]
@@ -38,6 +47,10 @@ enum Commands {
     Run(RunArgs),
     Triage(TriageArgs),
     Report(ReportArgs),
+    Seed(SeedArgs),
+    Dashboard(DashboardArgs),
+    Coverage(CoverageArgs),
+    UiServe(UiServeArgs),
     List(ListArgs),
     Show(ShowArgs),
     Export(ExportArgs),
@@ -50,6 +63,14 @@ struct RunArgs {
     /// Target type: gguf | onnx | safetensors
     #[arg(long, value_enum)]
     target: TargetKind,
+
+    /// Run backend: local-harness | aflpp | libfuzzer
+    #[arg(long, value_enum, default_value_t = RunBackend::LocalHarness)]
+    backend: RunBackend,
+
+    /// Local development mode: default corpus_dir becomes seeds/<target>
+    #[arg(long, default_value_t = false)]
+    local: bool,
 
     /// Corpus directory (default: seeds_dir)
     #[arg(long)]
@@ -95,7 +116,127 @@ struct TriageArgs {
 struct ReportArgs {}
 
 #[derive(Args)]
+struct SeedArgs {
+    #[command(subcommand)]
+    command: SeedCommands,
+}
+
+#[derive(Subcommand)]
+enum SeedCommands {
+    Sync(SeedSyncArgs),
+    Stats(SeedStatsArgs),
+}
+
+#[derive(Args)]
+struct SeedSyncArgs {
+    /// Target type: gguf | onnx | safetensors
+    #[arg(long, value_enum)]
+    target: TargetKind,
+
+    /// Source directory to collect seeds from
+    #[arg(long)]
+    from: PathBuf,
+
+    /// Destination directory (default: seeds/<target>)
+    #[arg(long)]
+    to: Option<PathBuf>,
+
+    /// Validate each candidate with `tool harness` before copy
+    #[arg(long, default_value_t = false)]
+    harness_filter: bool,
+}
+
+#[derive(Args)]
+struct SeedStatsArgs {
+    /// Target type: gguf | onnx | safetensors
+    #[arg(long, value_enum)]
+    target: TargetKind,
+
+    /// Seed directory to inspect (default: seeds/<target>)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+}
+
+#[derive(Args)]
 struct ListArgs {}
+
+#[derive(Args)]
+struct DashboardArgs {
+    /// Output format: json | html
+    #[arg(long, value_enum, default_value_t = DashboardFormat::Json)]
+    format: DashboardFormat,
+
+    /// Output file path (required for html)
+    #[arg(long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct CoverageArgs {
+    /// Target type: gguf | onnx | safetensors
+    #[arg(long, value_enum)]
+    target: TargetKind,
+
+    /// Corpus directory (default: seeds/<target>)
+    #[arg(long)]
+    corpus_dir: Option<PathBuf>,
+
+    /// Per-input timeout in seconds (default: 30)
+    #[arg(long, default_value_t = 30)]
+    timeout_sec: u64,
+
+    /// Max number of corpus files to process (default: all)
+    #[arg(long)]
+    max_jobs: Option<usize>,
+}
+
+#[derive(Args)]
+struct UiServeArgs {
+    /// Bind address for UI server (default: 127.0.0.1:8787)
+    #[arg(long, default_value = "127.0.0.1:8787")]
+    bind: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DashboardSnapshot {
+    pub(crate) generated_at: u64,
+    pub(crate) data_dir: String,
+    pub(crate) seeds_dir: String,
+    pub(crate) runs_count: usize,
+    pub(crate) triage_count: usize,
+    pub(crate) report_count: usize,
+    pub(crate) latest_run: String,
+    pub(crate) latest_triage: String,
+    pub(crate) latest_report: String,
+    pub(crate) metrics_exists: bool,
+    pub(crate) new_paths_per_hour: String,
+    pub(crate) new_crashes_per_hour: String,
+    pub(crate) valid_crash_ratio: String,
+    pub(crate) global_error_rate_5m: String,
+    pub(crate) latest_valid_triage: String,
+    pub(crate) latest_valid_input: String,
+    pub(crate) latest_valid_signature: String,
+    pub(crate) latest_valid_summary: String,
+    pub(crate) latest_valid_report: String,
+    pub(crate) recent_triage_ids: Vec<String>,
+    pub(crate) recent_report_ids: Vec<String>,
+    pub(crate) recent_coverage_ids: Vec<String>,
+    pub(crate) seeds_onnx_count: usize,
+    pub(crate) seeds_gguf_count: usize,
+    pub(crate) seeds_safetensors_count: usize,
+    pub(crate) seeds_total_count: usize,
+    pub(crate) coverage_count: usize,
+    pub(crate) latest_coverage: String,
+    pub(crate) latest_coverage_summary: String,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
+enum DashboardFormat {
+    #[value(name = "json")]
+    Json,
+    #[value(name = "html")]
+    Html,
+}
 
 #[derive(Args)]
 struct ShowArgs {
@@ -117,6 +258,25 @@ enum TargetKind {
     Onnx,
     #[value(name = "safetensors")]
     Safetensors,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
+enum RunBackend {
+    #[value(name = "local-harness")]
+    LocalHarness,
+    #[value(name = "aflpp")]
+    Aflpp,
+    #[value(name = "libfuzzer")]
+    Libfuzzer,
+}
+
+struct EngineAdapter {
+    backend_label: &'static str,
+    cmd_env: &'static str,
+}
+
+struct TargetAdapter {
+    target_label: &'static str,
 }
 
 #[derive(Args)]
@@ -150,7 +310,7 @@ fn main() -> ExitCode {
     let app_paths = match AppPaths::prepare(&cli.data_dir, &cli.seeds_dir) {
         Ok(paths) => paths,
         Err(err) => {
-            eprintln!("config error: {err}");
+            eprintln!("[{E_CONFIG_PREPARE}] config error: {err}");
             return ExitCode::from(2);
         }
     };
@@ -158,20 +318,44 @@ fn main() -> ExitCode {
     match cli.command {
         Commands::Run(args) => {
             if let Err(err) = run_fuzz_pipeline(&app_paths, &args) {
-                eprintln!("run error: {err}");
+                eprintln!("[{E_RUN_PIPELINE}] run error: {err}");
                 return ExitCode::from(5);
             }
         }
         Commands::Triage(args) => {
             if let Err(err) = run_triage_pipeline(&app_paths, &args) {
-                eprintln!("triage error: {err}");
+                eprintln!("[{E_TRIAGE_PIPELINE}] triage error: {err}");
                 return ExitCode::from(6);
             }
         }
         Commands::Report(_args) => {
             if let Err(err) = run_report_pipeline(&app_paths) {
-                eprintln!("report error: {err}");
+                eprintln!("[{E_REPORT_PIPELINE}] report error: {err}");
                 return ExitCode::from(7);
+            }
+        }
+        Commands::Seed(args) => {
+            if let Err(err) = run_seed_tool(&app_paths, &args) {
+                eprintln!("[{E_CONFIG_PREPARE}] seed error: {err}");
+                return ExitCode::from(2);
+            }
+        }
+        Commands::Dashboard(args) => {
+            if let Err(err) = run_dashboard_snapshot(&app_paths, &args) {
+                eprintln!("[{E_CONFIG_PREPARE}] dashboard error: {err}");
+                return ExitCode::from(2);
+            }
+        }
+        Commands::Coverage(args) => {
+            if let Err(err) = run_coverage_job(&app_paths, &args) {
+                eprintln!("[{E_CONFIG_PREPARE}] coverage error: {err}");
+                return ExitCode::from(2);
+            }
+        }
+        Commands::UiServe(args) => {
+            if let Err(err) = ui::server::run_ui_server(&app_paths, &args.bind) {
+                eprintln!("[{E_UI_SERVER}] ui-serve error: {err}");
+                return ExitCode::from(8);
             }
         }
         Commands::List(_args) => {
@@ -185,13 +369,13 @@ fn main() -> ExitCode {
         }
         Commands::PrepareTarget(args) => {
             if let Err(err) = prepare_target(&app_paths, &args) {
-                eprintln!("prepare-target error: {err}");
+                eprintln!("[{E_PREPARE_TARGET}] prepare-target error: {err}");
                 return ExitCode::from(3);
             }
         }
         Commands::Harness(args) => {
             if let Err(err) = run_harness(&args) {
-                eprintln!("harness error: {err}");
+                eprintln!("[{E_HARNESS_EXEC}] harness error: {err}");
                 return ExitCode::from(4);
             }
         }
@@ -200,9 +384,9 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-struct AppPaths {
-    data_dir: PathBuf,
-    seeds_dir: PathBuf,
+pub(crate) struct AppPaths {
+    pub(crate) data_dir: PathBuf,
+    pub(crate) seeds_dir: PathBuf,
 }
 
 #[derive(Clone, Copy)]
@@ -362,10 +546,15 @@ fn preset_for_target(target: &TargetKind) -> TargetPreset {
 }
 
 fn run_fuzz_pipeline(app_paths: &AppPaths, args: &RunArgs) -> Result<(), String> {
-    let corpus_dir = args
-        .corpus_dir
-        .clone()
-        .unwrap_or_else(|| app_paths.seeds_dir.clone());
+    if args.backend != RunBackend::LocalHarness {
+        return run_engine_backend(app_paths, args);
+    }
+
+    let corpus_dir = match &args.corpus_dir {
+        Some(path) => path.clone(),
+        None if args.local => app_paths.seeds_dir.join(target_label(&args.target)),
+        None => app_paths.seeds_dir.clone(),
+    };
     if !corpus_dir.exists() || !corpus_dir.is_dir() {
         return Err(format!(
             "corpus_dir is invalid: {}",
@@ -373,6 +562,8 @@ fn run_fuzz_pipeline(app_paths: &AppPaths, args: &RunArgs) -> Result<(), String>
         ));
     }
 
+    // corpus reload: v1은 시작 시 코퍼스를 스냅샷으로 고정한다.
+    // 재실행 루프 사이 신규 파일 반영은 차기 단계에서 "루프 간 재스캔"으로 확장한다.
     let mut inputs = collect_corpus_inputs(&corpus_dir, &args.target)?;
     if inputs.is_empty() {
         return Err(format!(
@@ -385,7 +576,7 @@ fn run_fuzz_pipeline(app_paths: &AppPaths, args: &RunArgs) -> Result<(), String>
         inputs.truncate(max_jobs);
     }
 
-    let run_id = now_unix();
+    let run_id = now_unix_millis();
     let run_dir = app_paths
         .data_dir
         .join("runs")
@@ -416,6 +607,8 @@ fn run_fuzz_pipeline(app_paths: &AppPaths, args: &RunArgs) -> Result<(), String>
 
     println!("[run] start");
     println!("target: {}", target_label(&args.target));
+    println!("backend: {}", run_backend_label(&args.backend));
+    println!("local_mode: {}", args.local);
     println!("corpus_dir: {}", corpus_dir.display());
     println!("workers: {workers}");
     println!("timeout_sec: {}", args.timeout_sec);
@@ -476,23 +669,24 @@ fn run_fuzz_pipeline(app_paths: &AppPaths, args: &RunArgs) -> Result<(), String>
         }
     }
 
-    let status_path = run_dir.join("status.json");
+    // zombie fencing: 현재 구현은 파일 큐 대신 in-memory pop_front 단일 소유권으로 중복 처리 write를 방지한다.
+    // file-queue 전환 시에는 결과 쓰기 전에 processing/<job_id> 존재 확인을 강제한다.
     let s = stats.lock().map_err(|_| "stats lock poisoned")?;
-    let status_json = format!(
-        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"retries\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {}\n}}\n",
+    let status_path = write_run_status(
+        &run_dir,
         run_id,
-        target_label(&args.target),
-        s.total,
-        s.success,
-        s.failed,
-        s.timeout,
-        s.retries,
+        &args.target,
+        RunStatusCounts {
+            total: s.total,
+            success: s.success,
+            failed: s.failed,
+            timeout: s.timeout,
+            retries: s.retries,
+        },
         workers,
         args.timeout_sec,
-        args.restart_limit
-    );
-    fs::write(&status_path, status_json)
-        .map_err(|e| format!("failed to write '{}': {e}", status_path.display()))?;
+        args.restart_limit,
+    )?;
 
     println!("[run] done");
     println!("success: {}", s.success);
@@ -516,6 +710,188 @@ fn run_fuzz_pipeline(app_paths: &AppPaths, args: &RunArgs) -> Result<(), String>
         },
     )?;
     Ok(())
+}
+
+fn run_engine_backend(app_paths: &AppPaths, args: &RunArgs) -> Result<(), String> {
+    if args.workers == 0 {
+        return Err("workers must be >= 1".to_string());
+    }
+
+    let corpus_dir = match &args.corpus_dir {
+        Some(path) => path.clone(),
+        None if args.local => app_paths.seeds_dir.join(target_label(&args.target)),
+        None => app_paths.seeds_dir.clone(),
+    };
+    if !corpus_dir.exists() || !corpus_dir.is_dir() {
+        return Err(format!(
+            "corpus_dir is invalid: {}",
+            corpus_dir.display()
+        ));
+    }
+
+    let run_id = now_unix_millis();
+    let run_dir = app_paths
+        .data_dir
+        .join("runs")
+        .join(format!("run-{run_id}"));
+    let logs_dir = run_dir.join("logs");
+    fs::create_dir_all(&logs_dir)
+        .map_err(|e| format!("failed to create run dir '{}': {e}", run_dir.display()))?;
+
+    println!("[run] start");
+    println!("target: {}", target_label(&args.target));
+    println!("backend: {}", run_backend_label(&args.backend));
+    println!("local_mode: {}", args.local);
+    println!("corpus_dir: {}", corpus_dir.display());
+    println!("workers: {}", args.workers);
+    println!("timeout_sec: {}", args.timeout_sec);
+    println!("restart_limit: {}", args.restart_limit);
+    println!("run_dir: {}", run_dir.display());
+
+    let mut success = 0usize;
+    let mut failed = 0usize;
+    let mut timeout = 0usize;
+
+    for worker_id in 1..=args.workers {
+        let worker_log_path = logs_dir.join(format!("backend-engine-w{worker_id}.log"));
+        let engine_cmd =
+            build_engine_command(args, &corpus_dir, &run_dir, worker_id, &worker_log_path)?;
+        println!("backend_engine_cmd[w{worker_id}]: {engine_cmd}");
+
+        let mut cmd = command_with_core_dump_off("bash");
+        cmd.arg("-lc").arg(&engine_cmd);
+        let output = cmd
+            .output()
+            .map_err(|e| format!("failed to execute backend engine command for worker {worker_id}: {e}"))?;
+        let log_body = format!(
+            "worker_id: {worker_id}\ncmd: {engine_cmd}\nexit_code: {:?}\n\n[stdout]\n{}\n\n[stderr]\n{}\n",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::write(&worker_log_path, log_body)
+            .map_err(|e| format!("failed to write '{}': {e}", worker_log_path.display()))?;
+
+        let exit_code = output.status.code().unwrap_or(1);
+        if output.status.success() {
+            success += 1;
+        } else if exit_code == 124 {
+            timeout += 1;
+        } else {
+            failed += 1;
+        }
+    }
+
+    let status_path = write_run_status(
+        &run_dir,
+        run_id,
+        &args.target,
+        RunStatusCounts {
+            total: args.workers,
+            success,
+            failed,
+            timeout,
+            retries: 0,
+        },
+        args.workers,
+        args.timeout_sec,
+        args.restart_limit,
+    )?;
+
+    println!("[run] done");
+    println!("success: {success}");
+    println!("failed: {failed}");
+    println!("timeout: {timeout}");
+    println!("retries: 0");
+    println!("status: {}", status_path.display());
+
+    record_metrics_event(
+        app_paths,
+        MetricEvent {
+            ts: now_unix(),
+            kind: "run",
+            total: args.workers as u64,
+            errors: (failed + timeout) as u64,
+            new_paths: success as u64,
+            new_crashes: 0,
+            valid_crashes: 0,
+            total_crashes: 0,
+        },
+    )?;
+
+    if failed == 0 && timeout == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "backend '{}' engine command failed (failed={}, timeout={}, run_dir={})",
+            run_backend_label(&args.backend),
+            failed,
+            timeout,
+            run_dir.display()
+        ))
+    }
+}
+
+fn build_engine_command(
+    args: &RunArgs,
+    corpus_dir: &Path,
+    run_dir: &Path,
+    worker_id: usize,
+    worker_log_path: &Path,
+) -> Result<String, String> {
+    let engine = resolve_engine_adapter(&args.backend)?;
+    let target = resolve_target_adapter(&args.target);
+    let template = std::env::var(engine.cmd_env).map_err(|_| {
+        format!(
+            "{} is not set; provide backend command template. example: {}='echo run {{target}} {{corpus_dir}}; true'",
+            engine.cmd_env, engine.cmd_env
+        )
+    })?;
+    if template.trim().is_empty() {
+        return Err(format!("{} is empty", engine.cmd_env));
+    }
+
+    let cmd = template
+        .replace("{target}", target.target_label)
+        .replace("{backend}", engine.backend_label)
+        .replace("{corpus_dir}", &shell_escape(corpus_dir))
+        .replace("{workers}", &args.workers.to_string())
+        .replace("{worker_id}", &worker_id.to_string())
+        .replace("{timeout_sec}", &args.timeout_sec.to_string())
+        .replace("{restart_limit}", &args.restart_limit.to_string())
+        .replace("{run_dir}", &shell_escape(run_dir))
+        .replace("{workdir}", &shell_escape(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))))
+        .replace("{worker_log}", &shell_escape(worker_log_path));
+
+    Ok(cmd)
+}
+
+fn resolve_engine_adapter(backend: &RunBackend) -> Result<EngineAdapter, String> {
+    match backend {
+        RunBackend::Aflpp => Ok(EngineAdapter {
+            backend_label: "aflpp",
+            cmd_env: "TOOL_AFLPP_CMD",
+        }),
+        RunBackend::Libfuzzer => Ok(EngineAdapter {
+            backend_label: "libfuzzer",
+            cmd_env: "TOOL_LIBFUZZER_CMD",
+        }),
+        RunBackend::LocalHarness => {
+            Err("internal error: local-harness should not use engine command".to_string())
+        }
+    }
+}
+
+fn resolve_target_adapter(target: &TargetKind) -> TargetAdapter {
+    TargetAdapter {
+        target_label: target_label(target),
+    }
+}
+
+fn shell_escape(path: &Path) -> String {
+    let s = path.display().to_string();
+    let escaped = s.replace('\'', "'\\''");
+    format!("'{escaped}'")
 }
 
 fn collect_corpus_inputs(corpus_dir: &Path, target: &TargetKind) -> Result<Vec<PathBuf>, String> {
@@ -682,6 +1058,13 @@ fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn now_unix_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
         .unwrap_or(0)
 }
 
@@ -858,6 +1241,10 @@ fn execute_triage_subprocess(
     if out.status.success() {
         return Ok(HarnessExecResult::Success(merged));
     }
+    // OOM 137 triage 분기(DoS vs 인프라): v1은 infra_oom 힌트를 붙여 후속 triage/report에서 구분 가능하게 남긴다.
+    if out.status.code() == Some(137) {
+        return Ok(HarnessExecResult::Failed(format!("infra_oom:exit_137\n{}", merged)));
+    }
     Ok(HarnessExecResult::Failed(merged))
 }
 
@@ -958,6 +1345,656 @@ fn target_label(target: &TargetKind) -> &'static str {
         TargetKind::Onnx => "onnx",
         TargetKind::Safetensors => "safetensors",
     }
+}
+
+fn run_backend_label(backend: &RunBackend) -> &'static str {
+    match backend {
+        RunBackend::LocalHarness => "local-harness",
+        RunBackend::Aflpp => "aflpp",
+        RunBackend::Libfuzzer => "libfuzzer",
+    }
+}
+
+fn seed_ext(target: &TargetKind) -> &'static str {
+    match target {
+        TargetKind::Gguf => "gguf",
+        TargetKind::Onnx => "onnx",
+        TargetKind::Safetensors => "safetensors",
+    }
+}
+
+fn run_seed_tool(app_paths: &AppPaths, args: &SeedArgs) -> Result<(), String> {
+    match &args.command {
+        SeedCommands::Sync(sync) => run_seed_sync(app_paths, sync),
+        SeedCommands::Stats(stats) => run_seed_stats(app_paths, stats),
+    }
+}
+
+fn run_dashboard_snapshot(app_paths: &AppPaths, args: &DashboardArgs) -> Result<(), String> {
+    let snap = collect_dashboard_snapshot(app_paths)?;
+    match args.format {
+        DashboardFormat::Json => {
+            println!("{}", ui::dashboard::render_dashboard_json(&snap));
+            Ok(())
+        }
+        DashboardFormat::Html => {
+            let Some(out) = &args.out else {
+                return Err("html format requires --out <path>".to_string());
+            };
+            let html = ui::dashboard::render_dashboard_html(&snap);
+            if let Some(parent) = out.parent() {
+                if !parent.as_os_str().is_empty() {
+                    fs::create_dir_all(parent).map_err(|e| {
+                        format!("failed to create dashboard dir '{}': {e}", parent.display())
+                    })?;
+                }
+            }
+            fs::write(out, html)
+                .map_err(|e| format!("failed to write dashboard html '{}': {e}", out.display()))?;
+            println!("[dashboard] done");
+            println!("format: html");
+            println!("out: {}", out.display());
+            Ok(())
+        }
+    }
+}
+
+pub(crate) fn collect_dashboard_snapshot(app_paths: &AppPaths) -> Result<DashboardSnapshot, String> {
+    let runs_root = app_paths.data_dir.join("runs");
+    let triage_root = app_paths.data_dir.join("triage");
+    let reports_root = app_paths.data_dir.join("reports");
+    let coverage_root = app_paths.data_dir.join("coverage");
+    let metrics_path = app_paths.data_dir.join("metrics").join("latest.json");
+    let seeds_onnx_count = count_seed_files(&app_paths.seeds_dir.join("onnx"), "onnx")?;
+    let seeds_gguf_count = count_seed_files(&app_paths.seeds_dir.join("gguf"), "gguf")?;
+    let seeds_safetensors_count = count_seed_files(&app_paths.seeds_dir.join("safetensors"), "safetensors")?;
+    let seeds_total_count = seeds_onnx_count + seeds_gguf_count + seeds_safetensors_count;
+
+    let runs_count = count_prefixed_dirs(&runs_root, "run-")?;
+    let triage_count = count_prefixed_dirs(&triage_root, "triage-")?;
+    let report_count = count_prefixed_dirs(&reports_root, "report-")?;
+    let coverage_count = count_prefixed_dirs(&coverage_root, "coverage-")?;
+
+    let latest_run = latest_prefixed_dir_name(&runs_root, "run-")?.unwrap_or_else(|| "none".to_string());
+    let latest_triage =
+        latest_prefixed_dir_name(&triage_root, "triage-")?.unwrap_or_else(|| "none".to_string());
+    let latest_report =
+        latest_prefixed_dir_name(&reports_root, "report-")?.unwrap_or_else(|| "none".to_string());
+    let latest_coverage =
+        latest_prefixed_dir_name(&coverage_root, "coverage-")?.unwrap_or_else(|| "none".to_string());
+    let recent_triage_ids = recent_prefixed_dir_names(&triage_root, "triage-", 8)?;
+    let recent_report_ids = recent_prefixed_dir_names(&reports_root, "report-", 8)?;
+    let recent_coverage_ids = recent_prefixed_dir_names(&coverage_root, "coverage-", 8)?;
+    let latest_coverage_summary = if latest_coverage == "none" {
+        "none".to_string()
+    } else {
+        coverage_root
+            .join(&latest_coverage)
+            .join("summary.json")
+            .display()
+            .to_string()
+    };
+
+    let mut new_paths_per_hour = "0".to_string();
+    let mut new_crashes_per_hour = "0".to_string();
+    let mut valid_crash_ratio = "0.0".to_string();
+    let mut global_error_rate_5m = "0.0".to_string();
+    let metrics_exists = metrics_path.exists();
+    if metrics_exists {
+        let metrics = fs::read_to_string(&metrics_path)
+            .map_err(|e| format!("failed to read '{}': {e}", metrics_path.display()))?;
+        new_paths_per_hour =
+            extract_json_number_literal(&metrics, "new_paths_per_hour").unwrap_or_else(|| "0".to_string());
+        new_crashes_per_hour =
+            extract_json_number_literal(&metrics, "new_crashes_per_hour").unwrap_or_else(|| "0".to_string());
+        valid_crash_ratio =
+            extract_json_number_literal(&metrics, "valid_crash_ratio").unwrap_or_else(|| "0.0".to_string());
+        global_error_rate_5m =
+            extract_json_number_literal(&metrics, "global_error_rate_5m").unwrap_or_else(|| "0.0".to_string());
+    }
+
+    let latest_valid = find_latest_reproduced_triage(&triage_root)?;
+    let (latest_valid_triage, latest_valid_input, latest_valid_signature, latest_valid_summary, latest_valid_report) =
+        if let Some(item) = latest_valid {
+            let report =
+                find_report_by_source_triage_id(&reports_root, &item.triage_id)?.unwrap_or_else(|| "none".to_string());
+            (
+                format!("triage-{}", item.triage_id),
+                item.input,
+                item.signature_top1,
+                item.summary_path,
+                report,
+            )
+        } else {
+            (
+                "none".to_string(),
+                "none".to_string(),
+                "none".to_string(),
+                "none".to_string(),
+                "none".to_string(),
+            )
+        };
+
+    Ok(DashboardSnapshot {
+        generated_at: now_unix(),
+        data_dir: app_paths.data_dir.display().to_string(),
+        seeds_dir: app_paths.seeds_dir.display().to_string(),
+        runs_count,
+        triage_count,
+        report_count,
+        latest_run,
+        latest_triage,
+        latest_report,
+        metrics_exists,
+        new_paths_per_hour,
+        new_crashes_per_hour,
+        valid_crash_ratio,
+        global_error_rate_5m,
+        latest_valid_triage,
+        latest_valid_input,
+        latest_valid_signature,
+        latest_valid_summary,
+        latest_valid_report,
+        recent_triage_ids,
+        recent_report_ids,
+        recent_coverage_ids,
+        seeds_onnx_count,
+        seeds_gguf_count,
+        seeds_safetensors_count,
+        seeds_total_count,
+        coverage_count,
+        latest_coverage,
+        latest_coverage_summary,
+    })
+}
+
+fn count_seed_files(root: &Path, ext: &str) -> Result<usize, String> {
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut count = 0usize;
+    for entry in fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))? {
+        let entry = entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
+        let path = entry.path();
+        if path.is_file() && has_ext(&path, ext) {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn run_coverage_job(app_paths: &AppPaths, args: &CoverageArgs) -> Result<(), String> {
+    let corpus_dir = args
+        .corpus_dir
+        .clone()
+        .unwrap_or_else(|| app_paths.seeds_dir.join(target_label(&args.target)));
+    if !corpus_dir.exists() || !corpus_dir.is_dir() {
+        return Err(format!("corpus_dir is invalid: {}", corpus_dir.display()));
+    }
+
+    let mut inputs = collect_corpus_inputs(&corpus_dir, &args.target)?;
+    if inputs.is_empty() {
+        return Err(format!(
+            "no input files found for target '{}' in {}",
+            target_label(&args.target),
+            corpus_dir.display()
+        ));
+    }
+    if let Some(max_jobs) = args.max_jobs {
+        inputs.truncate(max_jobs);
+    }
+
+    let coverage_id = now_unix_millis();
+    let coverage_dir = app_paths
+        .data_dir
+        .join("coverage")
+        .join(format!("coverage-{coverage_id}"));
+    let logs_dir = coverage_dir.join("logs");
+    fs::create_dir_all(&logs_dir)
+        .map_err(|e| format!("failed to create coverage dir '{}': {e}", coverage_dir.display()))?;
+
+    println!("[coverage] start");
+    println!("target: {}", target_label(&args.target));
+    println!("corpus_dir: {}", corpus_dir.display());
+    println!("timeout_sec: {}", args.timeout_sec);
+    println!("coverage_dir: {}", coverage_dir.display());
+
+    let timeout_available = command_exists("timeout");
+    let mut success = 0usize;
+    let mut failed = 0usize;
+    let mut timeout = 0usize;
+
+    for (i, input) in inputs.iter().enumerate() {
+        let job = RunJob {
+            id: i,
+            input: input.clone(),
+        };
+        let result = execute_harness_subprocess(&job, &args.target, args.timeout_sec, timeout_available)?;
+        write_job_log(&logs_dir, &job, 1, &result)?;
+        match result {
+            HarnessExecResult::Success(_) => success += 1,
+            HarnessExecResult::Failed(_) => failed += 1,
+            HarnessExecResult::Timeout(_) => timeout += 1,
+        }
+    }
+
+    let total = success + failed + timeout;
+    let summary_path = coverage_dir.join("summary.json");
+    let summary = format!(
+        "{{\n  \"schema_version\": \"1.0\",\n  \"coverage_id\": \"{}\",\n  \"target\": \"{}\",\n  \"corpus_dir\": \"{}\",\n  \"timeout_sec\": {},\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"coverage_proxy\": {{\n    \"success_ratio\": {:.4}\n  }},\n  \"generated_at\": {}\n}}\n",
+        coverage_id,
+        target_label(&args.target),
+        json_escape(&corpus_dir.display().to_string()),
+        args.timeout_sec,
+        total,
+        success,
+        failed,
+        timeout,
+        if total == 0 {
+            0.0
+        } else {
+            success as f64 / total as f64
+        },
+        now_unix()
+    );
+    fs::write(&summary_path, summary)
+        .map_err(|e| format!("failed to write '{}': {e}", summary_path.display()))?;
+
+    println!("[coverage] done");
+    println!("total: {total}");
+    println!("success: {success}");
+    println!("failed: {failed}");
+    println!("timeout: {timeout}");
+    println!("summary: {}", summary_path.display());
+    Ok(())
+}
+
+struct ReproducedTriageView {
+    triage_id: String,
+    input: String,
+    signature_top1: String,
+    summary_path: String,
+}
+
+fn find_latest_reproduced_triage(triage_root: &Path) -> Result<Option<ReproducedTriageView>, String> {
+    if !triage_root.exists() {
+        return Ok(None);
+    }
+
+    let mut latest: Option<(u128, ReproducedTriageView)> = None;
+    for entry in fs::read_dir(triage_root)
+        .map_err(|e| format!("failed to read '{}': {e}", triage_root.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read triage entry: {e}"))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(id_text) = name.strip_prefix("triage-") else {
+            continue;
+        };
+        let Ok(id) = id_text.parse::<u128>() else {
+            continue;
+        };
+
+        let summary_path = path.join("summary.json");
+        if !summary_path.exists() {
+            continue;
+        }
+        let summary = fs::read_to_string(&summary_path)
+            .map_err(|e| format!("failed to read '{}': {e}", summary_path.display()))?;
+        let verdict = extract_json_string_literal(&summary, "verdict").unwrap_or_default();
+        if verdict != "reproduced" {
+            continue;
+        }
+        let input = extract_json_string_literal(&summary, "input").unwrap_or_else(|| "unknown".to_string());
+        let signature_top1 =
+            extract_first_signature_top3(&summary).unwrap_or_else(|| "none".to_string());
+
+        let item = ReproducedTriageView {
+            triage_id: id_text.to_string(),
+            input,
+            signature_top1,
+            summary_path: summary_path.display().to_string(),
+        };
+        match &latest {
+            Some((best, _)) if id <= *best => {}
+            _ => latest = Some((id, item)),
+        }
+    }
+    Ok(latest.map(|(_, item)| item))
+}
+
+fn find_report_by_source_triage_id(reports_root: &Path, triage_id: &str) -> Result<Option<String>, String> {
+    if !reports_root.exists() {
+        return Ok(None);
+    }
+    for entry in fs::read_dir(reports_root)
+        .map_err(|e| format!("failed to read '{}': {e}", reports_root.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read report entry: {e}"))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let meta_path = path.join("meta.json");
+        if !meta_path.exists() {
+            continue;
+        }
+        let meta = fs::read_to_string(&meta_path)
+            .map_err(|e| format!("failed to read '{}': {e}", meta_path.display()))?;
+        let source_triage = extract_json_string_literal(&meta, "source_triage_id").unwrap_or_default();
+        if source_triage != triage_id {
+            continue;
+        }
+        let report_path = path.join("report.md");
+        if report_path.exists() {
+            return Ok(Some(report_path.display().to_string()));
+        }
+        return Ok(Some(path.display().to_string()));
+    }
+    Ok(None)
+}
+
+fn count_prefixed_dirs(root: &Path, prefix: &str) -> Result<usize, String> {
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut count = 0usize;
+    for entry in fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))? {
+        let entry = entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with(prefix) {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn latest_prefixed_dir_name(root: &Path, prefix: &str) -> Result<Option<String>, String> {
+    if !root.exists() {
+        return Ok(None);
+    }
+    let mut latest: Option<(u128, String)> = None;
+    for entry in fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))? {
+        let entry = entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(id_text) = name.strip_prefix(prefix) else {
+            continue;
+        };
+        let Ok(id) = id_text.parse::<u128>() else {
+            continue;
+        };
+        match &latest {
+            Some((best, _)) if id <= *best => {}
+            _ => latest = Some((id, name.to_string())),
+        }
+    }
+    Ok(latest.map(|(_, n)| n))
+}
+
+fn recent_prefixed_dir_names(root: &Path, prefix: &str, limit: usize) -> Result<Vec<String>, String> {
+    if !root.exists() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let mut rows: Vec<(u128, String)> = Vec::new();
+    for entry in fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))? {
+        let entry = entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(id_text) = name.strip_prefix(prefix) else {
+            continue;
+        };
+        let Ok(id) = id_text.parse::<u128>() else {
+            continue;
+        };
+        rows.push((id, name.to_string()));
+    }
+    rows.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(rows.into_iter().take(limit).map(|(_, name)| name).collect())
+}
+
+fn run_seed_sync(app_paths: &AppPaths, args: &SeedSyncArgs) -> Result<(), String> {
+    if !args.from.exists() || !args.from.is_dir() {
+        return Err(format!("source dir is invalid: {}", args.from.display()));
+    }
+    let ext = seed_ext(&args.target);
+    let dest_dir = args
+        .to
+        .clone()
+        .unwrap_or_else(|| app_paths.seeds_dir.join(target_label(&args.target)));
+    fs::create_dir_all(&dest_dir)
+        .map_err(|e| format!("failed to create dest dir '{}': {e}", dest_dir.display()))?;
+
+    let mut existing_hashes = HashSet::new();
+    for entry in fs::read_dir(&dest_dir)
+        .map_err(|e| format!("failed to read dest dir '{}': {e}", dest_dir.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read dest entry: {e}"))?;
+        let path = entry.path();
+        if !path.is_file() || !has_ext(&path, ext) {
+            continue;
+        }
+        if let Ok(h) = sha256_file(&path) {
+            existing_hashes.insert(h);
+        }
+    }
+
+    let mut scanned = 0usize;
+    let mut matched_ext = 0usize;
+    let mut copied = 0usize;
+    let mut dup_skipped = 0usize;
+    let mut invalid_skipped = 0usize;
+    let mut error_skipped = 0usize;
+
+    for entry in fs::read_dir(&args.from)
+        .map_err(|e| format!("failed to read source dir '{}': {e}", args.from.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read source entry: {e}"))?;
+        let src = entry.path();
+        if !src.is_file() {
+            continue;
+        }
+        scanned += 1;
+        if !has_ext(&src, ext) {
+            continue;
+        }
+        matched_ext += 1;
+        let hash = match sha256_file(&src) {
+            Ok(h) => h,
+            Err(_) => {
+                error_skipped += 1;
+                continue;
+            }
+        };
+        if existing_hashes.contains(&hash) {
+            dup_skipped += 1;
+            continue;
+        }
+        if args.harness_filter {
+            let valid = seed_harness_validate(&args.target, &src)?;
+            if !valid {
+                invalid_skipped += 1;
+                continue;
+            }
+        }
+        let dest = unique_dest_path(&dest_dir, &src, ext)?;
+        fs::copy(&src, &dest).map_err(|e| {
+            format!(
+                "failed to copy '{}' -> '{}': {e}",
+                src.display(),
+                dest.display()
+            )
+        })?;
+        existing_hashes.insert(hash);
+        copied += 1;
+    }
+
+    println!("[seed sync] done");
+    println!("target: {}", target_label(&args.target));
+    println!("from: {}", args.from.display());
+    println!("to: {}", dest_dir.display());
+    println!("scanned: {scanned}");
+    println!("matched_ext: {matched_ext}");
+    println!("copied: {copied}");
+    println!("dup_skipped: {dup_skipped}");
+    println!("invalid_skipped: {invalid_skipped}");
+    println!("error_skipped: {error_skipped}");
+    Ok(())
+}
+
+fn run_seed_stats(app_paths: &AppPaths, args: &SeedStatsArgs) -> Result<(), String> {
+    let ext = seed_ext(&args.target);
+    let dir = args
+        .dir
+        .clone()
+        .unwrap_or_else(|| app_paths.seeds_dir.join(target_label(&args.target)));
+    if !dir.exists() || !dir.is_dir() {
+        return Err(format!("seed dir is invalid: {}", dir.display()));
+    }
+
+    let mut total = 0usize;
+    let mut unique = HashSet::new();
+    let mut hash_errors = 0usize;
+    let mut valid = 0usize;
+    let mut invalid = 0usize;
+    let mut validated = 0usize;
+    for entry in fs::read_dir(&dir)
+        .map_err(|e| format!("failed to read seed dir '{}': {e}", dir.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read seed entry: {e}"))?;
+        let path = entry.path();
+        if !path.is_file() || !has_ext(&path, ext) {
+            continue;
+        }
+        total += 1;
+        match sha256_file(&path) {
+            Ok(h) => {
+                unique.insert(h);
+            }
+            Err(_) => hash_errors += 1,
+        }
+        match seed_harness_validate(&args.target, &path) {
+            Ok(true) => {
+                valid += 1;
+                validated += 1;
+            }
+            Ok(false) => {
+                invalid += 1;
+                validated += 1;
+            }
+            Err(_) => {}
+        }
+    }
+    let deduped = unique.len();
+    let duplicates = total.saturating_sub(deduped);
+    let valid_ratio = if validated == 0 {
+        0.0
+    } else {
+        valid as f64 / validated as f64
+    };
+
+    println!("[seed stats] done");
+    println!("target: {}", target_label(&args.target));
+    println!("dir: {}", dir.display());
+    println!("total: {total}");
+    println!("unique: {deduped}");
+    println!("duplicates: {duplicates}");
+    println!("valid: {valid}");
+    println!("invalid: {invalid}");
+    println!("validated: {validated}");
+    println!("valid_ratio: {:.4}", valid_ratio);
+    println!("hash_errors: {hash_errors}");
+    Ok(())
+}
+
+fn unique_dest_path(dest_dir: &Path, src: &Path, ext: &str) -> Result<PathBuf, String> {
+    let stem = src
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("seed")
+        .to_string();
+    let mut candidate = dest_dir.join(format!("{stem}.{ext}"));
+    let mut n = 1usize;
+    while candidate.exists() {
+        candidate = dest_dir.join(format!("{stem}-{n}.{ext}"));
+        n += 1;
+    }
+    Ok(candidate)
+}
+
+fn seed_harness_validate(target: &TargetKind, input: &Path) -> Result<bool, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
+    let out = command_with_core_dump_off(&exe.display().to_string())
+        .arg("harness")
+        .arg("--target")
+        .arg(target_label(target))
+        .arg("--input")
+        .arg(input.display().to_string())
+        .output()
+        .map_err(|e| {
+            format!(
+                "failed to execute harness validation for '{}': {e}",
+                input.display()
+            )
+        })?;
+    Ok(out.status.success())
+}
+
+struct RunStatusCounts {
+    total: usize,
+    success: usize,
+    failed: usize,
+    timeout: usize,
+    retries: usize,
+}
+
+fn write_run_status(
+    run_dir: &Path,
+    run_id: u128,
+    target: &TargetKind,
+    counts: RunStatusCounts,
+    workers: usize,
+    timeout_sec: u64,
+    restart_limit: u32,
+) -> Result<PathBuf, String> {
+    let status_path = run_dir.join("status.json");
+    let status_json = format!(
+        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"retries\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {}\n}}\n",
+        run_id,
+        target_label(target),
+        counts.total,
+        counts.success,
+        counts.failed,
+        counts.timeout,
+        counts.retries,
+        workers,
+        timeout_sec,
+        restart_limit
+    );
+    fs::write(&status_path, status_json)
+        .map_err(|e| format!("failed to write '{}': {e}", status_path.display()))?;
+    Ok(status_path)
 }
 
 fn gguf_precheck(bytes: &[u8]) -> Result<String, String> {
@@ -1420,6 +2457,115 @@ fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
 
 fn record_metrics_event(app_paths: &AppPaths, event: MetricEvent) -> Result<(), String> {
     metrics::record_metrics_event(app_paths, event)
+}
+
+fn extract_json_number_literal(json: &str, key: &str) -> Option<String> {
+    let key_pattern = format!("\"{}\":", key);
+    let start = json.find(&key_pattern)? + key_pattern.len();
+    let rest = &json[start..];
+
+    let mut out = String::new();
+    let mut started = false;
+    for ch in rest.chars() {
+        if !started {
+            if ch.is_ascii_whitespace() {
+                continue;
+            }
+            if ch.is_ascii_digit() || ch == '-' || ch == '+' || ch == '.' {
+                started = true;
+                out.push(ch);
+                continue;
+            }
+            return None;
+        }
+
+        if ch.is_ascii_digit() || ch == '.' || ch == 'e' || ch == 'E' || ch == '-' || ch == '+' {
+            out.push(ch);
+        } else {
+            break;
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn extract_json_string_literal(json: &str, key: &str) -> Option<String> {
+    let key_pattern = format!("\"{}\":", key);
+    let start = json.find(&key_pattern)? + key_pattern.len();
+    let rest = &json[start..];
+
+    let mut value_start = None;
+    for (idx, ch) in rest.char_indices() {
+        if ch.is_ascii_whitespace() {
+            continue;
+        }
+        if ch == '"' {
+            value_start = Some(idx);
+        }
+        break;
+    }
+    let value_start = value_start?;
+    let (value, _) = parse_json_string_literal_at(rest, value_start)?;
+    Some(value)
+}
+
+fn extract_first_signature_top3(json: &str) -> Option<String> {
+    let key_pattern = "\"signature_top3\":";
+    let start = json.find(key_pattern)? + key_pattern.len();
+    let rest = &json[start..];
+    let array_start = rest.find('[')?;
+    let array = &rest[array_start + 1..];
+
+    let mut value_start = None;
+    for (idx, ch) in array.char_indices() {
+        if ch.is_ascii_whitespace() {
+            continue;
+        }
+        if ch == '"' {
+            value_start = Some(idx);
+        }
+        break;
+    }
+    let value_start = value_start?;
+    let (value, _) = parse_json_string_literal_at(array, value_start)?;
+    Some(value)
+}
+
+fn parse_json_string_literal_at(input: &str, quote_index: usize) -> Option<(String, usize)> {
+    let mut chars = input[quote_index..].char_indices();
+    let (_, first) = chars.next()?;
+    if first != '"' {
+        return None;
+    }
+
+    let mut out = String::new();
+    let mut escaped = false;
+    for (offset, ch) in chars {
+        if escaped {
+            match ch {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                _ => out.push(ch),
+            }
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => {
+                let end = quote_index + offset + ch.len_utf8();
+                return Some((out, end));
+            }
+            _ => out.push(ch),
+        }
+    }
+    None
 }
 
 fn json_escape(input: &str) -> String {

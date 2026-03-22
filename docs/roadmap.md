@@ -65,6 +65,11 @@
 - 정책/스코프 준수 체크 완료
 - 기본 에러/로그 표준 적용 완료
 
+## 코퍼스 준비 기준 (운영)
+- `prepare-target`으로 타깃 버전/해시를 먼저 고정한다.
+- 실제 seed corpus 준비 절차는 `docs/corpus-sop.md`를 따른다.
+- seed는 포맷별 분리(`seeds/gguf`, `seeds/onnx`, `seeds/safetensors`)를 기본으로 한다.
+
 ## 차별점 검증 체크리스트 (릴리즈 이후)
 - 목적: README 차별점(Deep/Auto-Verification/Exploitability/Reproducibility)을 수치 근거로 제시
 - 수집 기간: 최소 7일 이상 동일 타깃/동일 리소스 조건
