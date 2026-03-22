@@ -279,16 +279,19 @@
 - 목표: 헤더/메타데이터/텐서 인덱스 파싱 경로
 - 흐름: 파일 열기 -> 헤더 파싱 -> KV 메타 파싱 -> 텐서 디렉터리 순회
 - 라이브러리: llama.cpp 파서 사용
+- v1.0 구현 경로(확정): `tool harness --target gguf` -> `llama-cli -m <input> -n 1 -p hi` 실행 경로로 parser 연결 확인
 
 ### 13.3) ONNX Harness
 - 목표: protobuf 디코드 + 그래프/노드 순회
 - 흐름: 파일 로드 -> protobuf 파싱 -> Graph/Node 순회 -> 기본 검증
 - 라이브러리: onnxruntime 사용
+- v1.0 구현 경로(확정): `tool harness --target onnx` -> `onnxruntime.InferenceSession(path, providers=[\"CPUExecutionProvider\"])`
 
 ### 13.4) safetensors Harness
 - 목표: 헤더 JSON 파싱 + 텐서 메타 확인
 - 흐름: 파일 로드 -> 헤더 JSON 파싱 -> 각 텐서 오프셋/크기 검증
 - 라이브러리: 공식 safetensors 라이브러리 사용
+- v1.0 구현 경로(확정): `tool harness --target safetensors` -> `safe_open(path, framework=\"pt\", device=\"cpu\")`
 
 ### 13.5) Post-1.0 Strategy
 - 포맷만 고정하고 구현 라이브러리는 추후 재선정
