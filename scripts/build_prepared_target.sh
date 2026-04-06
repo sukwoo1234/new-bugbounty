@@ -77,9 +77,25 @@ case "$TARGET" in
       exit 6
     fi
     ;;
-  onnx|safetensors)
-    echo "[target-build] build path not yet implemented for $TARGET" >&2
-    exit 7
+  onnx)
+    pushd "$SRC_ROOT" >/dev/null
+    bash ./build.sh --config Release --parallel 2 --build_shared_lib --skip_tests
+    popd >/dev/null
+    BUILD_DIR="$SRC_ROOT/build/Linux/Release"
+    ARTIFACT="$(find "$SRC_ROOT/build/Linux" -type f -name 'libonnxruntime.so' | sort | head -n 1)"
+    if [[ -z "$ARTIFACT" || ! -f "$ARTIFACT" ]]; then
+      echo "[target-build] expected artifact missing: libonnxruntime.so" >&2
+      exit 6
+    fi
+    ;;
+  safetensors)
+    BUILD_DIR="$SRC_ROOT/safetensors/target/release"
+    cargo build --release --manifest-path "$SRC_ROOT/safetensors/Cargo.toml"
+    ARTIFACT="$(find "$SRC_ROOT/safetensors/target/release" -type f \( -name 'libsafetensors*.rlib' -o -name 'libsafetensors*.rmeta' \) | sort | head -n 1)"
+    if [[ -z "$ARTIFACT" || ! -f "$ARTIFACT" ]]; then
+      echo "[target-build] expected artifact missing: libsafetensors artifact" >&2
+      exit 6
+    fi
     ;;
 esac
 

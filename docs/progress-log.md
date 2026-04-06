@@ -1967,3 +1967,31 @@
 - 실환경 수동 검증 대기:
   - `gguf` build 시작 후 status/message/build_dir/artifact 표시 확인
   - `onnx` 또는 `safetensors` build 시 `error`/미지원 메시지 확인
+
+## v1.0+ 구현: G-3-2 Target Build UI/API(onnx/safetensors 확장)
+
+### 태스크
+- `Target Build`의 남은 `onnx`, `safetensors` build 경로 구현
+- 3타깃 build 완료 기준을 문서에 명확히 고정
+
+### 완료 기준
+- `gguf`: `llama.cpp` 최소 유효 build 경로 성공 + `llama-cli` 산출 확인
+- `onnx`: `onnxruntime` 최소 CPU shared library build 경로 성공 + `libonnxruntime.so` 산출 확인
+- `safetensors`: `safetensors` Rust crate 최소 release build 경로 성공 + `libsafetensors*.rlib` 또는 동등 산출물 확인
+
+### 결과
+- `docs/dev-todo-legacy-upgrade.md` 변경:
+  - `G-3-2`의 3타깃별 build 완료 기준(`gguf/onnx/safetensors`) 명시
+- `scripts/build_prepared_target.sh` 변경:
+  - `onnx`: upstream `build.sh --config Release --parallel 2 --build_shared_lib --skip_tests` 경로 추가
+  - `onnx`: 대표 산출물 `libonnxruntime.so` 탐색/검증 추가
+  - `safetensors`: `cargo build --release --manifest-path safetensors/Cargo.toml` 경로 추가
+  - `safetensors`: 대표 산출물 `libsafetensors*.rlib`/`.rmeta` 탐색/검증 추가
+
+### 검증
+- `bash -n scripts/build_prepared_target.sh` 통과
+- `cargo build --offline` 통과
+- `cargo run --offline -- dashboard --format html --out /tmp/dashboard.html` 통과
+- 실환경 수동 검증 대기:
+  - `onnx` build 성공 시 `libonnxruntime.so` 표시 확인
+  - `safetensors` build 성공 시 Rust 산출물 표시 확인
