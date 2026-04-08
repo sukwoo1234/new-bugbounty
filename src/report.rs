@@ -1,6 +1,6 @@
 use std::{fs, path::{Path, PathBuf}};
 
-use crate::{json_escape, now_unix, sha256_file, AppPaths};
+use crate::{artifact_contract_for_data_dir, json_escape, now_unix, sha256_file, AppPaths};
 use crate::retention::apply_retention_policy;
 
 pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
@@ -114,7 +114,7 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
 }
 
 fn find_latest_triage_summary(data_dir: &Path) -> Result<(u64, PathBuf, PathBuf), String> {
-    let triage_root = data_dir.join("triage");
+    let triage_root = artifact_contract_for_data_dir(data_dir).triage_root;
     if !triage_root.exists() {
         return Err(format!("triage directory not found: {}", triage_root.display()));
     }

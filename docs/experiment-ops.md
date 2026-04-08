@@ -180,6 +180,109 @@ results/
 - `report_success_ratio`
 - `backend별 동일 시간 대비 crash/유효율 비교`
 
+## 엔진 실통합 완료 기준
+
+### 대상
+- `local-harness`
+- `libfuzzer`
+- `aflpp`
+
+### 공통 완료 조건
+- ONNX seed corpus가 준비되어 있을 것 (`seeds/onnx`)
+- `tool harness --target onnx --input <seed>`가 실제 라이브러리 연결 경로까지 도달할 것
+- `tool run --target onnx --backend <backend> ...` 1회 스모크가 `success > 0`, `failed = 0`으로 종료할 것
+- `scripts/run_backend_loop.sh` 1시간 실행이 `exit=0`으로 종료할 것
+- `data/longrun/run-onnx_<backend>_1h.log/.done/.exit`가 생성될 것
+
+### backend별 실행 명령
+- `local-harness`
+```bash
+TARGET=onnx BACKEND=local-harness CORPUS_DIR=seeds/onnx DURATION_HOURS=1 bash scripts/run_backend_loop.sh
+```
+- `libfuzzer`
+```bash
+export TOOL_LIBFUZZER_CMD='TOOL_HARNESS_TOOL=./target/debug/tool TOOL_HARNESS_TARGET=onnx TOOL_HARNESS_EXT=onnx ./harnesses/libfuzzer/tool_harness_driver -max_total_time=5 {corpus_dir} >/dev/null 2>&1'
+TARGET=onnx BACKEND=libfuzzer CORPUS_DIR=seeds/onnx WORKERS=1 TIMEOUT_SEC=30 RESTART_LIMIT=1 DURATION_HOURS=1 bash scripts/run_backend_loop.sh
+```
+- `aflpp`
+```bash
+export TOOL_AFLPP_CMD='docker run --rm {docker_user_flag} -v "$PWD":/work -w /work aflplusplus/aflplusplus bash -lc "afl-fuzz -n -V 5 -i {corpus_dir} -o {run_dir}/afl-out -- /work/target/debug/tool harness --target onnx --input @@ >/dev/null 2>&1 || true"'
+TARGET=onnx BACKEND=aflpp CORPUS_DIR=seeds/onnx WORKERS=1 TIMEOUT_SEC=30 RESTART_LIMIT=1 DURATION_HOURS=1 bash scripts/run_backend_loop.sh
+```
+
+### 실패 시 복구 절차
+- `docker.sock permission denied`
+  - `newgrp docker` 또는 새 셸에서 재시작
+- `onnxruntime unavailable`
+  - `.venv` 생성 후 `onnxruntime` 설치
+- `afl-out`가 `root:root`
+  - 임시 복구: `sudo chown -R <user>:<group> data/runs data/triage data/reports data/metrics`
+  - 지속 방지: `TOOL_AFLPP_CMD`에 `{docker_user_flag}` 포함 유지
+- `report` 실패 시
+  - 최신 triage 존재 여부 확인
+  - 최신 run 디렉터리 및 `afl-out` 소유권 확인
+  - 복구 후 `./target/debug/tool report` 재실행
+
+### 산출물 스키마
+- `run`
+  - `data/runs/run-<id>/status.json`
+  - `data/runs/run-<id>/logs/job-*.log`
+  - `data/runs/run-<id>/logs/backend-engine-w<id>.log` 또는 동등 로그
+  - `data/runs/run-<id>/afl-out/` (`aflpp`만)
+- `longrun`
+  - `data/longrun/run-<target>_<backend>_<duration>.log`
+  - `data/longrun/run-<target>_<backend>_<duration>.done`
+  - `data/longrun/run-<target>_<backend>_<duration>.exit`
+- `triage`
+  - `data/triage/triage-<id>/summary.json`
+  - `data/triage/triage-<id>/attempt-<n>.log`
+- `report`
+  - `data/reports/report-<id>/report.md`
+  - `data/reports/report-<id>/crash_report.txt`
+  - `data/reports/report-<id>/repro.sh`
+  - `data/reports/report-<id>/meta.json`
+- `metrics`
+  - `data/metrics/latest.json`
+  - `data/metrics/events.jsonl`
+
+## Adapter 규격
+
+### EngineAdapter
+- backend 식별자와 환경변수 키를 1:1로 고정한다.
+- 현재 표준:
+  - `local-harness`: 내부 실행 경로
+  - `aflpp`: `TOOL_AFLPP_CMD`
+  - `libfuzzer`: `TOOL_LIBFUZZER_CMD`
+- 템플릿 placeholder 표준:
+  - `{target}`
+  - `{backend}`
+  - `{corpus_dir}`
+  - `{workers}`
+  - `{worker_id}`
+  - `{timeout_sec}`
+  - `{restart_limit}`
+  - `{run_dir}`
+  - `{workdir}`
+  - `{worker_log}`
+  - `{docker_user_flag}` (`aflpp` Docker 경로 전용)
+
+### TargetAdapter
+- target 식별자와 seed/corpus 기본 경로를 1:1로 고정한다.
+- 현재 표준:
+  - `gguf` -> `seeds/gguf`, 입력 확장자 `gguf`
+  - `onnx` -> `seeds/onnx`, 입력 확장자 `onnx`
+  - `safetensors` -> `seeds/safetensors`, 입력 확장자 `safetensors`
+
+### ArtifactContract
+- 결과 루트는 아래 5개로 고정한다.
+  - `data/runs`
+  - `data/triage`
+  - `data/reports`
+  - `data/coverage`
+  - `data/metrics`
+- 신규 backend나 target을 추가해도 최종 산출물은 위 루트 중 하나로 수렴해야 한다.
+- UI/대시보드와 report 파이프라인은 위 루트만 신뢰한다.
+
 ## 실험 종료 후 정리 절차
 1. `data/longrun/*.log`, `*.exit`, `*.done` 확인
 2. 최신 run 상태 파일 확인

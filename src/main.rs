@@ -277,6 +277,17 @@ struct EngineAdapter {
 
 struct TargetAdapter {
     target_label: &'static str,
+    seed_subdir: &'static str,
+    input_ext: &'static str,
+}
+
+#[derive(Clone)]
+pub(crate) struct ArtifactContract {
+    pub(crate) runs_root: PathBuf,
+    pub(crate) triage_root: PathBuf,
+    pub(crate) reports_root: PathBuf,
+    pub(crate) coverage_root: PathBuf,
+    pub(crate) metrics_root: PathBuf,
 }
 
 #[derive(Args)]
@@ -546,13 +557,14 @@ fn preset_for_target(target: &TargetKind) -> TargetPreset {
 }
 
 fn run_fuzz_pipeline(app_paths: &AppPaths, args: &RunArgs) -> Result<(), String> {
+    let artifact = artifact_contract(app_paths);
     if args.backend != RunBackend::LocalHarness {
-        return run_engine_backend(app_paths, args);
+        return run_engine_backend(app_paths, &artifact, args);
     }
 
     let corpus_dir = match &args.corpus_dir {
         Some(path) => path.clone(),
-        None if args.local => app_paths.seeds_dir.join(target_label(&args.target)),
+        None if args.local => default_seed_dir(app_paths, &args.target),
         None => app_paths.seeds_dir.clone(),
     };
     if !corpus_dir.exists() || !corpus_dir.is_dir() {
@@ -577,10 +589,7 @@ fn run_fuzz_pipeline(app_paths: &AppPaths, args: &RunArgs) -> Result<(), String>
     }
 
     let run_id = now_unix_millis();
-    let run_dir = app_paths
-        .data_dir
-        .join("runs")
-        .join(format!("run-{run_id}"));
+    let run_dir = artifact.runs_root.join(format!("run-{run_id}"));
     let logs_dir = run_dir.join("logs");
     fs::create_dir_all(&logs_dir)
         .map_err(|e| format!("failed to create run log dir '{}': {e}", logs_dir.display()))?;
@@ -712,14 +721,18 @@ fn run_fuzz_pipeline(app_paths: &AppPaths, args: &RunArgs) -> Result<(), String>
     Ok(())
 }
 
-fn run_engine_backend(app_paths: &AppPaths, args: &RunArgs) -> Result<(), String> {
+fn run_engine_backend(
+    app_paths: &AppPaths,
+    artifact: &ArtifactContract,
+    args: &RunArgs,
+) -> Result<(), String> {
     if args.workers == 0 {
         return Err("workers must be >= 1".to_string());
     }
 
     let corpus_dir = match &args.corpus_dir {
         Some(path) => path.clone(),
-        None if args.local => app_paths.seeds_dir.join(target_label(&args.target)),
+        None if args.local => default_seed_dir(app_paths, &args.target),
         None => app_paths.seeds_dir.clone(),
     };
     if !corpus_dir.exists() || !corpus_dir.is_dir() {
@@ -730,10 +743,7 @@ fn run_engine_backend(app_paths: &AppPaths, args: &RunArgs) -> Result<(), String
     }
 
     let run_id = now_unix_millis();
-    let run_dir = app_paths
-        .data_dir
-        .join("runs")
-        .join(format!("run-{run_id}"));
+    let run_dir = artifact.runs_root.join(format!("run-{run_id}"));
     let logs_dir = run_dir.join("logs");
     fs::create_dir_all(&logs_dir)
         .map_err(|e| format!("failed to create run dir '{}': {e}", run_dir.display()))?;
@@ -910,7 +920,28 @@ fn resolve_engine_adapter(backend: &RunBackend) -> Result<EngineAdapter, String>
 fn resolve_target_adapter(target: &TargetKind) -> TargetAdapter {
     TargetAdapter {
         target_label: target_label(target),
+        seed_subdir: target_label(target),
+        input_ext: seed_ext(target),
     }
+}
+
+pub(crate) fn artifact_contract(app_paths: &AppPaths) -> ArtifactContract {
+    artifact_contract_for_data_dir(&app_paths.data_dir)
+}
+
+pub(crate) fn artifact_contract_for_data_dir(data_dir: &Path) -> ArtifactContract {
+    ArtifactContract {
+        runs_root: data_dir.join("runs"),
+        triage_root: data_dir.join("triage"),
+        reports_root: data_dir.join("reports"),
+        coverage_root: data_dir.join("coverage"),
+        metrics_root: data_dir.join("metrics"),
+    }
+}
+
+pub(crate) fn default_seed_dir(app_paths: &AppPaths, target: &TargetKind) -> PathBuf {
+    let adapter = resolve_target_adapter(target);
+    app_paths.seeds_dir.join(adapter.seed_subdir)
 }
 
 fn shell_escape(path: &Path) -> String {
@@ -1425,14 +1456,15 @@ fn run_dashboard_snapshot(app_paths: &AppPaths, args: &DashboardArgs) -> Result<
 }
 
 pub(crate) fn collect_dashboard_snapshot(app_paths: &AppPaths) -> Result<DashboardSnapshot, String> {
-    let runs_root = app_paths.data_dir.join("runs");
-    let triage_root = app_paths.data_dir.join("triage");
-    let reports_root = app_paths.data_dir.join("reports");
-    let coverage_root = app_paths.data_dir.join("coverage");
-    let metrics_path = app_paths.data_dir.join("metrics").join("latest.json");
-    let seeds_onnx_count = count_seed_files(&app_paths.seeds_dir.join("onnx"), "onnx")?;
-    let seeds_gguf_count = count_seed_files(&app_paths.seeds_dir.join("gguf"), "gguf")?;
-    let seeds_safetensors_count = count_seed_files(&app_paths.seeds_dir.join("safetensors"), "safetensors")?;
+    let artifact = artifact_contract(app_paths);
+    let runs_root = artifact.runs_root;
+    let triage_root = artifact.triage_root;
+    let reports_root = artifact.reports_root;
+    let coverage_root = artifact.coverage_root;
+    let metrics_path = artifact.metrics_root.join("latest.json");
+    let seeds_onnx_count = count_seed_files(&default_seed_dir(app_paths, &TargetKind::Onnx), resolve_target_adapter(&TargetKind::Onnx).input_ext)?;
+    let seeds_gguf_count = count_seed_files(&default_seed_dir(app_paths, &TargetKind::Gguf), resolve_target_adapter(&TargetKind::Gguf).input_ext)?;
+    let seeds_safetensors_count = count_seed_files(&default_seed_dir(app_paths, &TargetKind::Safetensors), resolve_target_adapter(&TargetKind::Safetensors).input_ext)?;
     let seeds_total_count = seeds_onnx_count + seeds_gguf_count + seeds_safetensors_count;
 
     let runs_count = count_prefixed_dirs(&runs_root, "run-")?;
@@ -1549,10 +1581,11 @@ fn count_seed_files(root: &Path, ext: &str) -> Result<usize, String> {
 }
 
 fn run_coverage_job(app_paths: &AppPaths, args: &CoverageArgs) -> Result<(), String> {
+    let artifact = artifact_contract(app_paths);
     let corpus_dir = args
         .corpus_dir
         .clone()
-        .unwrap_or_else(|| app_paths.seeds_dir.join(target_label(&args.target)));
+        .unwrap_or_else(|| default_seed_dir(app_paths, &args.target));
     if !corpus_dir.exists() || !corpus_dir.is_dir() {
         return Err(format!("corpus_dir is invalid: {}", corpus_dir.display()));
     }
@@ -1570,10 +1603,7 @@ fn run_coverage_job(app_paths: &AppPaths, args: &CoverageArgs) -> Result<(), Str
     }
 
     let coverage_id = now_unix_millis();
-    let coverage_dir = app_paths
-        .data_dir
-        .join("coverage")
-        .join(format!("coverage-{coverage_id}"));
+    let coverage_dir = artifact.coverage_root.join(format!("coverage-{coverage_id}"));
     let logs_dir = coverage_dir.join("logs");
     fs::create_dir_all(&logs_dir)
         .map_err(|e| format!("failed to create coverage dir '{}': {e}", coverage_dir.display()))?;
@@ -1807,7 +1837,7 @@ fn run_seed_sync(app_paths: &AppPaths, args: &SeedSyncArgs) -> Result<(), String
     let dest_dir = args
         .to
         .clone()
-        .unwrap_or_else(|| app_paths.seeds_dir.join(target_label(&args.target)));
+        .unwrap_or_else(|| default_seed_dir(app_paths, &args.target));
     fs::create_dir_all(&dest_dir)
         .map_err(|e| format!("failed to create dest dir '{}': {e}", dest_dir.display()))?;
 
@@ -1893,7 +1923,7 @@ fn run_seed_stats(app_paths: &AppPaths, args: &SeedStatsArgs) -> Result<(), Stri
     let dir = args
         .dir
         .clone()
-        .unwrap_or_else(|| app_paths.seeds_dir.join(target_label(&args.target)));
+        .unwrap_or_else(|| default_seed_dir(app_paths, &args.target));
     if !dir.exists() || !dir.is_dir() {
         return Err(format!("seed dir is invalid: {}", dir.display()));
     }

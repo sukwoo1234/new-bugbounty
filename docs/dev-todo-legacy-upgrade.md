@@ -39,9 +39,13 @@
   - 하네스 연결 드라이버 구현 완료: `harnesses/libfuzzer/tool_harness_driver.cc`
   - 실환경 스모크 완료: `success: 2`, `failed: 0`, `status.json/logs` 확인
   - 실환경 1h 검증 완료: 새 메인 퍼징 컴(`06-211-01`)에서 `exit=0`, `runs=440`, `failures=0`
-- [ ] 실통합 완료 기준 문서화(실행 명령, 실패 시 복구, 산출물 스키마)
+- [x] 실통합 완료 기준 문서화(실행 명령, 실패 시 복구, 산출물 스키마)
+  - 공개 문서 반영 완료: `docs/experiment-ops.md`
+  - 포함 내용: backend별 1h 검증 명령, 실패 시 복구 절차, `run/longrun/triage/report/metrics` 산출물 스키마
 - [x] 사용자 실환경 검증 결과 반영(성공/실패 로그를 `docs/progress-log.md`에 기록 후 체크 확정)
-- [ ] Adapter 규격 고정(확장성 가드)
+- [x] Adapter 규격 고정(확장성 가드)
+  - 코드 반영 완료: `TargetAdapter` 기본 seed 경로/입력 확장자, `ArtifactContract` 결과 루트 고정
+  - 공개 문서 반영 완료: `docs/experiment-ops.md`
   - `EngineAdapter`: backend별 실행 명령/env 키(`TOOL_AFLPP_CMD`, `TOOL_LIBFUZZER_CMD`) 표준화
   - `TargetAdapter`: target 식별자/입력 계약 표준화
   - `ArtifactContract`: 결과를 `data/runs|triage|reports|coverage` 스키마로 강제 수렴

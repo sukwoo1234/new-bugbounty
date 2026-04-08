@@ -2134,3 +2134,46 @@
   - 메인 퍼징 컴에서 `git pull && cargo build`
   - `{docker_user_flag}` 포함 `TOOL_AFLPP_CMD`로 `run --backend aflpp` 재실행
   - 생성된 `afl-out` 디렉터리 소유권이 일반 사용자로 남는지 확인
+
+## v1.0+ 운영 검증: aflpp 권한 가드 재확인
+
+### 태스크
+- `{docker_user_flag}` 적용 후 `aflpp` 산출물 소유권이 일반 사용자로 유지되는지 재확인
+
+### 완료 기준
+- `backend_engine_cmd`에 `--user <uid>:<gid>`가 포함될 것
+- 생성된 `data/runs/run-*/afl-out` 소유자가 일반 사용자일 것
+
+### 결과
+- 메인 퍼징 컴(`06-211-01`) 재검증 결과:
+  - `backend_engine_cmd[w1]`에 `--user 1000:1000` 포함 확인
+  - `data/runs/run-1775640062365/afl-out` 소유권 확인 결과: `fuzz:fuzz`
+  - 권한 모드: `drwx------`
+
+### 검증
+- `./target/debug/tool run --target onnx --backend aflpp --corpus-dir seeds/onnx --workers 1 --timeout-sec 30 --restart-limit 1`
+- `find "$LATEST_RUN" -maxdepth 2 -name afl-out -exec ls -ld {} \\;`
+
+## v1.0+ 구조 가드: Adapter 규격 고정
+
+### 태스크
+- backend/target/result root 계약을 명시적 adapter 규격으로 고정
+
+### 완료 기준
+- backend 명령/env 키가 `EngineAdapter` 기준으로 문서화되고 유지됨
+- target별 기본 seed 경로와 입력 확장자가 코드에서 단일 규칙으로 관리됨
+- `run/triage/report/coverage/metrics` 결과 루트가 `ArtifactContract` 기준으로 정의됨
+
+### 결과
+- `src/main.rs`
+  - `TargetAdapter`에 `seed_subdir`, `input_ext` 추가
+  - `default_seed_dir()`로 기본 코퍼스 경로를 단일 규칙으로 통일
+  - `ArtifactContract` 및 `artifact_contract()`/`artifact_contract_for_data_dir()` 추가
+  - `run`, `coverage`, `dashboard`, `seed` 경로가 계약 헬퍼를 사용하도록 정리
+- `src/report.rs`
+  - 최신 triage 탐색 경로가 `ArtifactContract`를 사용하도록 정리
+- `docs/experiment-ops.md`
+  - `EngineAdapter`, `TargetAdapter`, `ArtifactContract` 공개 규격 추가
+
+### 검증
+- `cargo build --offline` 통과
