@@ -6,6 +6,7 @@
 - 설계/결정: [first.md](first.md)
 - 구현 명세: [docs/specs.md](docs/specs.md)
 - 유효 코퍼스 준비: [docs/corpus-sop.md](docs/corpus-sop.md)
+- 실험 운영 규칙: [docs/experiment-ops.md](docs/experiment-ops.md)
 
 ## 기존 툴 대비 차별점 (Differentiators)
 - **Deep & Structured Fuzzing**: 구조 인지형 mutator/harness로 얕은 파싱 에러가 아니라 깊은 경로의 메모리 오염을 겨냥한다.
@@ -44,6 +45,7 @@
 - 개발 TODO: [docs/dev-todo.md](docs/dev-todo.md)
 - 리포트 샘플: [docs/report-sample.md](docs/report-sample.md)
 - 유효 코퍼스 SOP: [docs/corpus-sop.md](docs/corpus-sop.md)
+- 실험 운영 규칙: [docs/experiment-ops.md](docs/experiment-ops.md)
 
 ## CLI (확정)
 - `tool run`, `tool triage`, `tool report`
@@ -83,16 +85,16 @@ clang++ --version
 
 ### AFL++
 ```bash
-TOOL_AFLPP_CMD='docker run --rm -v "$PWD":/work -w /work aflplusplus/aflplusplus bash -lc "afl-fuzz -V 5 -i {corpus_dir} -o {run_dir}/afl-out -- /bin/true @@ >/dev/null 2>&1 || true"' \
+TOOL_AFLPP_CMD='docker run --rm {docker_user_flag} -v "$PWD":/work -w /work aflplusplus/aflplusplus bash -lc "afl-fuzz -V 5 -i {corpus_dir} -o {run_dir}/afl-out -- /bin/true @@ >/dev/null 2>&1 || true"' \
 cargo run --offline -- run --target onnx --backend aflpp --corpus-dir seeds/onnx --workers 2 --timeout-sec 30 --restart-limit 1
 ```
 
 ### AFL++ (tool harness 연결)
 ```bash
-TOOL_AFLPP_CMD='docker run --rm -v "$PWD":/work -w /work aflplusplus/aflplusplus bash -lc "afl-fuzz -n -V 5 -i {corpus_dir} -o {run_dir}/afl-out -- /work/target/debug/tool harness --target onnx --input @@ >/dev/null 2>&1 || true"' \
+TOOL_AFLPP_CMD='docker run --rm {docker_user_flag} -v "$PWD":/work -w /work aflplusplus/aflplusplus bash -lc "afl-fuzz -n -V 5 -i {corpus_dir} -o {run_dir}/afl-out -- /work/target/debug/tool harness --target onnx --input @@ >/dev/null 2>&1 || true"' \
 cargo run --offline -- run --target onnx --backend aflpp --corpus-dir seeds/onnx --workers 1 --timeout-sec 30 --restart-limit 1
 ```
-`permission denied ... docker.sock`가 나오면 Docker 그룹 권한을 다시 적용(`newgrp docker`)하거나 새 셸에서 재시도한다.
+`permission denied ... docker.sock`가 나오면 Docker 그룹 권한을 다시 적용(`newgrp docker`)하거나 새 셸에서 재시도한다. `run --backend aflpp`는 `{docker_user_flag}`를 현재 사용자로 치환해 `afl-out`이 root 소유로 남지 않게 한다.
 
 ### libFuzzer (경로 스모크)
 ```bash

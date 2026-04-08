@@ -1995,3 +1995,142 @@
 - 실환경 수동 검증 대기:
   - `onnx` build 성공 시 `libonnxruntime.so` 표시 확인
   - `safetensors` build 성공 시 Rust 산출물 표시 확인
+
+## v1.0+ 운영 검증: 새 메인 퍼징 컴 ONNX local-harness 1h baseline
+
+### 태스크
+- 새 메인 퍼징 컴에서 ONNX seed/harness 환경 확인
+- `local-harness` 1시간 운영 스모크 실행
+
+### 완료 기준
+- `onnxruntime` 로더 경로가 새 머신에서 실제 동작
+- `run_backend_loop.sh` 1시간 실행이 `exit=0`으로 종료
+- `data/longrun`에 log/done/exit 파일 생성
+
+### 결과
+- 환경:
+  - host: `06-211-01`
+  - WSL2 Ubuntu + Docker Desktop + Python venv(`.venv`) 사용
+- seed/corpus:
+  - `seeds/onnx` 이관 완료
+  - `min.onnx`는 로더 경로까지 타지만 `ModelProto does not have a graph`로 비정상 seed 확인
+  - `onnx_10_model.onnx`는 `library_step: onnxruntime connected (session_ok:inputs=1,outputs=1)` 확인
+- 1회 스모크:
+  - `./target/debug/tool run --target onnx --corpus-dir seeds/onnx --workers 2 --timeout-sec 30 --restart-limit 1`
+  - 결과: `success: 26`, `failed: 0`, `timeout: 0`, `retries: 0`
+- 1시간 baseline:
+  - `TARGET=onnx BACKEND=local-harness CORPUS_DIR=seeds/onnx DURATION_HOURS=1 bash scripts/run_backend_loop.sh`
+  - 결과: `[DONE] onnx_local-harness_1h ... exit=0 runs=1060 failures=0`
+  - 산출물:
+    - `data/longrun/run-onnx_local-harness_1h.log`
+    - `data/longrun/run-onnx_local-harness_1h.done`
+    - `data/longrun/run-onnx_local-harness_1h.exit`
+
+### 검증
+- `./target/debug/tool harness --target onnx --input seeds/onnx/onnx_10_model.onnx`
+- `cat data/runs/run-*/status.json`
+- `ls -la data/runs/run-*/logs`
+- `cat data/longrun/run-onnx_local-harness_1h.exit`
+
+## v1.0+ 운영 검증: 새 메인 퍼징 컴 ONNX libfuzzer 1h
+
+### 태스크
+- 새 메인 퍼징 컴에서 `libfuzzer` backend 실환경 스모크 및 1시간 운영 검증
+
+### 완료 기준
+- `tool_harness_driver`가 `tool harness --target onnx --input @@` 경로로 정상 실행
+- `run_backend_loop.sh` 1시간 실행이 `exit=0`으로 종료
+- `data/longrun`에 `run-onnx_libfuzzer_1h.log/.done/.exit` 파일 생성
+
+### 결과
+- 준비:
+  - `scripts/build_libfuzzer_tool_driver.sh` 실행 후 `harnesses/libfuzzer/tool_harness_driver` 생성 확인
+  - 환경변수 `TOOL_LIBFUZZER_CMD='TOOL_HARNESS_TOOL=./target/debug/tool TOOL_HARNESS_TARGET=onnx TOOL_HARNESS_EXT=onnx ./harnesses/libfuzzer/tool_harness_driver -max_total_time=5 {corpus_dir} >/dev/null 2>&1'` 사용
+- 1회 스모크:
+  - `./target/debug/tool run --target onnx --backend libfuzzer --corpus-dir seeds/onnx --workers 1 --timeout-sec 30 --restart-limit 1`
+  - 결과: `success: 1`, `failed: 0`, `timeout: 0`, `retries: 0`
+- 1시간 검증:
+  - `TARGET=onnx BACKEND=libfuzzer CORPUS_DIR=seeds/onnx WORKERS=1 TIMEOUT_SEC=30 RESTART_LIMIT=1 DURATION_HOURS=1 bash scripts/run_backend_loop.sh`
+  - 결과: `[DONE] onnx_libfuzzer_1h ... exit=0 runs=440 failures=0`
+  - 산출물:
+    - `data/longrun/run-onnx_libfuzzer_1h.log`
+    - `data/longrun/run-onnx_libfuzzer_1h.done`
+    - `data/longrun/run-onnx_libfuzzer_1h.exit`
+
+### 검증
+- `ls -la data/longrun`
+- `tail -n 40 data/longrun/run-onnx_libfuzzer_1h.log`
+- `cat data/longrun/run-onnx_libfuzzer_1h.exit`
+
+## v1.0+ 운영 검증: 새 메인 퍼징 컴 ONNX aflpp 1h + triage/report/metrics 체인
+
+### 태스크
+- 새 메인 퍼징 컴에서 `aflpp` backend 실환경 스모크 및 1시간 운영 검증
+- `triage -> report -> metrics` 전체 체인 검증
+
+### 완료 기준
+- Docker 기반 `afl-fuzz` 경로가 `tool harness --target onnx --input @@`로 정상 실행
+- `run_backend_loop.sh` 1시간 실행이 `exit=0`으로 종료
+- `tool triage`, `tool report`, `data/metrics/latest.json` 갱신까지 확인
+
+### 결과
+- 준비:
+  - 환경변수 `TOOL_AFLPP_CMD='docker run --rm -v "$PWD":/work -w /work aflplusplus/aflplusplus bash -lc "afl-fuzz -n -V 5 -i {corpus_dir} -o {run_dir}/afl-out -- /work/target/debug/tool harness --target onnx --input @@ >/dev/null 2>&1 || true"'` 사용
+- 1회 스모크:
+  - `./target/debug/tool run --target onnx --backend aflpp --corpus-dir seeds/onnx --workers 1 --timeout-sec 30 --restart-limit 1`
+  - 결과: `success: 1`, `failed: 0`, `timeout: 0`, `retries: 0`
+- 1시간 검증:
+  - `TARGET=onnx BACKEND=aflpp CORPUS_DIR=seeds/onnx WORKERS=1 TIMEOUT_SEC=30 RESTART_LIMIT=1 DURATION_HOURS=1 bash scripts/run_backend_loop.sh`
+  - 결과: `[DONE] onnx_aflpp_1h ... exit=0 runs=99 failures=0`
+  - 산출물:
+    - `data/longrun/run-onnx_aflpp_1h.log`
+    - `data/longrun/run-onnx_aflpp_1h.done`
+    - `data/longrun/run-onnx_aflpp_1h.exit`
+- 체인 검증:
+  - `./target/debug/tool triage --target onnx --input seeds/onnx/onnx_10_model.onnx --repro-retries 3 --timeout-sec 10`
+  - 결과: `success_count=3`, `failed_count=0`, `timeout_count=0`, `signature_consistent=true`, `verdict=reproduced`
+  - `./target/debug/tool report`는 최초 실행에서 `./data/runs/run-1775621251187/afl-out` 권한 문제(`Permission denied`)로 실패
+  - 확인 결과: `data/runs/run-1775621251187/afl-out`이 `root:root` 소유였음
+  - 임시 복구: `sudo chown -R fuzz:fuzz data/runs data/triage data/reports data/metrics`
+  - 복구 후 `./target/debug/tool report` 재실행 성공
+  - `data/metrics/latest.json` 갱신 확인:
+    - `new_crashes_per_hour: 1`
+    - `valid_crash_ratio: 1.0000`
+    - `global_error_rate_5m: 0.0000`
+
+### 검증
+- `ls -la data/longrun`
+- `tail -n 40 data/longrun/run-onnx_aflpp_1h.log`
+- `cat data/longrun/run-onnx_aflpp_1h.exit`
+- `cat data/triage/triage-1775630494/summary.json`
+- `cat data/reports/report-1775636948/meta.json`
+- `cat data/metrics/latest.json`
+
+### 후속 메모
+- Docker 기반 `aflpp` 산출물(`afl-out`)이 `root:root`로 생성되어 일반 사용자 `tool report`가 읽지 못하는 이슈 확인
+- 후속 수정에서 `TOOL_AFLPP_CMD` 예시/운영 경로에 `docker run --user "$(id -u):$(id -g)" ...` 반영 검토 필요
+
+## v1.0+ 운영 보정: aflpp Docker 산출물 권한 가드
+
+### 태스크
+- `aflpp` Docker 실행 시 `afl-out`이 root 소유로 남지 않도록 실행 템플릿 보정
+
+### 완료 기준
+- `run --backend aflpp` 템플릿에서 현재 사용자 UID/GID를 자동 주입할 수 있음
+- 공개 실행 예시와 운영 규칙 문서가 동일한 템플릿 규칙을 따름
+
+### 결과
+- `src/main.rs`
+  - backend 템플릿 치환에 `{docker_user_flag}` placeholder 추가
+  - 현재 사용자 기준 `--user <uid>:<gid>` 값을 `id -u`, `id -g`로 계산해 주입
+- `README.md`
+  - `TOOL_AFLPP_CMD` 예시를 `docker run --rm {docker_user_flag} ...` 형식으로 갱신
+- `docs/experiment-ops.md`
+  - Docker 기반 backend는 현재 사용자 권한으로 산출물을 남긴다는 운영 규칙 추가
+
+### 검증
+- `cargo build --offline` 통과
+- 실환경 재검증 대기:
+  - 메인 퍼징 컴에서 `git pull && cargo build`
+  - `{docker_user_flag}` 포함 `TOOL_AFLPP_CMD`로 `run --backend aflpp` 재실행
+  - 생성된 `afl-out` 디렉터리 소유권이 일반 사용자로 남는지 확인

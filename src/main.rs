@@ -841,6 +841,7 @@ fn build_engine_command(
 ) -> Result<String, String> {
     let engine = resolve_engine_adapter(&args.backend)?;
     let target = resolve_target_adapter(&args.target);
+    let docker_user_flag = current_docker_user_flag();
     let template = std::env::var(engine.cmd_env).map_err(|_| {
         format!(
             "{} is not set; provide backend command template. example: {}='echo run {{target}} {{corpus_dir}}; true'",
@@ -859,11 +860,35 @@ fn build_engine_command(
         .replace("{worker_id}", &worker_id.to_string())
         .replace("{timeout_sec}", &args.timeout_sec.to_string())
         .replace("{restart_limit}", &args.restart_limit.to_string())
+        .replace("{docker_user_flag}", &docker_user_flag)
         .replace("{run_dir}", &shell_escape(run_dir))
         .replace("{workdir}", &shell_escape(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))))
         .replace("{worker_log}", &shell_escape(worker_log_path));
 
     Ok(cmd)
+}
+
+fn current_docker_user_flag() -> String {
+    let uid = read_id_output("-u");
+    let gid = read_id_output("-g");
+    match (uid, gid) {
+        (Some(uid), Some(gid)) => format!("--user {uid}:{gid}"),
+        _ => String::new(),
+    }
+}
+
+fn read_id_output(flag: &str) -> Option<String> {
+    let out = Command::new("id").arg(flag).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(out.stdout).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn resolve_engine_adapter(backend: &RunBackend) -> Result<EngineAdapter, String> {
