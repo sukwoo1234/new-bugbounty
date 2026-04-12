@@ -81,6 +81,8 @@
 - [x] 하네스 선별 루프와 연동해 유효 seed만 유지
 - [x] 중복 제거(해시 기반) 도구 추가
 - [x] 포맷별 seed 품질 리포트(개수/유효율) 출력
+- [x] seed fetch 자동화 스크립트 추가 (`scripts/seed_fetch.sh`)
+  - 진행 상태: https+allowlist+sha256 검증, archive 추출, target 확장자 수집, `seed sync --harness-filter` 연동 구현 완료
 
 ## D) Coverage 표시 흐름 이식
 - [x] coverage 실행을 별도 job/명령으로 분리
@@ -92,6 +94,13 @@
 - [x] 1시간 운영 스모크 (run -> triage -> report -> metrics)
   - 진행 상태: 새 메인 퍼징 컴(`06-211-01`)에서 `local-harness` ONNX 1h baseline 성공(`exit=0`, `runs=1060`, `failures=0`), `libfuzzer` ONNX 1h 성공(`exit=0`, `runs=440`, `failures=0`), `aflpp` ONNX 1h 성공(`exit=0`, `runs=99`, `failures=0`) 확인. 이후 `triage -> report -> metrics` 체인 검증 완료
 - [ ] 6시간 운영 검증 (장시간 루프/중단/복구)
+  - 진행 상태: 새 메인 퍼징 컴(`06-211-01`)에서 ONNX 6h 비교 실행 완료(`local-harness` `exit=0/runs=4395/failures=0`, `libfuzzer` `exit=0/runs=2628/failures=0`, `aflpp` `exit=0/runs=580/failures=0`) + safetensors 6h 비교 실행 완료(`local-harness` `exit=0/runs=763/failures=0`, `libfuzzer` `exit=0/runs=743/failures=0`, `aflpp` `exit=0/runs=5804/failures=0`). 장시간 루프 안정성은 확인됐고, 명시적 중단/복구 시나리오 검증은 잔여
+- [x] CLI 운영 간소화 래퍼 구현 (`scripts/run_long.sh`, `scripts/collect_longrun.sh`)
+  - 완료 기준: backend/target/hours/tag만으로 장시간 실행 가능, 종료 후 metrics snapshot 자동 보존
+  - 진행 상태: 스크립트 구현 완료 + `docs/experiment-ops.md` 사용법 반영
+- [x] Exporter v1 구현 (`scripts/export_experiment_summary.sh`)
+  - 완료 기준: `results/experiments/<experiment_id>/`에 `manifest.json`, `summary.md`, `run-status.json`, `metrics-latest.json`, `triage-index.tsv`, `report-index.tsv`, `notes.md` 자동 생성
+  - 진행 상태: 스크립트 구현 완료 + 기본 인자/출력 스키마 동작 검증(정적 확인) + `docs/experiment-ops.md` 사용법 반영
 - [ ] 비교 지표 수집 템플릿 작성 (신규 crash, 유효율, 고유 시그니처)
 - [ ] 완료 항목을 `docs/progress-log.md`에 단계별 기록
 - [x] 퍼징 호스트 의존성 설치 스크립트/사용법 문서화 (`scripts/setup_fuzz_host.sh`, `README.md`)

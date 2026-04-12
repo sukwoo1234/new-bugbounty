@@ -2,6 +2,85 @@
 
 이 문서는 세션 중 진행한 작업을 `태스크 / 완료 기준 / 결과 / 검증` 형식으로 기록한다.
 
+## Phase 12: seed fetch 자동화 + safetensors 6h 완료
+
+### 태스크
+- safetensors 6h 3백엔드 검증 완료
+- seed 다운로드/정리 자동화 스크립트 추가
+
+### 완료 기준
+- safetensors `local-harness/libfuzzer/aflpp` 6h 완료값 확보
+- seed fetch 스크립트가 URL 검증/sha256/추출/sync 경로를 제공
+
+### 결과
+- safetensors 6h 완료:
+  - `20260410_safetensors_local_6h_06-211-01`: `exit=0`, `runs=763`, `failures=0`
+  - `20260410_safetensors_libfuzzer_6h_06-211-01`: `exit=0`, `runs=743`, `failures=0`
+  - `20260410_safetensors_aflpp_6h_06-211-01`: `exit=0`, `runs=5804`, `failures=0`
+- 결과 번들 추가:
+  - `results/experiments/2026-04-10-safetensors-backend-comparison-6h-06-211-01/{summary.md,manifest.json,notes.md}`
+- 운영 자동화 스크립트 추가:
+  - `scripts/run_long.sh`
+  - `scripts/collect_longrun.sh`
+  - `scripts/export_experiment_summary.sh`
+  - `scripts/seed_fetch.sh`
+
+### 검증
+- 사용자 실환경 longrun 결과 확인:
+  - `data/longrun/run-20260410_safetensors_aflpp_6h_06-211-01.exit`
+- metrics snapshot 보존:
+  - `/tmp/metrics-20260410_safetensors_aflpp_6h_06-211-01.json`
+- 스크립트 문법/도움말 확인:
+  - `bash -n scripts/run_long.sh scripts/collect_longrun.sh scripts/export_experiment_summary.sh scripts/seed_fetch.sh`
+  - `bash scripts/export_experiment_summary.sh --help`
+
+## Phase 11: safetensors 장시간 검증 착수 + 운영 자동화 계획
+
+### 태스크
+- safetensors 백엔드 검증(1h/6h) 진행
+- CLI 운영 간소화 및 Exporter v1 구현 계획 문서화
+
+### 완료 기준
+- safetensors 1h 검증 3백엔드(`local-harness/libfuzzer/aflpp`) 완료
+- safetensors 6h 검증 3백엔드 완료
+- 운영 자동화 계획 문서(`docs/plans/*`) 생성
+- 운영 자동화 스크립트(v1) 구현
+- safetensors 6h 비교 결과 번들 생성
+
+### 결과
+- safetensors 1h 검증 완료:
+  - `20260410_safetensors_local_1h_06-211-01`: `exit=0`, `runs=128`, `failures=0`
+  - `20260410_safetensors_libfuzzer_1h_06-211-01`: `exit=0`, `runs=125`, `failures=0`
+  - `20260410_safetensors_aflpp_1h_06-211-01`: `exit=0`, `runs=971`, `failures=0`
+- safetensors 6h 진행:
+  - `20260410_safetensors_local_6h_06-211-01`: `exit=0`, `runs=763`, `failures=0`
+  - `20260410_safetensors_libfuzzer_6h_06-211-01`: `exit=0`, `runs=743`, `failures=0`
+  - `20260410_safetensors_aflpp_6h_06-211-01`: `exit=0`, `runs=5804`, `failures=0`
+- 계획 문서 추가:
+  - `docs/plans/bugbounty-exporter-v1-plan.md`
+  - `docs/plans/cli-ops-simplification-plan.md`
+- 운영 자동화 스크립트(v1) 추가:
+  - `scripts/run_long.sh`
+  - `scripts/collect_longrun.sh`
+  - `scripts/export_experiment_summary.sh`
+- safetensors 6h 결과 번들 추가:
+  - `results/experiments/2026-04-10-safetensors-backend-comparison-6h-06-211-01/summary.md`
+  - `results/experiments/2026-04-10-safetensors-backend-comparison-6h-06-211-01/manifest.json`
+  - `results/experiments/2026-04-10-safetensors-backend-comparison-6h-06-211-01/notes.md`
+
+### 검증
+- 사용자 실환경 longrun 결과 확인:
+  - `data/longrun/run-20260410_safetensors_*_1h_06-211-01.exit`
+  - `data/longrun/run-20260410_safetensors_local_6h_06-211-01.exit`
+  - `data/longrun/run-20260410_safetensors_libfuzzer_6h_06-211-01.exit`
+- metrics snapshot 보존:
+  - `/tmp/metrics-20260410_safetensors_local_1h_06-211-01.json`
+  - `/tmp/metrics-20260410_safetensors_libfuzzer_1h_06-211-01.json`
+  - `/tmp/metrics-20260410_safetensors_aflpp_1h_06-211-01.json`
+  - `/tmp/metrics-20260410_safetensors_local_6h_06-211-01.json`
+  - `/tmp/metrics-20260410_safetensors_libfuzzer_6h_06-211-01.json`
+  - `/tmp/metrics-20260410_safetensors_aflpp_6h_06-211-01.json`
+
 ## Phase 1: 스캐폴딩
 
 ### 태스크
@@ -2177,3 +2256,41 @@
 
 ### 검증
 - `cargo build --offline` 통과
+
+## v1.0+ 장시간 비교: ONNX backend 6h (06-211-01)
+
+### 태스크
+- 새 메인 퍼징 컴에서 ONNX 대상 `local-harness`, `libfuzzer`, `aflpp`를 동일 조건으로 6시간 비교 실행
+
+### 완료 기준
+- 세 backend 모두 `scripts/run_backend_loop.sh` 6시간 실행이 `exit=0`으로 종료
+- 각 backend별 `runs`, `failures`, `metrics/latest.json` 스냅샷을 확보
+
+### 결과
+- 공통 조건:
+  - host: `06-211-01`
+  - corpus: `seeds/onnx`
+  - workers: `1`
+  - timeout: `30`
+  - restart_limit: `1`
+  - duration: `6h`
+- 상세 비교 표/요약 묶음:
+  - [summary.md](/home/ssw/bugbounty/results/experiments/2026-04-08-onnx-backend-comparison-6h-06-211-01/summary.md)
+  - [manifest.json](/home/ssw/bugbounty/results/experiments/2026-04-08-onnx-backend-comparison-6h-06-211-01/manifest.json)
+  - [notes.md](/home/ssw/bugbounty/results/experiments/2026-04-08-onnx-backend-comparison-6h-06-211-01/notes.md)
+- 요약:
+  - `local-harness`: `exit=0`, `runs=4395`, `failures=0`
+  - `libfuzzer`: `exit=0`, `runs=2628`, `failures=0`
+  - `aflpp`: `exit=0`, `runs=580`, `failures=0`
+
+### 검증
+- `tail -n 40 data/longrun/run-20260408_onnx_local_6h_06-211-01.log`
+- `cat data/longrun/run-20260408_onnx_local_6h_06-211-01.exit`
+- `tail -n 40 data/longrun/run-20260408_onnx_libfuzzer_6h_06-211-01.log`
+- `cat data/longrun/run-20260408_onnx_libfuzzer_6h_06-211-01.exit`
+- `tail -n 40 data/longrun/run-20260408_onnx_aflpp_6h_06-211-01.log`
+- `cat data/longrun/run-20260408_onnx_aflpp_6h_06-211-01.exit`
+
+### 메모
+- `new_paths_per_hour`는 현재 구현상 success 기반 proxy 지표이며, coverage edge 계수와 동일 의미로 해석하면 안 된다.
+- 이번 6시간 결과에서는 `new_crashes_per_hour = 0`이므로, backend 간 crash 발견 성능 비교보다는 장시간 안정성/처리량 비교에 의미가 있다.

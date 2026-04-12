@@ -1,0 +1,9 @@
+- Source host: `06-211-01`
+- Long-run logs:
+  - `data/longrun/run-20260410_safetensors_local_6h_06-211-01.*`
+  - `data/longrun/run-20260410_safetensors_libfuzzer_6h_06-211-01.*`
+  - `data/longrun/run-20260410_safetensors_aflpp_6h_06-211-01.*`
+- `aflpp` run used `{docker_user_flag}` expansion and confirmed command line included `--user 1000:1000`.
+- Metric caution:
+  - `new_paths_per_hour` is currently computed from `run` success counts and stored as a proxy metric.
+  - It should not be cited as LLVM/libFuzzer/AFL++ edge coverage, bitmap coverage, or unique path discovery.

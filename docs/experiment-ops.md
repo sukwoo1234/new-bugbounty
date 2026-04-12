@@ -283,6 +283,55 @@ TARGET=onnx BACKEND=aflpp CORPUS_DIR=seeds/onnx WORKERS=1 TIMEOUT_SEC=30 RESTART
 - 신규 backend나 target을 추가해도 최종 산출물은 위 루트 중 하나로 수렴해야 한다.
 - UI/대시보드와 report 파이프라인은 위 루트만 신뢰한다.
 
+## 운영 스크립트 (간소화)
+
+### 장시간 실행 래퍼
+- `scripts/run_long.sh`를 사용해 긴 환경변수 명령을 단축한다.
+- 예시:
+```bash
+bash scripts/run_long.sh --target onnx --backend aflpp --hours 6 --tag 20260408_onnx_aflpp_6h_06-211-01
+```
+
+### 결과 수집 래퍼
+- `scripts/collect_longrun.sh`로 `log/exit/metrics snapshot`을 한 번에 정리한다.
+- 예시:
+```bash
+bash scripts/collect_longrun.sh --tag 20260408_onnx_aflpp_6h_06-211-01
+```
+
+### 실험 요약 Exporter v1
+- `scripts/export_experiment_summary.sh`로 결과 번들(`results/experiments/<experiment_id>/`)을 생성한다.
+- 예시:
+```bash
+bash scripts/export_experiment_summary.sh \
+  --experiment-id 2026-04-08-onnx-aflpp-6h-06-211-01 \
+  --machine-label 06-211-01 \
+  --target onnx \
+  --backend aflpp \
+  --duration-hours 6 \
+  --corpus-dir seeds/onnx \
+  --workers 1 \
+  --timeout-sec 30 \
+  --restart-limit 1 \
+  --metrics-file /tmp/metrics-20260408_onnx_aflpp_6h_06-211-01.json \
+  --notes "onnx 6h backend comparison export"
+```
+
+### seed fetch 자동화
+- `scripts/seed_fetch.sh`로 seed 다운로드/검증/정리를 자동화한다.
+- 기본 동작:
+  - https + allowlist host 검증
+  - 선택적 SHA256 검증
+  - archive 추출 후 target 확장자 파일 수집
+  - `tool seed sync --harness-filter` + `tool seed stats` 실행
+- 예시:
+```bash
+bash scripts/seed_fetch.sh \
+  --target gguf \
+  --url https://huggingface.co/<official-org>/<repo>/resolve/<rev>/<file>.gguf \
+  --sha256 <expected_sha256>
+```
+
 ## 실험 종료 후 정리 절차
 1. `data/longrun/*.log`, `*.exit`, `*.done` 확인
 2. 최신 run 상태 파일 확인
