@@ -2195,25 +2195,30 @@ fn maybe_run_external_harness(target: &TargetKind, input: &Path) -> Result<Strin
 }
 
 fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
+    // Use non-interactive parser probe to avoid llama-cli REPL output loops.
     let mut candidates = Vec::new();
     if let Ok(custom) = std::env::var("TOOL_LLAMA_CLI_BIN") {
         if !custom.trim().is_empty() {
-            candidates.push(custom);
+            let custom_path = PathBuf::from(custom);
+            if let Some(bin_dir) = custom_path.parent() {
+                candidates.push(bin_dir.join("llama-gguf-hash").display().to_string());
+            }
         }
     }
-    candidates.push("llama-cli".to_string());
-    candidates.push("tools/llama.cpp/build/bin/llama-cli".to_string());
-    candidates.push("./tools/llama.cpp/build/bin/llama-cli".to_string());
+    candidates.push("llama-gguf-hash".to_string());
+    candidates.push("tools/llama.cpp/build/bin/llama-gguf-hash".to_string());
+    candidates.push("./tools/llama.cpp/build/bin/llama-gguf-hash".to_string());
 
     for cmd in candidates {
         let result = command_with_core_dump_off(&cmd)
-            .args(["-m", &input.display().to_string(), "-n", "1", "-p", "hi"])
+            .args(["--sha256", &input.display().to_string()])
             .output();
 
         match result {
             Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
                 return LibraryConnectResult {
-                    step: format!("llama.cpp parser connected ({cmd} executed)"),
+                    step: format!("llama.cpp parser connected ({cmd}: {})", first_line(&stdout)),
                     connected: true,
                 };
             }
