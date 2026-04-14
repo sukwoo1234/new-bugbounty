@@ -56,9 +56,8 @@
 - [x] 크래시 상세/리포트 링크 뷰 추가
 - [x] dashboard 렌더를 `src/main.rs`에서 분리 (UI 모듈 + 템플릿 파일 구조)
 - [x] 코어 실행 로직과 UI 서버를 분리 유지
-- [ ] monitor/notifier 기반 크래시 알림 루프 추가(Discord/Webhook 연동)
-  - 부분 구현 완료: `scripts/run_onnx_6h.sh`에서 `~/.config/bugbounty/discord_webhook` 파일 기반 START/DONE 알림 전송
-  - 잔여 구현: `scripts/run_backend_loop.sh` 공통 notifier 통합, run 결과 기반 crash 이벤트 알림, 운영 검증(1h/6h) 로그 기준 명문화
+- [x] monitor/notifier 기반 크래시 알림 루프 추가(Discord/Webhook 연동)
+  - 진행 상태: `scripts/run_backend_loop.sh`에 공통 Discord notifier 통합 완료 (`START/DONE/FAIL` + run 결과 기반 `ALERT(failed/timeout)`), `run_long.sh` 경유 실행에도 동일 적용
 - [ ] 레거시 수준 UI 고도화(탐색/재현 동선 강화)
   - 대시보드 카드/상세/링크 UX 개선
   - run/triage/report 흐름의 웹 네비게이션 연결
@@ -101,7 +100,8 @@
 - [x] Exporter v1 구현 (`scripts/export_experiment_summary.sh`)
   - 완료 기준: `results/experiments/<experiment_id>/`에 `manifest.json`, `summary.md`, `run-status.json`, `metrics-latest.json`, `triage-index.tsv`, `report-index.tsv`, `notes.md` 자동 생성
   - 진행 상태: 스크립트 구현 완료 + 기본 인자/출력 스키마 동작 검증(정적 확인) + `docs/experiment-ops.md` 사용법 반영
-- [ ] 비교 지표 수집 템플릿 작성 (신규 crash, 유효율, 고유 시그니처)
+- [x] 비교 지표 수집 템플릿 작성 (신규 crash, 유효율, 고유 시그니처)
+  - 진행 상태: `scripts/export_experiment_summary.sh` 출력 스키마(`summary.md` 메트릭 테이블 + `manifest.json` + `triage/report index`)를 기준 템플릿으로 확정
 - [ ] 완료 항목을 `docs/progress-log.md`에 단계별 기록
 - [x] 퍼징 호스트 의존성 설치 스크립트/사용법 문서화 (`scripts/setup_fuzz_host.sh`, `README.md`)
   - 포함 의존성: `rustup/cargo`, `clang`, `docker.io(선택)`, 기본 빌드/운영 패키지
@@ -195,13 +195,13 @@
   - 완료 기준: 선택 crash에 대해 재현 실행 트리거 + 결과 표시
   - 검증: 정상/실패 1회씩 재현 결과 기록
   - 진행 상태: Crashes 탭 Replay 패널 + `/replay/status|start|stop` API 구현 완료, 실환경에서 `verdict=reproduced`, `summary.json` 표시 확인 완료
-- [ ] G-3-2 Target upload/build UI/API
+- [x] G-3-2 Target upload/build UI/API
   - 완료 기준: 공식 릴리스 기반 target prepare/build 요청 경로 제공(보안 가드 포함)
     - `gguf`: `llama.cpp` 최소 유효 build 경로 성공 + 대표 산출물(`llama-cli`) 확인
     - `onnx`: `onnxruntime` 최소 CPU shared library build 경로 성공 + 대표 산출물(`libonnxruntime.so`) 확인
     - `safetensors`: `safetensors` Rust crate 최소 release build 경로 성공 + 대표 산출물(`libsafetensors*.rlib` 또는 동등 산출물) 확인
   - 검증: 비허용 파일/경로 차단 확인
-  - 진행 상태: Config 탭 `Target Prepare` 패널 + `/target/status|prepare|stop` API 구현 완료. `Target Build` 패널 + `/target/build/status|start|stop` API 구현 진행 중
+  - 진행 상태: Config 탭 `Target Prepare` 패널 + `/target/status|prepare|stop` API, `Target Build` 패널 + `/target/build/status|start|stop` API 구현 완료. 실환경에서 `gguf/onnx/safetensors` build 산출물 확인 및 `scripts/check_ui_routes.sh` 경로 검증 완료
 
 ### G 트랙 공통 가드
 - [ ] 코어 불변: `run/triage/report/metrics` 코어 처리 함수 직접 수정 금지

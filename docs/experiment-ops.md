@@ -292,6 +292,19 @@ TARGET=onnx BACKEND=aflpp CORPUS_DIR=seeds/onnx WORKERS=1 TIMEOUT_SEC=30 RESTART
 bash scripts/run_long.sh --target onnx --backend aflpp --hours 6 --tag 20260408_onnx_aflpp_6h_06-211-01
 ```
 
+### Discord notifier 공통 설정
+- `scripts/run_backend_loop.sh` 기준으로 START/DONE/FAIL/ALERT 알림을 공통 전송한다.
+- 우선순위:
+  - `DISCORD_WEBHOOK` 환경변수 (직접 지정)
+  - `HOOK_FILE` 경로 파일 (기본: `~/.config/bugbounty/discord_webhook`)
+- ALERT 기준:
+  - 각 run 반복의 최신 `status.json`에서 `failed > 0` 또는 `timeout > 0`
+- 예시:
+```bash
+export DISCORD_WEBHOOK='https://discord.com/api/webhooks/...'
+bash scripts/run_long.sh --target onnx --backend local-harness --hours 1 --tag 20260414_onnx_notify_smoke_06-211-01
+```
+
 ### 결과 수집 래퍼
 - `scripts/collect_longrun.sh`로 `log/exit/metrics snapshot`을 한 번에 정리한다.
 - 예시:
@@ -316,6 +329,15 @@ bash scripts/export_experiment_summary.sh \
   --metrics-file /tmp/metrics-20260408_onnx_aflpp_6h_06-211-01.json \
   --notes "onnx 6h backend comparison export"
 ```
+
+### 비교 지표 템플릿(고정)
+- 실험 비교는 아래 고정 컬럼을 기준으로 `summary.md` 테이블/`manifest.json`에 저장한다.
+  - `total_runs`, `success`, `failed`, `timeout`, `retries`
+  - `new_crashes_per_hour`, `valid_crash_ratio`
+  - `reproduced_count`, `report_count`, `unique_signature_count`
+  - `new_paths_per_hour`(proxy), `global_error_rate_5m`
+- 주의:
+  - `new_paths_per_hour`는 현재 proxy metric이며 true coverage로 해석하지 않는다.
 
 ### seed fetch 자동화
 - `scripts/seed_fetch.sh`로 seed 다운로드/검증/정리를 자동화한다.

@@ -2,6 +2,56 @@
 
 이 문서는 세션 중 진행한 작업을 `태스크 / 완료 기준 / 결과 / 검증` 형식으로 기록한다.
 
+## Phase 18: Discord 공통 notifier + 비교 지표 템플릿 확정
+
+### 태스크
+- `run_backend_loop.sh` 공통 Discord notifier 통합
+- Exporter 기반 비교 지표 템플릿 고정 문서화
+
+### 완료 기준
+- 장시간 루프에서 START/DONE/FAIL + run 결과 기반 ALERT 전송 경로 구현
+- `docs/experiment-ops.md`에 notifier 설정/고정 지표 컬럼 반영
+
+### 결과
+- `scripts/run_backend_loop.sh`
+  - `DISCORD_WEBHOOK`/`HOOK_FILE` 기반 webhook 로딩 추가
+  - START/DONE/FAIL 알림 추가
+  - 최신 `status.json`의 `failed/timeout` 감지 시 ALERT 알림 추가
+- `docs/experiment-ops.md`
+  - Discord 공통 설정 섹션 추가
+  - 비교 지표 템플릿(고정 컬럼 + proxy metric 주의) 추가
+- `docs/dev-todo-legacy-upgrade.md`
+  - notifier 항목 완료 처리
+  - 비교 지표 수집 템플릿 항목 완료 처리
+
+### 검증
+- 정적 검증:
+  - `bash -n scripts/run_backend_loop.sh`
+  - notifier 미설정 시 기존 동작 영향 없음(무시)
+  - notifier 설정 시 longrun 로그와 Discord 메시지 기준으로 START/DONE/FAIL/ALERT 확인 가능
+
+## Phase 17: G-3-2 Target Build UI/API 완료 검증 (06-211-01)
+
+### 태스크
+- G-3-2(Target upload/build UI/API) 최종 검증 및 완료 처리
+
+### 완료 기준
+- `gguf/onnx/safetensors` build 산출물 확인
+- UI route 검증에서 `/target/status`, `/target/build/status` 포함 통과
+
+### 결과
+- `gguf`: `llama-cli` 산출물 확인 완료
+- `onnx`: `libonnxruntime.so.1.23.2` 산출물 확인 완료
+  - 참고: `expected artifact missing: libonnxruntime.so` 메시지는 비버전 파일명 기대치 차이(버전 파일은 생성됨)
+- `safetensors`: `libsafetensors-*.rlib` 산출물 확인 완료
+- UI/API: `scripts/check_ui_routes.sh`에서 `/target/status`, `/target/build/status` 포함 `[OK]` 통과
+
+### 검증
+- 사용자 실환경 명령:
+  - `./target/debug/tool prepare-target --target gguf|onnx|safetensors`
+  - `bash scripts/build_prepared_target.sh ./data gguf|onnx|safetensors`
+  - `scripts/check_ui_routes.sh`
+
 ## Phase 16: ONNX 중단/복구 시나리오 검증 완료 (06-211-01)
 
 ### 태스크
