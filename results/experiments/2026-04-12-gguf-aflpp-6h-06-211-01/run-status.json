@@ -1,0 +1,12 @@
+{
+  "run_id": "1776099808711",
+  "target": "gguf",
+  "total": 1,
+  "success": 1,
+  "failed": 0,
+  "timeout": 0,
+  "retries": 0,
+  "workers": 1,
+  "timeout_sec": 30,
+  "restart_limit": 1
+}

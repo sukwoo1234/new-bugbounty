@@ -1,0 +1,2 @@
+- generated_by: scripts/export_experiment_summary.sh
+- experiment_id: `2026-04-12-gguf-aflpp-6h-06-211-01`

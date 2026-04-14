@@ -92,9 +92,9 @@
 
 ## E) 통합 검증/문서
 - [x] 1시간 운영 스모크 (run -> triage -> report -> metrics)
-  - 진행 상태: 새 메인 퍼징 컴(`06-211-01`)에서 `local-harness` ONNX 1h baseline 성공(`exit=0`, `runs=1060`, `failures=0`), `libfuzzer` ONNX 1h 성공(`exit=0`, `runs=440`, `failures=0`), `aflpp` ONNX 1h 성공(`exit=0`, `runs=99`, `failures=0`) 확인. 이후 `triage -> report -> metrics` 체인 검증 완료
+  - 진행 상태: 새 메인 퍼징 컴(`06-211-01`)에서 ONNX 1h(`local-harness` `runs=1060`, `libfuzzer` `runs=440`, `aflpp` `runs=99`) + GGUF 1h(`local-harness` `runs=1484`, `libfuzzer` `runs=445`, `aflpp` `runs=194`) 모두 `exit=0/failures=0` 확인. ONNX 기준 `triage -> report -> metrics` 체인 검증 완료
 - [ ] 6시간 운영 검증 (장시간 루프/중단/복구)
-  - 진행 상태: 새 메인 퍼징 컴(`06-211-01`)에서 ONNX 6h 비교 실행 완료(`local-harness` `exit=0/runs=4395/failures=0`, `libfuzzer` `exit=0/runs=2628/failures=0`, `aflpp` `exit=0/runs=580/failures=0`) + safetensors 6h 비교 실행 완료(`local-harness` `exit=0/runs=763/failures=0`, `libfuzzer` `exit=0/runs=743/failures=0`, `aflpp` `exit=0/runs=5804/failures=0`). 장시간 루프 안정성은 확인됐고, 명시적 중단/복구 시나리오 검증은 잔여
+  - 진행 상태: 새 메인 퍼징 컴(`06-211-01`)에서 ONNX 6h(`local-harness` `runs=4395`, `libfuzzer` `runs=2628`, `aflpp` `runs=580`) + safetensors 6h(`local-harness` `runs=763`, `libfuzzer` `runs=743`, `aflpp` `runs=5804`) + GGUF 6h(`local-harness` `runs=8826`, `libfuzzer` `runs=2656`, `aflpp` `runs=1107`) 모두 `exit=0/failures=0` 확인. 장시간 루프 안정성은 확인됐고, 명시적 중단/복구 시나리오 검증은 잔여
 - [x] CLI 운영 간소화 래퍼 구현 (`scripts/run_long.sh`, `scripts/collect_longrun.sh`)
   - 완료 기준: backend/target/hours/tag만으로 장시간 실행 가능, 종료 후 metrics snapshot 자동 보존
   - 진행 상태: 스크립트 구현 완료 + `docs/experiment-ops.md` 사용법 반영
@@ -105,6 +105,9 @@
 - [ ] 완료 항목을 `docs/progress-log.md`에 단계별 기록
 - [x] 퍼징 호스트 의존성 설치 스크립트/사용법 문서화 (`scripts/setup_fuzz_host.sh`, `README.md`)
   - 포함 의존성: `rustup/cargo`, `clang`, `docker.io(선택)`, 기본 빌드/운영 패키지
+- [x] GGUF harness 비대화형 안정화
+  - 완료 기준: `tool harness --target gguf` 실행 시 `>` 반복 출력 없이 종료
+  - 진행 상태: `llama-cli` 기반 probe를 `llama-gguf-hash` 비대화형 probe로 전환, 퍼징 머신(`06-211-01`) 재검증 완료
 - [ ] crash artifact 관리 정책 추가(대량 생성 대비)
   - 후보: 중복 해시 정리, 보관 상한, 자동 압축/정리, 의미 없는 빈 crash 필터
 

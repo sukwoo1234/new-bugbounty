@@ -2,6 +2,82 @@
 
 이 문서는 세션 중 진행한 작업을 `태스크 / 완료 기준 / 결과 / 검증` 형식으로 기록한다.
 
+## Phase 15: GGUF 6h backend 비교 검증 완료 (06-211-01)
+
+### 태스크
+- GGUF target 기준 `local-harness/libfuzzer/aflpp` 6시간 운영 검증
+
+### 완료 기준
+- 3개 backend 모두 `exit=0`
+- longrun 로그/exit 파일 및 metrics snapshot 확보
+
+### 결과
+- `20260412_gguf_local_6h_06-211-01`: `exit=0`, `runs=8826`, `failures=0`
+- `20260412_gguf_libfuzzer_6h_06-211-01`: `exit=0`, `runs=2656`, `failures=0`
+- `20260412_gguf_aflpp_6h_06-211-01`: `exit=0`, `runs=1107`, `failures=0`
+- metrics snapshot:
+  - `/tmp/metrics-20260412_gguf_local_6h_06-211-01.json`
+  - `/tmp/metrics-20260412_gguf_libfuzzer_6h_06-211-01.json`
+  - `/tmp/metrics-20260412_gguf_aflpp_6h_06-211-01.json`
+
+### 검증
+- 사용자 실환경 확인:
+  - `tail -n 40 data/longrun/run-20260412_gguf_*_6h_06-211-01.log`
+  - `cat data/longrun/run-20260412_gguf_*_6h_06-211-01.exit`
+  - `cat data/metrics/latest.json`
+
+### 주의
+- `new_paths_per_hour`는 현재 proxy metric이며 true coverage 지표로 해석하면 안 됨
+
+## Phase 14: GGUF 1h backend 비교 검증 완료 (06-211-01)
+
+### 태스크
+- GGUF target 기준 `local-harness/libfuzzer/aflpp` 1시간 운영 검증
+
+### 완료 기준
+- 3개 backend 모두 `exit=0`
+- longrun 로그/exit 파일 및 metrics snapshot 확보
+
+### 결과
+- `20260412_gguf_local_1h_06-211-01`: `exit=0`, `runs=1484`, `failures=0`
+- `20260412_gguf_libfuzzer_1h_06-211-01`: `exit=0`, `runs=445`, `failures=0`
+- `20260412_gguf_aflpp_1h_06-211-01`: `exit=0`, `runs=194`, `failures=0`
+- metrics snapshot:
+  - `/tmp/metrics-20260412_gguf_local_1h_06-211-01.json`
+  - `/tmp/metrics-20260412_gguf_libfuzzer_1h_06-211-01.json`
+  - `/tmp/metrics-20260412_gguf_aflpp_1h_06-211-01.json`
+
+### 검증
+- 사용자 실환경 확인:
+  - `tail -n 40 data/longrun/run-20260412_gguf_*_1h_06-211-01.log`
+  - `cat data/longrun/run-20260412_gguf_*_1h_06-211-01.exit`
+  - `cat data/metrics/latest.json`
+
+### 주의
+- `new_paths_per_hour`는 현재 proxy metric이며 true coverage 지표로 해석하면 안 됨
+
+## Phase 13: GGUF harness `>` 반복 출력 이슈 수정
+
+### 태스크
+- GGUF harness 실행 시 `>`가 반복 출력되며 종료되지 않는 문제 원인 분석/수정
+
+### 완료 기준
+- `tool harness --target gguf`가 대화형 루프 없이 종료
+- 퍼징 머신(`06-211-01`)에서 동일 명령 재검증 성공
+
+### 결과
+- 원인: `gguf` 라이브러리 연결 probe가 `llama-cli`를 호출하며 일부 GGUF에서 REPL 모드로 진입
+- 수정: `src/main.rs`의 `gguf_library_connect()`를 비대화형 probe(`llama-gguf-hash --sha256`) 기반으로 변경
+- 커밋: `570020f` (`fix: avoid gguf harness REPL loop by using non-interactive parser probe`)
+
+### 검증
+- 개발 컴:
+  - `cargo build --offline`
+  - `./target/debug/tool harness --target gguf --input seeds/gguf/stories260K-f32.gguf` 성공
+- 퍼징 머신(`06-211-01`):
+  - `git pull` -> `cargo build --offline` -> 동일 harness 명령 성공
+  - 출력: `library_step: llama.cpp parser connected (.../llama-gguf-hash: sha256 ...)`
+
 ## Phase 12: seed fetch 자동화 + safetensors 6h 완료
 
 ### 태스크
