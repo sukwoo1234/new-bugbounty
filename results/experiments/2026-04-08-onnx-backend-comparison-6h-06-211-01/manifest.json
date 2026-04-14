@@ -1,0 +1,52 @@
+{
+  "experiment_id": "2026-04-08-onnx-backend-comparison-6h-06-211-01",
+  "machine_label": "06-211-01",
+  "target": "onnx",
+  "duration_hours": 6,
+  "workers": 1,
+  "timeout_sec": 30,
+  "restart_limit": 1,
+  "corpus_dir": "seeds/onnx",
+  "git_commit": "604064e",
+  "backend_results": [
+    {
+      "backend": "local-harness",
+      "tag": "20260408_onnx_local_6h_06-211-01",
+      "exit_code": 0,
+      "runs": 4395,
+      "failures": 0,
+      "metrics": {
+        "new_paths_per_hour": 19942,
+        "new_crashes_per_hour": 0,
+        "valid_crash_ratio": 1.0,
+        "global_error_rate_5m": 0.0
+      }
+    },
+    {
+      "backend": "libfuzzer",
+      "tag": "20260408_onnx_libfuzzer_6h_06-211-01",
+      "exit_code": 0,
+      "runs": 2628,
+      "failures": 0,
+      "metrics": {
+        "new_paths_per_hour": 439,
+        "new_crashes_per_hour": 0,
+        "valid_crash_ratio": 1.0,
+        "global_error_rate_5m": 0.0
+      }
+    },
+    {
+      "backend": "aflpp",
+      "tag": "20260408_onnx_aflpp_6h_06-211-01",
+      "exit_code": 0,
+      "runs": 580,
+      "failures": 0,
+      "metrics": {
+        "new_paths_per_hour": 98,
+        "new_crashes_per_hour": 0,
+        "valid_crash_ratio": 1.0,
+        "global_error_rate_5m": 0.0
+      }
+    }
+  ]
+}

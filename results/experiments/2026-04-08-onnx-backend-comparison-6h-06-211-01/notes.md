@@ -1,0 +1,10 @@
+- Source host: `06-211-01`
+- Long-run logs:
+  - `data/longrun/run-20260408_onnx_local_6h_06-211-01.*`
+  - `data/longrun/run-20260408_onnx_libfuzzer_6h_06-211-01.*`
+  - `data/longrun/run-20260408_onnx_aflpp_6h_06-211-01.*`
+- `aflpp` run used `{docker_user_flag}` expansion and confirmed `afl-out` ownership stayed with user `fuzz:fuzz`.
+- `triage/report/metrics` chain validation for ONNX was already completed in earlier 1h validation; this bundle focuses on 6h backend comparison.
+- Metric caution:
+  - `new_paths_per_hour` is currently computed from `run` success counts and stored as a proxy metric.
+  - It should not be cited as LLVM/libFuzzer/AFL++ edge coverage, bitmap coverage, or unique path discovery.
