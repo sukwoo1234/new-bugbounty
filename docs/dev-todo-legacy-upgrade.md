@@ -93,8 +93,8 @@
 ## E) 통합 검증/문서
 - [x] 1시간 운영 스모크 (run -> triage -> report -> metrics)
   - 진행 상태: 새 메인 퍼징 컴(`06-211-01`)에서 ONNX 1h(`local-harness` `runs=1060`, `libfuzzer` `runs=440`, `aflpp` `runs=99`) + GGUF 1h(`local-harness` `runs=1484`, `libfuzzer` `runs=445`, `aflpp` `runs=194`) 모두 `exit=0/failures=0` 확인. ONNX 기준 `triage -> report -> metrics` 체인 검증 완료
-- [ ] 6시간 운영 검증 (장시간 루프/중단/복구)
-  - 진행 상태: 새 메인 퍼징 컴(`06-211-01`)에서 ONNX 6h(`local-harness` `runs=4395`, `libfuzzer` `runs=2628`, `aflpp` `runs=580`) + safetensors 6h(`local-harness` `runs=763`, `libfuzzer` `runs=743`, `aflpp` `runs=5804`) + GGUF 6h(`local-harness` `runs=8826`, `libfuzzer` `runs=2656`, `aflpp` `runs=1107`) 모두 `exit=0/failures=0` 확인. 장시간 루프 안정성은 확인됐고, 명시적 중단/복구 시나리오 검증은 잔여
+- [x] 6시간 운영 검증 (장시간 루프/중단/복구)
+  - 진행 상태: 새 메인 퍼징 컴(`06-211-01`)에서 ONNX 6h(`local-harness` `runs=4395`, `libfuzzer` `runs=2628`, `aflpp` `runs=580`) + safetensors 6h(`local-harness` `runs=763`, `libfuzzer` `runs=743`, `aflpp` `runs=5804`) + GGUF 6h(`local-harness` `runs=8826`, `libfuzzer` `runs=2656`, `aflpp` `runs=1107`) 모두 `exit=0/failures=0` 확인. 추가로 ONNX `local-harness` 기준 명시적 중단/복구 시나리오(TAG 재실행) 검증 완료(`20260414_onnx_local_recovery_1h_06-211-01`, `exit=0/runs=748/failures=0`)
 - [x] CLI 운영 간소화 래퍼 구현 (`scripts/run_long.sh`, `scripts/collect_longrun.sh`)
   - 완료 기준: backend/target/hours/tag만으로 장시간 실행 가능, 종료 후 metrics snapshot 자동 보존
   - 진행 상태: 스크립트 구현 완료 + `docs/experiment-ops.md` 사용법 반영

@@ -2,6 +2,30 @@
 
 이 문서는 세션 중 진행한 작업을 `태스크 / 완료 기준 / 결과 / 검증` 형식으로 기록한다.
 
+## Phase 16: ONNX 중단/복구 시나리오 검증 완료 (06-211-01)
+
+### 태스크
+- 장시간 루프 중 명시적 중단(`Ctrl+C`) 후 동일 TAG 재실행 복구 검증
+
+### 완료 기준
+- 동일 TAG 재실행 후 `DONE`/`exit=0` 기록
+- `.exit` 파일/metrics 갱신 정상 확인
+
+### 결과
+- 대상: `onnx`, `local-harness`
+- TAG: `20260414_onnx_local_recovery_1h_06-211-01`
+- 2회 중단 후 동일 TAG 재실행에서 최종 완료:
+  - `exit=0`, `runs=748`, `failures=0`
+
+### 검증
+- 사용자 실환경 확인:
+  - `tail -n 40 data/longrun/run-20260414_onnx_local_recovery_1h_06-211-01.log`
+  - `cat data/longrun/run-20260414_onnx_local_recovery_1h_06-211-01.exit`
+  - `cat data/metrics/latest.json`
+
+### 주의
+- `new_paths_per_hour`는 현재 proxy metric이며 true coverage 지표로 해석하면 안 됨
+
 ## Phase 15: GGUF 6h backend 비교 검증 완료 (06-211-01)
 
 ### 태스크
