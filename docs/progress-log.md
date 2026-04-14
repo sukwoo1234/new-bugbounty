@@ -2,6 +2,30 @@
 
 이 문서는 세션 중 진행한 작업을 `태스크 / 완료 기준 / 결과 / 검증` 형식으로 기록한다.
 
+## Phase 19: Crash Artifact 관리 정책 확정
+
+### 태스크
+- 대량 실험 결과(`run/triage/report`) 누적 대비 운영 정책 문서화
+
+### 완료 기준
+- 중복/보관/압축/정리 원칙이 공개 운영 문서에 명시
+- TODO의 crash artifact 정책 항목 완료 처리
+
+### 결과
+- `docs/experiment-ops.md`에 `Crash Artifact 관리 정책` 섹션 추가
+  - 중복 시그니처 정리 기준
+  - 보관 상한/용량 점검 기준
+  - retention 기반 압축/정리 연계
+  - 정리 전 `results/experiments` export 우선 원칙
+- `docs/dev-todo-legacy-upgrade.md`의 crash artifact 항목 완료 처리
+
+### 검증
+- 문서 기준 점검 명령 추가:
+  - `find data/runs -type f -name '*.log' | wc -l`
+  - `find data/triage -maxdepth 1 -type d -name 'triage-*' | wc -l`
+  - `find data/reports -maxdepth 1 -type d -name 'report-*' | wc -l`
+  - `du -sh data/runs data/triage data/reports`
+
 ## Phase 18: Discord 공통 notifier + 비교 지표 템플릿 확정
 
 ### 태스크

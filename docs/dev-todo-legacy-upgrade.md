@@ -108,8 +108,8 @@
 - [x] GGUF harness 비대화형 안정화
   - 완료 기준: `tool harness --target gguf` 실행 시 `>` 반복 출력 없이 종료
   - 진행 상태: `llama-cli` 기반 probe를 `llama-gguf-hash` 비대화형 probe로 전환, 퍼징 머신(`06-211-01`) 재검증 완료
-- [ ] crash artifact 관리 정책 추가(대량 생성 대비)
-  - 후보: 중복 해시 정리, 보관 상한, 자동 압축/정리, 의미 없는 빈 crash 필터
+- [x] crash artifact 관리 정책 추가(대량 생성 대비)
+  - 진행 상태: `docs/experiment-ops.md`에 운영 정책 반영(중복 시그니처 정리, 보관 상한, retention 기반 압축/정리, 무의미 artifact 필터, 정리 전 export 우선 원칙)
 
 ## F) 레거시 강점 선택 이식 (보고서/하네스/변형)
 - [ ] 보고서 강화: v1.0 증거 스키마 유지 + 레거시식 가독성 섹션(요약/영향/재현 안내) 템플릿 보강

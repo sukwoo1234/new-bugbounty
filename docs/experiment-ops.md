@@ -362,6 +362,26 @@ bash scripts/seed_fetch.sh \
 5. `results/experiments/<experiment_id>/`에 요약 묶음 생성
 6. raw 데이터는 메인 퍼징 컴에 유지, 필요 시 별도 압축 보관
 
+## Crash Artifact 관리 정책
+- 목적: 장시간 퍼징에서 `data/runs|triage|reports`가 과도하게 증가하는 문제를 운영 가능한 수준으로 유지
+- 원칙:
+  - raw 입력/로그는 메인 퍼징 컴 로컬 보관을 기본으로 하고 Git에는 요약 번들만 반영
+  - 정량 비교/재현에 필요한 최소 증거(`summary.json`, `report.md`, `meta.json`)는 보존
+- 운영 기준:
+  - 중복 시그니처 우선 정리: 동일 `signature_top1` 반복 건은 최신/대표 건만 유지
+  - 보관 상한: run 로그는 기간 기준(기본 30일) + 용량 임계치 초과 시 우선 압축
+  - 자동 압축/정리: 기존 retention 경로(`report` 실행 시점)로 `.log -> .zst`, 구버전 run/triage/report 디렉터리 정리
+  - 무의미 artifact 필터: 빈/손상 crash 파일, 재현 실패 반복 산출물은 후보군으로 표기 후 정리
+- 점검 명령(운영):
+```bash
+find data/runs -type f -name '*.log' | wc -l
+find data/triage -maxdepth 1 -type d -name 'triage-*' | wc -l
+find data/reports -maxdepth 1 -type d -name 'report-*' | wc -l
+du -sh data/runs data/triage data/reports
+```
+- 주의:
+  - 대량 정리 전에는 `results/experiments/<experiment_id>/` export를 먼저 생성해 재현 가능성을 보존한다.
+
 ## 대시보드 사용 기준
 - 대시보드는 운영 상태 확인과 보조 제어에 사용한다.
 - 실험 판정은 `status.json`, `summary.json`, `report.md`, `metrics/latest.json`을 기준으로 한다.
