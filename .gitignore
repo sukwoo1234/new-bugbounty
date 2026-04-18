@@ -5,3 +5,14 @@
 /seeds
 *.code-workspace
 crash-*
+
+논문 관련/
+미래내일/
+*-seeds.tar.gz
+
+# internal/private docs
+docs/dev-todo.md
+docs/rules.md
+docs/legacy/
+docs/plans/
+.codex/

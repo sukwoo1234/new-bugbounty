@@ -202,6 +202,11 @@
     - `safetensors`: `safetensors` Rust crate 최소 release build 경로 성공 + 대표 산출물(`libsafetensors*.rlib` 또는 동등 산출물) 확인
   - 검증: 비허용 파일/경로 차단 확인
   - 진행 상태: Config 탭 `Target Prepare` 패널 + `/target/status|prepare|stop` API, `Target Build` 패널 + `/target/build/status|start|stop` API 구현 완료. 실환경에서 `gguf/onnx/safetensors` build 산출물 확인 및 `scripts/check_ui_routes.sh` 경로 검증 완료
+- [x] G-3-3 Report PoC 아티팩트 자동 수집
+  - 완료 기준: `verdict=reproduced`인 report 생성 시 입력 파일을 `report-*/poc/`로 자동 복사하고 메타에 경로/해시/크기를 기록
+  - 검증: `triage -> report` 실행 후 `meta.json`과 `report.md`에서 PoC 복사본 경로 및 재현 입력 경로 확인
+  - 파일명 규칙: `poc-{target}-triage-{triage_id}-{input_sha256_12}.{ext}`
+  - 진행 상태: `src/report.rs`에 PoC 자동 수집 로직 반영. 격리 검증 데이터 디렉토리(`/tmp/bb-poc-verify`)에서 `triage -> report` 체인 실행 후 `report-*/poc/` 복사본, `meta.json` PoC 필드, `repro.sh` 재현 입력 경로 반영까지 확인 완료
 
 ### G 트랙 공통 가드
 - [ ] 코어 불변: `run/triage/report/metrics` 코어 처리 함수 직접 수정 금지

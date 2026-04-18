@@ -187,6 +187,11 @@ results/
 - `libfuzzer`
 - `aflpp`
 
+### backend 실행 모델
+- 현재 `tool run`은 한 번에 backend 1개만 실행한다.
+- `local-harness`, `libfuzzer`, `aflpp`를 동시에 섞어 실행하는 hybrid 모드는 없다.
+- 비교 실험은 동일 target에 대해 backend별 run을 각각 따로 수행하는 방식으로 운영한다.
+
 ### 공통 완료 조건
 - ONNX seed corpus가 준비되어 있을 것 (`seeds/onnx`)
 - `tool harness --target onnx --input <seed>`가 실제 라이브러리 연결 경로까지 도달할 것

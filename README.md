@@ -83,6 +83,8 @@ clang++ --version
 
 ## 엔진 실환경 검증(ONNX 기준)
 
+현재 `run --backend <backend>`는 backend 1개만 선택해 실행한다. `aflpp`, `libfuzzer`, `local-harness`를 동시에 돌리는 hybrid 모드는 없고, 비교는 backend별 run을 각각 따로 수행한다.
+
 ### AFL++
 ```bash
 TOOL_AFLPP_CMD='docker run --rm {docker_user_flag} -v "$PWD":/work -w /work aflplusplus/aflplusplus bash -lc "afl-fuzz -V 5 -i {corpus_dir} -o {run_dir}/afl-out -- /bin/true @@ >/dev/null 2>&1 || true"' \

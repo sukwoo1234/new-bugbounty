@@ -2,6 +2,38 @@
 
 이 문서는 세션 중 진행한 작업을 `태스크 / 완료 기준 / 결과 / 검증` 형식으로 기록한다.
 
+## Phase 20: Report PoC 자동 수집(재현 성공 시) 구현
+
+### 태스크
+- `report` 생성 시 `verdict=reproduced` 케이스에 한해 PoC 입력 파일 자동 수집
+
+### 완료 기준
+- `report-*/poc/`에 제출용 PoC 복사본 생성
+- `meta.json`에 PoC 경로/해시/크기/오류 필드 기록
+- `report.md`와 `repro.sh`가 PoC 복사본 경로를 재현 입력으로 우선 사용
+
+### 결과
+- `src/report.rs`
+  - `collect_report_poc()` 추가
+  - 파일명 규칙 반영: `poc-{target}-triage-{triage_id}-{input_sha256_12}.{ext}`
+  - `meta.json`에 `poc_collected/poc_path/poc_sha256/poc_size_bytes/poc_source_input/poc_error` 필드 추가
+  - `report.md` PoC 섹션에 복사본 경로/수집 상태 추가
+  - `repro.sh` 입력 경로를 PoC 복사본 우선으로 변경
+- `docs/dev-todo-legacy-upgrade.md`
+  - `G-3-3 Report PoC 아티팩트 자동 수집` 항목 추가
+
+### 검증
+- 빌드:
+  - `cargo build --offline`
+- 체인:
+  - `./target/debug/tool --data-dir /tmp/bb-poc-verify triage --target onnx --input seeds/onnx/onnx_10_model.onnx --repro-retries 3 --timeout-sec 10`
+  - `./target/debug/tool --data-dir /tmp/bb-poc-verify report`
+- 확인:
+  - `ls -la /tmp/bb-poc-verify/reports/report-*/poc`
+  - `cat /tmp/bb-poc-verify/reports/report-*/meta.json`
+  - `head -n 40 /tmp/bb-poc-verify/reports/report-*/report.md`
+  - `cat /tmp/bb-poc-verify/reports/report-*/repro.sh`
+
 ## Phase 19: Crash Artifact 관리 정책 확정
 
 ### 태스크
