@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{collect_dashboard_snapshot, AppPaths};
+use crate::common::AppPaths;
+use crate::dashboard_data::collect_dashboard_snapshot;
+use crate::json_utils::json_escape;
 
 pub(crate) fn run_ui_server(app_paths: &AppPaths, bind: &str) -> Result<(), String> {
     let listener = TcpListener::bind(bind).map_err(|e| format!("failed to bind '{bind}': {e}"))?;
@@ -1383,21 +1385,6 @@ fn html_escape(input: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
-}
-
-fn json_escape(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 fn url_encode(input: &str) -> String {

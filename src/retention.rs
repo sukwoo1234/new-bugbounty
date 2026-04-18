@@ -1,6 +1,6 @@
-use std::{fs, path::{Path, PathBuf}, process::Command, time::{Duration, SystemTime}};
+use std::{fs, path::{Path, PathBuf}, time::{Duration, SystemTime}};
 
-use crate::{AppPaths, command_with_core_dump_off};
+use crate::common::{AppPaths, command_exists, command_with_core_dump_off};
 
 pub(crate) struct RetentionStats {
     pub(crate) compressed_logs: usize,
@@ -113,6 +113,3 @@ fn is_older_than(path: &Path, now: SystemTime, age_secs: u64) -> Result<bool, St
     Ok(elapsed > age_secs)
 }
 
-fn command_exists(cmd: &str) -> bool {
-    Command::new(cmd).arg("--version").output().is_ok()
-}

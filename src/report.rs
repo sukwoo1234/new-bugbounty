@@ -1,6 +1,13 @@
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use crate::{artifact_contract_for_data_dir, json_escape, now_unix, sha256_file, AppPaths};
+use crate::common::{AppPaths, artifact_contract_for_data_dir, now_unix_millis, sha256_file};
+use crate::json_utils::{
+    extract_first_signature_top3_list, extract_json_string_literal, extract_json_u64_field,
+    json_escape,
+};
 use crate::retention::apply_retention_policy;
 
 pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
@@ -10,14 +17,24 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         .map_err(|e| format!("failed to read '{}': {e}", summary_path.display()))?;
 
     let target =
-        extract_json_string_field(&summary, "target").unwrap_or_else(|| "unknown".to_string());
+        extract_json_string_literal(&summary, "target").unwrap_or_else(|| "unknown".to_string());
     let input =
-        extract_json_string_field(&summary, "input").unwrap_or_else(|| "unknown".to_string());
+        extract_json_string_literal(&summary, "input").unwrap_or_else(|| "unknown".to_string());
     let verdict =
-        extract_json_string_field(&summary, "verdict").unwrap_or_else(|| "unknown".to_string());
+        extract_json_string_literal(&summary, "verdict").unwrap_or_else(|| "unknown".to_string());
+
+    // verdict gate per specs.md §4: only "reproduced" (High Confidence) generates a report.
+    // Others are queued for Manual Review (§4 line 148).
+    if verdict != "reproduced" {
+        record_manual_review(app_paths, triage_id, &target, &input, &verdict, &summary_path)?;
+        return Err(format!(
+            "report skipped: verdict '{verdict}' != 'reproduced' (triage {triage_id}); queued for manual review"
+        ));
+    }
+
     let repro_retries = extract_json_u64_field(&summary, "repro_retries").unwrap_or(3);
     let timeout_sec = extract_json_u64_field(&summary, "timeout_sec").unwrap_or(60);
-    let signature_top3 = extract_first_signature_top3(&summary);
+    let signature_top3 = extract_first_signature_top3_list(&summary);
 
     let input_sha256 = if input != "unknown" {
         sha256_file(Path::new(&input)).unwrap_or_else(|_| "unavailable".to_string())
@@ -25,13 +42,22 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         "unavailable".to_string()
     };
 
-    let report_id = now_unix();
+    let report_id = now_unix_millis();
     let report_dir = app_paths
         .data_dir
         .join("reports")
         .join(format!("report-{report_id}"));
     fs::create_dir_all(&report_dir)
         .map_err(|e| format!("failed to create report dir '{}': {e}", report_dir.display()))?;
+    let poc = collect_report_poc(
+        &report_dir,
+        triage_id,
+        &target,
+        &input,
+        &input_sha256,
+        &verdict,
+    );
+    let repro_input = poc.repro_input_or(&input);
 
     let crash_report = build_crash_report(&triage_dir, &summary);
     let crash_report_path = report_dir.join("crash_report.txt");
@@ -41,7 +67,7 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
     let repro_script = format!(
         "#!/usr/bin/env bash\nset -euo pipefail\ntool triage --target {} --input '{}' --repro-retries {} --timeout-sec {}\n",
         target,
-        shell_escape_single_quoted(&input),
+        shell_escape_single_quoted(&repro_input),
         repro_retries,
         timeout_sec
     );
@@ -50,7 +76,7 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         .map_err(|e| format!("failed to write '{}': {e}", repro_path.display()))?;
 
     let meta_json = format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"report_id\": \"{}\",\n  \"source_triage_id\": \"{}\",\n  \"source_summary\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"input_sha256\": \"{}\",\n  \"verdict\": \"{}\",\n  \"retention_days\": 30,\n  \"retention\": {{\n    \"compressed_logs\": {},\n    \"deleted_dirs\": {},\n    \"skipped_log_compress\": {}\n  }}\n}}\n",
+        "{{\n  \"schema_version\": \"1.0\",\n  \"report_id\": \"{}\",\n  \"source_triage_id\": \"{}\",\n  \"source_summary\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"input_sha256\": \"{}\",\n  \"verdict\": \"{}\",\n  \"poc_collected\": {},\n  \"poc_path\": \"{}\",\n  \"poc_sha256\": \"{}\",\n  \"poc_size_bytes\": {},\n  \"poc_source_input\": \"{}\",\n  \"poc_error\": \"{}\",\n  \"retention_days\": 30,\n  \"retention\": {{\n    \"compressed_logs\": {},\n    \"deleted_dirs\": {},\n    \"skipped_log_compress\": {}\n  }}\n}}\n",
         report_id,
         triage_id,
         json_escape(&summary_path.display().to_string()),
@@ -58,6 +84,12 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         json_escape(&input),
         json_escape(&input_sha256),
         json_escape(&verdict),
+        if poc.collected { "true" } else { "false" },
+        json_escape(&poc.path),
+        json_escape(&poc.sha256),
+        poc.size_bytes,
+        json_escape(&input),
+        json_escape(&poc.error),
         retention.compressed_logs,
         retention.deleted_dirs,
         retention.skipped_log_compress
@@ -78,17 +110,19 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         .join("\n");
 
     let report_md = format!(
-        "# Report\n\n## Summary\n- {}: verdict `{}` on input `{}`\n\n## Reproduction Steps\n1. Image hash/version metadata: see `meta.json`\n2. PRNG seed: N/A (triage replay)\n3. Timeout: {} seconds\n4. Run: `tool triage --target {} --input '{}' --repro-retries {} --timeout-sec {}`\n\n## PoC\n- Input: `{}`\n- sha256: `{}`\n\n## Impact\n- Observed crash signature and parser/runtime failure requires manual impact confirmation.\n\n## Exploit Scenario\n- Requires crafted input delivered to `{}` parsing path.\n\n## Value\n- Automated repro evidence prepared for bug bounty triage.\n\n## Stack Top3\n{}\n",
+        "# Report\n\n## Summary\n- {}: verdict `{}` on input `{}`\n\n## Reproduction Steps\n1. Image hash/version metadata: see `meta.json`\n2. PRNG seed: N/A (triage replay)\n3. Timeout: {} seconds\n4. Run: `tool triage --target {} --input '{}' --repro-retries {} --timeout-sec {}`\n\n## PoC\n- Input: `{}`\n- sha256: `{}`\n- Collected copy: `{}`\n- Collection status: `{}`\n\n## Impact\n- Observed crash signature and parser/runtime failure requires manual impact confirmation.\n\n## Exploit Scenario\n- Requires crafted input delivered to `{}` parsing path.\n\n## Value\n- Automated repro evidence prepared for bug bounty triage.\n\n## Stack Top3\n{}\n",
         target,
         verdict,
         input,
         timeout_sec,
         target,
-        shell_escape_single_quoted(&input),
+        shell_escape_single_quoted(&repro_input),
         repro_retries,
         timeout_sec,
         input,
         input_sha256,
+        if poc.path.is_empty() { "-" } else { &poc.path },
+        if poc.collected { "collected" } else { "not_collected" },
         target,
         stack_text
     );
@@ -106,6 +140,11 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         repro_path.display(),
         meta_path.display()
     );
+    if poc.collected {
+        println!("poc: {}", poc.path);
+    } else if !poc.error.is_empty() {
+        println!("poc: {}", poc.error);
+    }
     println!(
         "retention: compressed_logs={}, deleted_dirs={}, skipped_log_compress={}",
         retention.compressed_logs, retention.deleted_dirs, retention.skipped_log_compress
@@ -113,13 +152,13 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
     Ok(())
 }
 
-fn find_latest_triage_summary(data_dir: &Path) -> Result<(u64, PathBuf, PathBuf), String> {
+fn find_latest_triage_summary(data_dir: &Path) -> Result<(u128, PathBuf, PathBuf), String> {
     let triage_root = artifact_contract_for_data_dir(data_dir).triage_root;
     if !triage_root.exists() {
         return Err(format!("triage directory not found: {}", triage_root.display()));
     }
 
-    let mut selected: Option<(u64, PathBuf, PathBuf)> = None;
+    let mut selected: Option<(u128, PathBuf, PathBuf)> = None;
     for entry in fs::read_dir(&triage_root)
         .map_err(|e| format!("failed to read '{}': {e}", triage_root.display()))?
     {
@@ -134,7 +173,7 @@ fn find_latest_triage_summary(data_dir: &Path) -> Result<(u64, PathBuf, PathBuf)
         let Some(id_text) = name.strip_prefix("triage-") else {
             continue;
         };
-        let Ok(id) = id_text.parse::<u64>() else {
+        let Ok(id) = id_text.parse::<u128>() else {
             continue;
         };
         let summary = path.join("summary.json");
@@ -148,107 +187,6 @@ fn find_latest_triage_summary(data_dir: &Path) -> Result<(u64, PathBuf, PathBuf)
     }
 
     selected.ok_or_else(|| "no triage summary found under data/triage".to_string())
-}
-
-fn extract_json_string_field(json: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{}\": \"", key);
-    let start = json.find(&pattern)? + pattern.len();
-    let rest = &json[start..];
-    let mut escaped = false;
-    let mut out = String::new();
-    for ch in rest.chars() {
-        if escaped {
-            out.push(match ch {
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                '"' => '"',
-                '\\' => '\\',
-                other => other,
-            });
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' => escaped = true,
-            '"' => return Some(out),
-            _ => out.push(ch),
-        }
-    }
-    None
-}
-
-fn extract_json_u64_field(json: &str, key: &str) -> Option<u64> {
-    let key_pattern = format!("\"{}\":", key);
-    let start = json.find(&key_pattern)? + key_pattern.len();
-    let rest = &json[start..];
-    let mut digits = String::new();
-    for ch in rest.chars() {
-        if ch.is_ascii_digit() {
-            digits.push(ch);
-            continue;
-        }
-        if !digits.is_empty() {
-            break;
-        }
-        if !ch.is_ascii_whitespace() {
-            return None;
-        }
-    }
-    if digits.is_empty() {
-        None
-    } else {
-        digits.parse::<u64>().ok()
-    }
-}
-
-fn extract_first_signature_top3(summary: &str) -> Vec<String> {
-    let key = "\"signature_top3\": [";
-    let Some(start) = summary.find(key) else {
-        return Vec::new();
-    };
-    let rest = &summary[start + key.len()..];
-    let Some(end) = rest.find(']') else {
-        return Vec::new();
-    };
-    let section = &rest[..end];
-    let mut items = Vec::new();
-    let mut in_str = false;
-    let mut escaped = false;
-    let mut buf = String::new();
-    for ch in section.chars() {
-        if !in_str {
-            if ch == '"' {
-                in_str = true;
-                buf.clear();
-            }
-            continue;
-        }
-        if escaped {
-            buf.push(match ch {
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                '"' => '"',
-                '\\' => '\\',
-                other => other,
-            });
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' => escaped = true,
-            '"' => {
-                in_str = false;
-                items.push(buf.clone());
-                if items.len() == 3 {
-                    break;
-                }
-            }
-            _ => buf.push(ch),
-        }
-    }
-    items
 }
 
 fn build_crash_report(triage_dir: &Path, summary: &str) -> String {
@@ -280,4 +218,153 @@ fn excerpt_lines(text: &str, head: usize, tail: usize) -> Vec<String> {
 
 fn shell_escape_single_quoted(input: &str) -> String {
     input.replace('\'', "'\"'\"'")
+}
+
+struct PocCollection {
+    collected: bool,
+    path: String,
+    sha256: String,
+    size_bytes: u64,
+    error: String,
+}
+
+impl PocCollection {
+    fn repro_input_or(&self, default_input: &str) -> String {
+        if self.collected && !self.path.is_empty() {
+            self.path.clone()
+        } else {
+            default_input.to_string()
+        }
+    }
+}
+
+fn collect_report_poc(
+    report_dir: &Path,
+    triage_id: u128,
+    target: &str,
+    input: &str,
+    input_sha256: &str,
+    verdict: &str,
+) -> PocCollection {
+    if verdict != "reproduced" {
+        return PocCollection {
+            collected: false,
+            path: String::new(),
+            sha256: String::new(),
+            size_bytes: 0,
+            error: "skipped_non_reproduced".to_string(),
+        };
+    }
+
+    let input_path = Path::new(input);
+    if !input_path.exists() || !input_path.is_file() {
+        return PocCollection {
+            collected: false,
+            path: String::new(),
+            sha256: String::new(),
+            size_bytes: 0,
+            error: "source_input_not_found".to_string(),
+        };
+    }
+
+    let ext = input_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .filter(|e| !e.is_empty())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let hash12 = short_hash12(input_sha256);
+    let target_safe = sanitize_filename_component(target);
+    let filename = format!("poc-{target_safe}-triage-{triage_id}-{hash12}{ext}");
+    let poc_dir = report_dir.join("poc");
+    if let Err(e) = fs::create_dir_all(&poc_dir) {
+        return PocCollection {
+            collected: false,
+            path: String::new(),
+            sha256: String::new(),
+            size_bytes: 0,
+            error: format!("poc_dir_create_failed:{e}"),
+        };
+    }
+
+    let dst = poc_dir.join(filename);
+    if let Err(e) = fs::copy(input_path, &dst) {
+        return PocCollection {
+            collected: false,
+            path: String::new(),
+            sha256: String::new(),
+            size_bytes: 0,
+            error: format!("poc_copy_failed:{e}"),
+        };
+    }
+
+    let size_bytes = fs::metadata(&dst).map(|m| m.len()).unwrap_or(0);
+    let poc_sha256 = sha256_file(&dst).unwrap_or_else(|_| "unavailable".to_string());
+    PocCollection {
+        collected: true,
+        path: dst.display().to_string(),
+        sha256: poc_sha256,
+        size_bytes,
+        error: String::new(),
+    }
+}
+
+fn short_hash12(input_sha256: &str) -> String {
+    let hex = input_sha256
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect::<String>();
+    if hex.len() >= 12 {
+        hex[..12].to_string()
+    } else if !hex.is_empty() {
+        hex
+    } else {
+        "unknownhash".to_string()
+    }
+}
+
+fn sanitize_filename_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "target".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn record_manual_review(
+    app_paths: &AppPaths,
+    triage_id: u128,
+    target: &str,
+    input: &str,
+    verdict: &str,
+    summary_path: &Path,
+) -> Result<(), String> {
+    let review_dir = app_paths.data_dir.join("manual_review");
+    fs::create_dir_all(&review_dir).map_err(|e| {
+        format!("failed to create manual_review dir '{}': {e}", review_dir.display())
+    })?;
+    let review_path = review_dir.join(format!("triage-{triage_id}.json"));
+    let body = format!(
+        "{{\n  \"schema_version\": \"1.0\",\n  \"triage_id\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"verdict\": \"{}\",\n  \"summary_path\": \"{}\",\n  \"queued_at\": {}\n}}\n",
+        triage_id,
+        json_escape(target),
+        json_escape(input),
+        json_escape(verdict),
+        json_escape(&summary_path.display().to_string()),
+        now_unix_millis()
+    );
+    fs::write(&review_path, body).map_err(|e| {
+        format!("failed to write manual review '{}': {e}", review_path.display())
+    })?;
+    println!("[manual_review] queued: {}", review_path.display());
+    Ok(())
 }

@@ -1,6 +1,7 @@
 use std::{fs, fs::OpenOptions, io::Write, path::Path};
 
-use crate::{now_unix, AppPaths};
+use crate::common::{AppPaths, now_unix};
+use crate::json_utils::extract_json_u64_field;
 
 pub(crate) struct MetricEvent {
     pub(crate) ts: u64,
@@ -41,8 +42,17 @@ pub(crate) fn record_metrics_event(app_paths: &AppPaths, event: MetricEvent) -> 
 
     let snapshot = build_metrics_snapshot(&events_path, now_unix())?;
     let snapshot_path = metrics_dir.join("latest.json");
-    fs::write(&snapshot_path, snapshot)
-        .map_err(|e| format!("failed to write '{}': {e}", snapshot_path.display()))?;
+    // atomic write: temp 파일에 먼저 쓰고 rename으로 교체해서 partial 파일 상태 방지
+    let tmp_path = metrics_dir.join("latest.json.tmp");
+    fs::write(&tmp_path, snapshot)
+        .map_err(|e| format!("failed to write temp '{}': {e}", tmp_path.display()))?;
+    fs::rename(&tmp_path, &snapshot_path).map_err(|e| {
+        format!(
+            "failed to rename '{}' -> '{}': {e}",
+            tmp_path.display(),
+            snapshot_path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -95,26 +105,3 @@ fn build_metrics_snapshot(events_path: &Path, now_ts: u64) -> Result<String, Str
     ))
 }
 
-fn extract_json_u64_field(json: &str, key: &str) -> Option<u64> {
-    let key_pattern = format!("\"{}\":", key);
-    let start = json.find(&key_pattern)? + key_pattern.len();
-    let rest = &json[start..];
-    let mut digits = String::new();
-    for ch in rest.chars() {
-        if ch.is_ascii_digit() {
-            digits.push(ch);
-            continue;
-        }
-        if !digits.is_empty() {
-            break;
-        }
-        if !ch.is_ascii_whitespace() {
-            return None;
-        }
-    }
-    if digits.is_empty() {
-        None
-    } else {
-        digits.parse::<u64>().ok()
-    }
-}

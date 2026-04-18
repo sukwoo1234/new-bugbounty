@@ -1,4 +1,5 @@
-use crate::DashboardSnapshot;
+use crate::dashboard_data::DashboardSnapshot;
+use crate::json_utils::json_escape;
 
 const DASHBOARD_HTML_TEMPLATE: &str = include_str!("../../templates/dashboard.html");
 
@@ -176,17 +177,3 @@ fn html_escape(input: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn json_escape(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
