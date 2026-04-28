@@ -6,7 +6,6 @@
 - 설계/결정: [first.md](first.md)
 - 구현 명세: [docs/specs.md](docs/specs.md)
 - 유효 코퍼스 준비: [docs/corpus-sop.md](docs/corpus-sop.md)
-- 실험 운영 규칙: [docs/experiment-ops.md](docs/experiment-ops.md)
 
 ## 기존 툴 대비 차별점 (Differentiators)
 - **Deep & Structured Fuzzing**: 구조 인지형 mutator/harness로 얕은 파싱 에러가 아니라 깊은 경로의 메모리 오염을 겨냥한다.
@@ -39,13 +38,10 @@
 ## 문서 가이드
 - 설계/결정: [first.md](first.md)
 - 구현 명세: [docs/specs.md](docs/specs.md)
-- 협업 규칙: [docs/rules.md](docs/rules.md)
 - 문서 TODO: [docs/todo.md](docs/todo.md)
 - 개발 로드맵: [docs/roadmap.md](docs/roadmap.md)
-- 개발 TODO: [docs/dev-todo.md](docs/dev-todo.md)
 - 리포트 샘플: [docs/report-sample.md](docs/report-sample.md)
 - 유효 코퍼스 SOP: [docs/corpus-sop.md](docs/corpus-sop.md)
-- 실험 운영 규칙: [docs/experiment-ops.md](docs/experiment-ops.md)
 
 ## CLI (확정)
 - `tool run`, `tool triage`, `tool report`

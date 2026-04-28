@@ -11,8 +11,12 @@ crash-*
 *-seeds.tar.gz
 
 # internal/private docs
+AGENTS.md
 docs/dev-todo.md
 docs/rules.md
+docs/dev-todo-legacy-upgrade.md
+docs/experiment-ops.md
+docs/progress-log.md
 docs/legacy/
 docs/plans/
 .codex/

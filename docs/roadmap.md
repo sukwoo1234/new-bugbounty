@@ -4,7 +4,7 @@
 - GGUF/ONNX/safetensors 퍼징 → 재현/검증 → 리포트까지 가능한 CLI 툴 완성
 
 ## Phase 0: 준비 (완료)
-- 문서 기반 합의 확정 (first.md, docs/todo.md, docs/rules.md)
+- 문서 기반 합의 확정 (first.md, docs/todo.md)
 
 ## Phase 1: 스캐폴딩/기초 파이프라인
 - CLI 골격 (run/triage/report + list/show/export)
