@@ -1,5 +1,5 @@
 use crate::dashboard_data::DashboardSnapshot;
-use crate::json_utils::json_escape;
+use crate::json_utils::{html_escape, json_escape, url_encode};
 
 const DASHBOARD_HTML_TEMPLATE: &str = include_str!("../../templates/dashboard.html");
 
@@ -153,27 +153,5 @@ fn render_recent_coverage_rows(ids: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join("")
-}
-
-fn url_encode(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for b in input.bytes() {
-        let is_unreserved =
-            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/' );
-        if is_unreserved {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{:02X}", b));
-        }
-    }
-    out
-}
-
-fn html_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 

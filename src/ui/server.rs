@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::common::AppPaths;
 use crate::dashboard_data::collect_dashboard_snapshot;
-use crate::json_utils::json_escape;
+use crate::json_utils::{html_escape, json_escape, url_encode};
 
 pub(crate) fn run_ui_server(app_paths: &AppPaths, bind: &str) -> Result<(), String> {
     let listener = TcpListener::bind(bind).map_err(|e| format!("failed to bind '{bind}': {e}"))?;
@@ -1377,28 +1377,6 @@ fn from_hex(c: u8) -> Option<u8> {
         b'A'..=b'F' => Some(c - b'A' + 10),
         _ => None,
     }
-}
-
-fn html_escape(input: &str) -> String {
-    input
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
-fn url_encode(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for b in input.bytes() {
-        let is_unreserved =
-            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/' );
-        if is_unreserved {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{:02X}", b));
-        }
-    }
-    out
 }
 
 fn resolve_safe_data_path(data_dir: &Path, requested: &str) -> Result<PathBuf, String> {

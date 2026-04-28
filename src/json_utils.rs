@@ -13,6 +13,28 @@ pub(crate) fn json_escape(input: &str) -> String {
     out
 }
 
+pub(crate) fn html_escape(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+pub(crate) fn url_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for b in input.bytes() {
+        let is_unreserved =
+            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/');
+        if is_unreserved {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
 pub(crate) fn extract_json_u64_field(json: &str, key: &str) -> Option<u64> {
     let key_pattern = format!("\"{}\":", key);
     let start = json.find(&key_pattern)? + key_pattern.len();
