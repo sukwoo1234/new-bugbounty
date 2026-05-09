@@ -1,5 +1,6 @@
 use std::{
-    fs,
+    fs::{self, File},
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -133,6 +134,7 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         .map_err(|e| format!("failed to write '{}': {e}", report_md_path.display()))?;
 
     let manifest_path = write_report_manifest(&report_dir, report_id, triage_id, &target, &verdict, &poc)?;
+    let bundle_path = write_evidence_zip(&report_dir, report_id, &poc)?;
 
     println!("[report] done");
     println!("source_triage: {}", triage_dir.display());
@@ -145,6 +147,7 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         meta_path.display(),
         manifest_path.display()
     );
+    println!("bundle: {}", bundle_path.display());
     if poc.collected {
         println!("poc: {}", poc.path);
     } else if !poc.error.is_empty() {
@@ -264,6 +267,145 @@ fn write_report_manifest(
     fs::write(&manifest_path, manifest)
         .map_err(|e| format!("failed to write '{}': {e}", manifest_path.display()))?;
     Ok(manifest_path)
+}
+
+fn write_evidence_zip(report_dir: &Path, report_id: u128, poc: &PocCollection) -> Result<PathBuf, String> {
+    let mut relative_paths = vec![
+        "report.md".to_string(),
+        "repro.sh".to_string(),
+        "meta.json".to_string(),
+        "crash_report.txt".to_string(),
+        "manifest.json".to_string(),
+    ];
+    if let Some(path) = relative_report_path(report_dir, &poc.path) {
+        relative_paths.push(path);
+    }
+
+    let bundle_path = report_dir.join(format!("report-{report_id}-evidence.zip"));
+    write_store_zip(&bundle_path, report_dir, &relative_paths)?;
+    Ok(bundle_path)
+}
+
+fn write_store_zip(zip_path: &Path, root: &Path, relative_paths: &[String]) -> Result<(), String> {
+    let mut out = File::create(zip_path)
+        .map_err(|e| format!("failed to create evidence zip '{}': {e}", zip_path.display()))?;
+    let mut central_entries = Vec::new();
+    let mut offset = 0u64;
+
+    for relative_path in relative_paths {
+        let input_path = root.join(relative_path);
+        let data = fs::read(&input_path)
+            .map_err(|e| format!("failed to read zip input '{}': {e}", input_path.display()))?;
+        let name = relative_path.replace('\\', "/");
+        let name_bytes = name.as_bytes();
+        let size = checked_zip_u32(data.len() as u64, "file size")?;
+        let name_len = checked_zip_u16(name_bytes.len(), "file name length")?;
+        let crc = crc32(&data);
+        let local_offset = checked_zip_u32(offset, "local header offset")?;
+
+        write_u32_le(&mut out, 0x0403_4b50)?;
+        write_u16_le(&mut out, 20)?;
+        write_u16_le(&mut out, 0)?;
+        write_u16_le(&mut out, 0)?;
+        write_u16_le(&mut out, 0)?;
+        write_u16_le(&mut out, 33)?;
+        write_u32_le(&mut out, crc)?;
+        write_u32_le(&mut out, size)?;
+        write_u32_le(&mut out, size)?;
+        write_u16_le(&mut out, name_len)?;
+        write_u16_le(&mut out, 0)?;
+        out.write_all(name_bytes)
+            .map_err(|e| format!("failed to write zip file name: {e}"))?;
+        out.write_all(&data)
+            .map_err(|e| format!("failed to write zip file data: {e}"))?;
+
+        offset += 30 + name_bytes.len() as u64 + data.len() as u64;
+        central_entries.push(ZipCentralEntry {
+            name,
+            crc,
+            size,
+            local_offset,
+        });
+    }
+
+    let central_dir_offset = offset;
+    for entry in &central_entries {
+        let name_bytes = entry.name.as_bytes();
+        let name_len = checked_zip_u16(name_bytes.len(), "central file name length")?;
+
+        write_u32_le(&mut out, 0x0201_4b50)?;
+        write_u16_le(&mut out, 20)?;
+        write_u16_le(&mut out, 20)?;
+        write_u16_le(&mut out, 0)?;
+        write_u16_le(&mut out, 0)?;
+        write_u16_le(&mut out, 0)?;
+        write_u16_le(&mut out, 33)?;
+        write_u32_le(&mut out, entry.crc)?;
+        write_u32_le(&mut out, entry.size)?;
+        write_u32_le(&mut out, entry.size)?;
+        write_u16_le(&mut out, name_len)?;
+        write_u16_le(&mut out, 0)?;
+        write_u16_le(&mut out, 0)?;
+        write_u16_le(&mut out, 0)?;
+        write_u16_le(&mut out, 0)?;
+        write_u32_le(&mut out, 0)?;
+        write_u32_le(&mut out, entry.local_offset)?;
+        out.write_all(name_bytes)
+            .map_err(|e| format!("failed to write central zip file name: {e}"))?;
+
+        offset += 46 + name_bytes.len() as u64;
+    }
+
+    let central_dir_size = checked_zip_u32(offset - central_dir_offset, "central directory size")?;
+    let central_dir_offset = checked_zip_u32(central_dir_offset, "central directory offset")?;
+    let entry_count = checked_zip_u16(central_entries.len(), "zip entry count")?;
+
+    write_u32_le(&mut out, 0x0605_4b50)?;
+    write_u16_le(&mut out, 0)?;
+    write_u16_le(&mut out, 0)?;
+    write_u16_le(&mut out, entry_count)?;
+    write_u16_le(&mut out, entry_count)?;
+    write_u32_le(&mut out, central_dir_size)?;
+    write_u32_le(&mut out, central_dir_offset)?;
+    write_u16_le(&mut out, 0)?;
+    Ok(())
+}
+
+struct ZipCentralEntry {
+    name: String,
+    crc: u32,
+    size: u32,
+    local_offset: u32,
+}
+
+fn write_u16_le(out: &mut File, value: u16) -> Result<(), String> {
+    out.write_all(&value.to_le_bytes())
+        .map_err(|e| format!("failed to write zip u16: {e}"))
+}
+
+fn write_u32_le(out: &mut File, value: u32) -> Result<(), String> {
+    out.write_all(&value.to_le_bytes())
+        .map_err(|e| format!("failed to write zip u32: {e}"))
+}
+
+fn checked_zip_u16(value: usize, label: &str) -> Result<u16, String> {
+    u16::try_from(value).map_err(|_| format!("{label} exceeds ZIP32 limit: {value}"))
+}
+
+fn checked_zip_u32(value: u64, label: &str) -> Result<u32, String> {
+    u32::try_from(value).map_err(|_| format!("{label} exceeds ZIP32 limit: {value}"))
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for byte in data {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
 }
 
 fn relative_report_path(report_dir: &Path, path: &str) -> Option<String> {
