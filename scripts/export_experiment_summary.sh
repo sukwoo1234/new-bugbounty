@@ -191,6 +191,8 @@ cat > "$OUT_DIR/summary.md" <<EOF
 
 ## Caveat
 - \`successful_runs_per_hour_proxy\` is a success-count proxy metric, not true edge/path coverage.
+- \`new_crashes_per_hour\` is based on triage inputs where a crash was observed.
+- \`global_error_rate_5m\` is computed as recent \`errors / total\` over metric events.
 - \`valid_crash_ratio\` is \`not_available\` when there are no crash observations to support the ratio.
 - Legacy metrics without \`valid_crash_ratio_status\` are reported as \`legacy_unverified\`.
 EOF

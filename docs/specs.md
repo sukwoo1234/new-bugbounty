@@ -163,7 +163,11 @@
 - status.json 주기 저장
 - status.json 필드: 큐 상태 카운트, 워커 상태, 최근 오류 요약
 - Global Error Rate는 최근 5분 기준으로 계산
-- 운영 지표: 시간당 신규 경로 수, 시간당 신규 크래시 수, 유효 크래시/전체 크래시 비율
+- 운영 지표: `successful_runs_per_hour_proxy`, `new_crashes_per_hour`, `valid_crash_ratio`
+- `successful_runs_per_hour_proxy`는 성공 실행 수 기반 처리량 proxy이며, true edge/path coverage가 아니다.
+- `new_crashes_per_hour`는 triage에서 crash가 관측된 입력 수 기반 지표다.
+- `valid_crash_ratio`는 `reproduced / total_crashes`이며, 근거 crash가 없으면 `not_available`로 표시한다.
+- `global_error_rate_5m`는 최근 5분 이벤트의 `errors / total` 운영 오류율이다.
 - self-test: tool self-test로 전체 파이프라인 검증(성공/타임아웃/크래시/오류 시나리오 포함)
 
 ## 7) Storage/Retention
