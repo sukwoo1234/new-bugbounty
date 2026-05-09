@@ -37,6 +37,9 @@ pub(crate) struct DashboardSnapshot {
     pub(crate) latest_valid_report: String,
     pub(crate) latest_valid_manifest: String,
     pub(crate) latest_valid_bundle: String,
+    pub(crate) latest_suggested_severity: String,
+    pub(crate) latest_severity_confidence: String,
+    pub(crate) latest_suggested_cvss_vector: String,
     pub(crate) recent_triage_ids: Vec<String>,
     pub(crate) recent_report_ids: Vec<String>,
     pub(crate) recent_coverage_ids: Vec<String>,
@@ -54,6 +57,13 @@ struct ReproducedTriageView {
     input: String,
     signature_top1: String,
     summary_path: String,
+}
+
+#[derive(Default)]
+struct ReportSeverityView {
+    suggested_severity: String,
+    confidence: String,
+    suggested_cvss_vector: String,
 }
 
 /// `tool list` 용. kind 별로 최근 N개 ID 목록을 돌려준다.
@@ -176,6 +186,9 @@ pub(crate) fn collect_dashboard_snapshot(
         latest_valid_report,
         latest_valid_manifest,
         latest_valid_bundle,
+        latest_suggested_severity,
+        latest_severity_confidence,
+        latest_suggested_cvss_vector,
     ) = if let Some(item) = latest_valid {
         let report_dir = find_report_dir_by_source_triage_id(&reports_root, &item.triage_id)?;
         let report = report_dir
@@ -191,6 +204,10 @@ pub(crate) fn collect_dashboard_snapshot(
             .as_ref()
             .and_then(|dir| find_evidence_bundle_path(dir))
             .unwrap_or_else(|| "none".to_string());
+        let severity = report_dir
+            .as_ref()
+            .and_then(|dir| read_report_severity_fields(dir).ok())
+            .unwrap_or_default();
         (
             format!("triage-{}", item.triage_id),
             item.input,
@@ -199,9 +216,15 @@ pub(crate) fn collect_dashboard_snapshot(
             report,
             manifest,
             bundle,
+            severity.suggested_severity,
+            severity.confidence,
+            severity.suggested_cvss_vector,
         )
     } else {
         (
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
             "none".to_string(),
             "none".to_string(),
             "none".to_string(),
@@ -239,6 +262,9 @@ pub(crate) fn collect_dashboard_snapshot(
         latest_valid_report,
         latest_valid_manifest,
         latest_valid_bundle,
+        latest_suggested_severity,
+        latest_severity_confidence,
+        latest_suggested_cvss_vector,
         recent_triage_ids,
         recent_report_ids,
         recent_coverage_ids,
@@ -373,6 +399,20 @@ fn find_evidence_bundle_path(report_dir: &Path) -> Option<String> {
         }
     }
     selected
+}
+
+fn read_report_severity_fields(report_dir: &Path) -> Result<ReportSeverityView, String> {
+    let meta_path = report_dir.join("meta.json");
+    let meta = fs::read_to_string(&meta_path)
+        .map_err(|e| format!("failed to read '{}': {e}", meta_path.display()))?;
+    Ok(ReportSeverityView {
+        suggested_severity: extract_json_string_literal(&meta, "suggested_severity")
+            .unwrap_or_else(|| "none".to_string()),
+        confidence: extract_json_string_literal(&meta, "severity_confidence")
+            .unwrap_or_else(|| "none".to_string()),
+        suggested_cvss_vector: extract_json_string_literal(&meta, "suggested_cvss_vector")
+            .unwrap_or_else(|| "none".to_string()),
+    })
 }
 
 fn count_prefixed_dirs(root: &Path, prefix: &str) -> Result<usize, String> {

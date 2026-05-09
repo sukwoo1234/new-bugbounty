@@ -121,12 +121,14 @@ TRIAGE_INDEX="$OUT_DIR/triage-index.tsv"
 
 REPORT_INDEX="$OUT_DIR/report-index.tsv"
 {
-  echo -e "report_id\tsource_triage_id\treport_path\tmeta_path"
+  echo -e "report_id\tsource_triage_id\tsuggested_severity\tseverity_confidence\treport_path\tmeta_path"
   for f in $(ls -1 data/reports/report-*/meta.json 2>/dev/null | sort); do
     report_id="$(jq -r '.report_id // ""' "$f")"
     source_triage_id="$(jq -r '.source_triage_id // ""' "$f")"
+    suggested_severity="$(jq -r '.suggested_severity // ""' "$f")"
+    severity_confidence="$(jq -r '.severity_confidence // ""' "$f")"
     report_path="$(dirname "$f")/report.md"
-    echo -e "${report_id}\t${source_triage_id}\t${report_path}\t${f}"
+    echo -e "${report_id}\t${source_triage_id}\t${suggested_severity}\t${severity_confidence}\t${report_path}\t${f}"
   done
 } > "$REPORT_INDEX"
 
