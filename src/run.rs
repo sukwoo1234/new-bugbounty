@@ -430,6 +430,7 @@ fn build_engine_command(
     let engine = resolve_engine_adapter(backend)?;
     let target_adapter = resolve_target_adapter(target);
     let docker_user_flag = current_docker_user_flag();
+    let docker_hardening_flags = docker_hardening_flags();
     let template = std::env::var(engine.cmd_env).map_err(|_| {
         format!(
             "{} is not set; provide backend command template. example: {}='echo run {{target}} {{corpus_dir}}; true'",
@@ -449,6 +450,7 @@ fn build_engine_command(
         .replace("{timeout_sec}", &timeout_sec.to_string())
         .replace("{restart_limit}", &restart_limit.to_string())
         .replace("{docker_user_flag}", &docker_user_flag)
+        .replace("{docker_hardening_flags}", docker_hardening_flags)
         .replace("{run_dir}", &shell_escape(run_dir))
         .replace(
             "{workdir}",
@@ -466,6 +468,10 @@ fn current_docker_user_flag() -> String {
         (Some(uid), Some(gid)) => format!("--user {uid}:{gid}"),
         _ => String::new(),
     }
+}
+
+fn docker_hardening_flags() -> &'static str {
+    "--network none --memory 4g --cpus 2 --pids-limit 512"
 }
 
 fn read_id_output(flag: &str) -> Option<String> {

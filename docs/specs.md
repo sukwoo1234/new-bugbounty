@@ -99,6 +99,8 @@
 - 크래시/로그/아티팩트는 writeable 볼륨으로 호스트에 동기화한다.
 - 퍼징 임시 파일은 /dev/shm 사용을 우선한다.
 - 신규 코퍼스는 host 공유 볼륨에 저장하고 재실행 시 재사용한다.
+- AFL++ Docker 실행은 `{docker_user_flag}`를 유지하고 `{docker_hardening_flags}` 기본값 `--network none --memory 4g --cpus 2 --pids-limit 512`를 적용한다.
+- `--read-only`는 AFL++ output/workdir writable volume 분리 후 적용한다.
 
 ### 2.1) Platform Interfaces/Traits
 - QueueTrait: enqueue, claim, ack, nack, heartbeat

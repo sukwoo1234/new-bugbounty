@@ -92,4 +92,5 @@
 - 지표 요약 1페이지: 핵심 4개 지표(신규 crash/유효율/고유 시그니처/제출 가능 리포트 수)
 - 대표 증거 3건: `summary.json`, `report.md`, `repro.sh` 각 1건
 - 제출 번들: `manifest.json`과 `report-*-evidence.zip` 포함
+- Docker 실행 정책: AFL++ Docker 템플릿에 `--network none`, memory/CPU/pids 제한 적용; `--read-only`는 writable volume 분리 후 적용
 - 비교 그래프: 베이스라인 vs 현재(최소 7일)
