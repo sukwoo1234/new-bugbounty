@@ -73,7 +73,7 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
 
     let crash_report = build_crash_report(&triage_dir, &summary);
     let crash_report_path = report_dir.join("crash_report.txt");
-    fs::write(&crash_report_path, crash_report)
+    fs::write(&crash_report_path, &crash_report)
         .map_err(|e| format!("failed to write '{}': {e}", crash_report_path.display()))?;
 
     let repro_script = format!(
@@ -87,8 +87,15 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
     fs::write(&repro_path, repro_script)
         .map_err(|e| format!("failed to write '{}': {e}", repro_path.display()))?;
 
+    let stack_lines = if signature_top3.is_empty() {
+        vec!["(no signature)".to_string()]
+    } else {
+        signature_top3
+    };
+    let severity = suggest_report_severity(&crash_report, &stack_lines);
+
     let meta_json = format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"report_id\": \"{}\",\n  \"source_triage_id\": \"{}\",\n  \"source_summary\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"input_sha256\": \"{}\",\n  \"verdict\": \"{}\",\n  \"poc_collected\": {},\n  \"poc_path\": \"{}\",\n  \"poc_sha256\": \"{}\",\n  \"poc_size_bytes\": {},\n  \"poc_source_input\": \"{}\",\n  \"poc_error\": \"{}\",\n  \"retention_days\": 30,\n  \"retention\": {{\n    \"compressed_logs\": {},\n    \"deleted_dirs\": {},\n    \"skipped_log_compress\": {}\n  }}\n}}\n",
+        "{{\n  \"schema_version\": \"1.0\",\n  \"report_id\": \"{}\",\n  \"source_triage_id\": \"{}\",\n  \"source_summary\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"input_sha256\": \"{}\",\n  \"verdict\": \"{}\",\n  \"suggested_severity\": \"{}\",\n  \"suggested_cvss_vector\": \"{}\",\n  \"severity_confidence\": \"{}\",\n  \"severity_reason\": \"{}\",\n  \"poc_collected\": {},\n  \"poc_path\": \"{}\",\n  \"poc_sha256\": \"{}\",\n  \"poc_size_bytes\": {},\n  \"poc_source_input\": \"{}\",\n  \"poc_error\": \"{}\",\n  \"retention_days\": 30,\n  \"retention\": {{\n    \"compressed_logs\": {},\n    \"deleted_dirs\": {},\n    \"skipped_log_compress\": {}\n  }}\n}}\n",
         report_id,
         triage_id,
         json_escape(&summary_path.display().to_string()),
@@ -96,6 +103,10 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         json_escape(&input),
         json_escape(&input_sha256),
         json_escape(&verdict),
+        json_escape(severity.suggested_severity),
+        json_escape(severity.suggested_cvss_vector),
+        json_escape(severity.confidence),
+        json_escape(severity.reason),
         if poc.collected { "true" } else { "false" },
         json_escape(&poc.path),
         json_escape(&poc.sha256),
@@ -110,11 +121,6 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
     fs::write(&meta_path, meta_json)
         .map_err(|e| format!("failed to write '{}': {e}", meta_path.display()))?;
 
-    let stack_lines = if signature_top3.is_empty() {
-        vec!["(no signature)".to_string()]
-    } else {
-        signature_top3
-    };
     let stack_text = stack_lines
         .iter()
         .map(|s| format!("- {}", s))
@@ -122,7 +128,7 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         .join("\n");
 
     let report_md = format!(
-        "# {}\n\n## Summary\nA reproduced crash was observed while processing a `{}` model input.\n\n- Target: `{}`\n- Verdict: `{}`\n- Source input: `{}`\n- Evidence manifest: `manifest.json`\n\n## Steps to Reproduce\n1. Review `meta.json` for source triage metadata and input hashes.\n2. Use the collected PoC input when available: `{}`.\n3. Run: `tool triage --target {} --input '{}' --repro-retries {} --timeout-sec {}`\n4. Compare the observed crash signature with `crash_report.txt` and the stack frames below.\n\n## Impact\nObserved crash signature and parser/runtime failure require manual impact confirmation. Treat this as a submission candidate, not an automatic exploitability conclusion.\n\n## Suggested Fix\nValidate parser assumptions around the crashing input path, add regression coverage for the PoC, and reject malformed model files before reaching the crashing code path.\n\n## PoC\n- Original input: `{}`\n- Original sha256: `{}`\n- Collected copy: `{}`\n- Collection status: `{}`\n\n## Exploit Scenario\nA crafted model file reaches the `{}` parsing path and triggers the reproduced crash condition.\n\n## Stack Top3\n{}\n",
+        "# {}\n\n## Summary\nA reproduced crash was observed while processing a `{}` model input.\n\n- Target: `{}`\n- Verdict: `{}`\n- Source input: `{}`\n- Evidence manifest: `manifest.json`\n\n## Steps to Reproduce\n1. Review `meta.json` for source triage metadata and input hashes.\n2. Use the collected PoC input when available: `{}`.\n3. Run: `tool triage --target {} --input '{}' --repro-retries {} --timeout-sec {}`\n4. Compare the observed crash signature with `crash_report.txt` and the stack frames below.\n\n## Impact\nObserved crash signature and parser/runtime failure require manual impact confirmation. Treat this as a submission candidate, not an automatic exploitability conclusion.\n\n## Suggested Severity\n- Suggested severity: `{}`\n- Suggested CVSS vector: `{}`\n- Confidence: `{}`\n- Reason: `{}`\n- Manual confirmation required: yes\n\n## Suggested Fix\nValidate parser assumptions around the crashing input path, add regression coverage for the PoC, and reject malformed model files before reaching the crashing code path.\n\n## PoC\n- Original input: `{}`\n- Original sha256: `{}`\n- Collected copy: `{}`\n- Collection status: `{}`\n\n## Exploit Scenario\nA crafted model file reaches the `{}` parsing path and triggers the reproduced crash condition.\n\n## Stack Top3\n{}\n",
         build_report_title(&target, &stack_lines),
         target,
         target,
@@ -133,6 +139,10 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         shell_escape_single_quoted(&repro_input),
         repro_retries,
         timeout_sec,
+        severity.suggested_severity,
+        severity.suggested_cvss_vector,
+        severity.confidence,
+        severity.reason,
         input,
         input_sha256,
         if poc.path.is_empty() { "-" } else { &poc.path },
@@ -234,6 +244,84 @@ fn build_report_title(target: &str, stack_lines: &[String]) -> String {
         .map(|s| s.as_str())
         .unwrap_or("reproduced crash");
     format!("{target} reproduced crash candidate: {signature}")
+}
+
+struct SeveritySuggestion {
+    suggested_severity: &'static str,
+    suggested_cvss_vector: &'static str,
+    confidence: &'static str,
+    reason: &'static str,
+}
+
+fn suggest_report_severity(crash_report: &str, stack_lines: &[String]) -> SeveritySuggestion {
+    let evidence = format!("{}\n{}", crash_report, stack_lines.join("\n")).to_ascii_lowercase();
+
+    if evidence.contains("heap-buffer-overflow") {
+        return SeveritySuggestion {
+            suggested_severity: "high_candidate",
+            suggested_cvss_vector: "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H",
+            confidence: "medium",
+            reason: "AddressSanitizer heap-buffer-overflow pattern observed",
+        };
+    }
+    if evidence.contains("stack-buffer-overflow") {
+        return SeveritySuggestion {
+            suggested_severity: "high_candidate",
+            suggested_cvss_vector: "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H",
+            confidence: "medium",
+            reason: "AddressSanitizer stack-buffer-overflow pattern observed",
+        };
+    }
+    if evidence.contains("use-after-free") {
+        return SeveritySuggestion {
+            suggested_severity: "high_candidate",
+            suggested_cvss_vector: "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H",
+            confidence: "medium",
+            reason: "use-after-free pattern observed",
+        };
+    }
+    if evidence.contains("null dereference") || evidence.contains("null-dereference") {
+        return SeveritySuggestion {
+            suggested_severity: "medium_candidate",
+            suggested_cvss_vector: "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:L",
+            confidence: "low",
+            reason: "null dereference pattern observed",
+        };
+    }
+    if evidence.contains("oom")
+        || evidence.contains("out of memory")
+        || evidence.contains("infra_oom")
+        || evidence.contains("timeout")
+        || evidence.contains("hang")
+    {
+        return SeveritySuggestion {
+            suggested_severity: "dos_candidate",
+            suggested_cvss_vector: "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:L",
+            confidence: "low",
+            reason: "timeout/OOM/hang pattern observed",
+        };
+    }
+    if evidence.contains("sigsegv")
+        || evidence.contains("segmentation fault")
+        || evidence.contains("signal: 11")
+        || evidence.contains("sigabrt")
+        || evidence.contains("abort")
+        || evidence.contains("panic")
+    {
+        return SeveritySuggestion {
+            suggested_severity: "medium_candidate",
+            suggested_cvss_vector: "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:L",
+            confidence: "low",
+            reason: "crash signal or panic pattern observed",
+        };
+    }
+
+    SeveritySuggestion {
+        suggested_severity: "manual_review",
+        suggested_cvss_vector: "not_suggested",
+        confidence: "low",
+        reason: "no mapped sanitizer, signal, timeout, or OOM pattern observed",
+    }
 }
 
 fn write_report_manifest(

@@ -158,6 +158,7 @@
 - 매핑 우선순위: 로그/스택 > 재현 기록 > 환경 메타
 - Summary 구성: 타깃/버전 + 취약점 유형 + 결과 1줄
 - Reproduction Steps 순서: 이미지 태그+해시, PRNG 시드, 타임아웃, 실행 커맨드
+- Suggested Severity는 `suggested_severity`, `suggested_cvss_vector`, `severity_confidence`, `severity_reason`로 기록하며 자동 확정 판정이 아니다.
 
 ## 6) Observability/Health
 - status.json 주기 저장

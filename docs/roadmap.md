@@ -84,6 +84,7 @@
 | 실제 제출 가능한 리포트 수 | 정책 체크 + 증거 번들 충족 리포트 카운트 | 주간 제출 후보 수 증가 | `data/reports/report-*/report.md`, `data/reports/report-*/meta.json` |
 | 재현 성공률 | triage verdict 중 `reproduced` 비율 | 베이스라인 대비 상승 | `data/triage/triage-*/summary.json` |
 | 자동 리포트 성공률 | triage 완료 대비 report 생성 성공 비율 | 95% 이상 | `data/reports/report-*`, 실행 로그 |
+| 심각도 후보 추천 | sanitizer/signal/OOM/timeout 패턴 기반 `suggested_*` 필드 기록 | 자동 확정이 아닌 수동 검토 후보로만 사용 | `data/reports/report-*/meta.json`, `data/reports/report-*/report.md` |
 | triage 처리시간 p95 | triage 시작~summary 저장 시간 측정 | 베이스라인 대비 악화 없음 | `data/triage/triage-*` 타임스탬프 |
 | False Positive 비율 | 제출 전 수동 검토에서 반려된 비율 | 지속 하락 | 내부 리뷰 로그/제출 이력 |
 
