@@ -110,11 +110,13 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         .join("\n");
 
     let report_md = format!(
-        "# Report\n\n## Summary\n- {}: verdict `{}` on input `{}`\n\n## Reproduction Steps\n1. Image hash/version metadata: see `meta.json`\n2. PRNG seed: N/A (triage replay)\n3. Timeout: {} seconds\n4. Run: `tool triage --target {} --input '{}' --repro-retries {} --timeout-sec {}`\n\n## PoC\n- Input: `{}`\n- sha256: `{}`\n- Collected copy: `{}`\n- Collection status: `{}`\n\n## Impact\n- Observed crash signature and parser/runtime failure requires manual impact confirmation.\n\n## Exploit Scenario\n- Requires crafted input delivered to `{}` parsing path.\n\n## Value\n- Automated repro evidence prepared for bug bounty triage.\n\n## Stack Top3\n{}\n",
+        "# {}\n\n## Summary\nA reproduced crash was observed while processing a `{}` model input.\n\n- Target: `{}`\n- Verdict: `{}`\n- Source input: `{}`\n- Evidence manifest: `manifest.json`\n\n## Steps to Reproduce\n1. Review `meta.json` for source triage metadata and input hashes.\n2. Use the collected PoC input when available: `{}`.\n3. Run: `tool triage --target {} --input '{}' --repro-retries {} --timeout-sec {}`\n4. Compare the observed crash signature with `crash_report.txt` and the stack frames below.\n\n## Impact\nObserved crash signature and parser/runtime failure require manual impact confirmation. Treat this as a submission candidate, not an automatic exploitability conclusion.\n\n## Suggested Fix\nValidate parser assumptions around the crashing input path, add regression coverage for the PoC, and reject malformed model files before reaching the crashing code path.\n\n## PoC\n- Original input: `{}`\n- Original sha256: `{}`\n- Collected copy: `{}`\n- Collection status: `{}`\n\n## Exploit Scenario\nA crafted model file reaches the `{}` parsing path and triggers the reproduced crash condition.\n\n## Stack Top3\n{}\n",
+        build_report_title(&target, &stack_lines),
+        target,
         target,
         verdict,
         input,
-        timeout_sec,
+        if poc.path.is_empty() { "-" } else { &poc.path },
         target,
         shell_escape_single_quoted(&repro_input),
         repro_retries,
@@ -130,15 +132,18 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
     fs::write(&report_md_path, report_md)
         .map_err(|e| format!("failed to write '{}': {e}", report_md_path.display()))?;
 
+    let manifest_path = write_report_manifest(&report_dir, report_id, triage_id, &target, &verdict, &poc)?;
+
     println!("[report] done");
     println!("source_triage: {}", triage_dir.display());
     println!("report_dir: {}", report_dir.display());
     println!("report: {}", report_md_path.display());
     println!(
-        "evidence: {}, {}, {}",
+        "evidence: {}, {}, {}, {}",
         crash_report_path.display(),
         repro_path.display(),
-        meta_path.display()
+        meta_path.display(),
+        manifest_path.display()
     );
     if poc.collected {
         println!("poc: {}", poc.path);
@@ -202,6 +207,72 @@ fn build_crash_report(triage_dir: &Path, summary: &str) -> String {
         lines.push("attempt-1.log not found".to_string());
     }
     lines.join("\n") + "\n"
+}
+
+fn build_report_title(target: &str, stack_lines: &[String]) -> String {
+    let signature = stack_lines
+        .iter()
+        .find(|s| s.as_str() != "(no signature)")
+        .map(|s| s.as_str())
+        .unwrap_or("reproduced crash");
+    format!("{target} reproduced crash candidate: {signature}")
+}
+
+fn write_report_manifest(
+    report_dir: &Path,
+    report_id: u128,
+    triage_id: u128,
+    target: &str,
+    verdict: &str,
+    poc: &PocCollection,
+) -> Result<PathBuf, String> {
+    let mut relative_paths = vec![
+        "report.md".to_string(),
+        "repro.sh".to_string(),
+        "meta.json".to_string(),
+        "crash_report.txt".to_string(),
+    ];
+    if let Some(path) = relative_report_path(report_dir, &poc.path) {
+        relative_paths.push(path);
+    }
+
+    let mut file_entries = Vec::new();
+    for relative_path in relative_paths {
+        let path = report_dir.join(&relative_path);
+        let metadata = fs::metadata(&path)
+            .map_err(|e| format!("failed to stat report artifact '{}': {e}", path.display()))?;
+        let sha256 = sha256_file(&path)
+            .map_err(|e| format!("failed to hash report artifact '{}': {e}", path.display()))?;
+        file_entries.push(format!(
+            "    {{\"path\":\"{}\",\"sha256\":\"{}\",\"size_bytes\":{}}}",
+            json_escape(&relative_path),
+            json_escape(&sha256),
+            metadata.len()
+        ));
+    }
+
+    let manifest = format!(
+        "{{\n  \"schema_version\": \"1.0\",\n  \"bundle_type\": \"report_evidence\",\n  \"report_id\": \"{}\",\n  \"source_triage_id\": \"{}\",\n  \"target\": \"{}\",\n  \"verdict\": \"{}\",\n  \"generated_at\": {},\n  \"hash_algorithm\": \"sha256\",\n  \"manifest_path\": \"manifest.json\",\n  \"manifest_self_hash\": \"not_self_hashed\",\n  \"files\": [\n{}\n  ]\n}}\n",
+        report_id,
+        triage_id,
+        json_escape(target),
+        json_escape(verdict),
+        now_unix_millis(),
+        file_entries.join(",\n")
+    );
+    let manifest_path = report_dir.join("manifest.json");
+    fs::write(&manifest_path, manifest)
+        .map_err(|e| format!("failed to write '{}': {e}", manifest_path.display()))?;
+    Ok(manifest_path)
+}
+
+fn relative_report_path(report_dir: &Path, path: &str) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    let path = Path::new(path);
+    let relative = path.strip_prefix(report_dir).ok()?;
+    Some(relative.display().to_string().replace('\\', "/"))
 }
 
 fn excerpt_lines(text: &str, head: usize, tail: usize) -> Vec<String> {
