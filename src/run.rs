@@ -431,6 +431,11 @@ fn build_engine_command(
     let target_adapter = resolve_target_adapter(target);
     let docker_user_flag = current_docker_user_flag();
     let docker_hardening_flags = docker_hardening_flags();
+    let docker_readonly_flags = docker_readonly_flags();
+    let workdir_abs =
+        absolute_path(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let corpus_dir_abs = absolute_path(corpus_dir);
+    let run_dir_abs = absolute_path(run_dir);
     let template = std::env::var(engine.cmd_env).map_err(|_| {
         format!(
             "{} is not set; provide backend command template. example: {}='echo run {{target}} {{corpus_dir}}; true'",
@@ -451,11 +456,15 @@ fn build_engine_command(
         .replace("{restart_limit}", &restart_limit.to_string())
         .replace("{docker_user_flag}", &docker_user_flag)
         .replace("{docker_hardening_flags}", docker_hardening_flags)
+        .replace("{docker_readonly_flags}", docker_readonly_flags)
         .replace("{run_dir}", &shell_escape(run_dir))
-        .replace(
-            "{workdir}",
-            &shell_escape(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
-        )
+        .replace("{workdir_abs}", &shell_escape(&workdir_abs))
+        .replace("{corpus_dir_abs}", &shell_escape(&corpus_dir_abs))
+        .replace("{run_dir_abs}", &shell_escape(&run_dir_abs))
+        .replace("{container_workdir}", "/work")
+        .replace("{container_corpus_dir}", "/corpus")
+        .replace("{container_run_dir}", "/out")
+        .replace("{workdir}", &shell_escape(&workdir_abs))
         .replace("{worker_log}", &shell_escape(worker_log_path));
 
     Ok(cmd)
@@ -472,6 +481,14 @@ fn current_docker_user_flag() -> String {
 
 fn docker_hardening_flags() -> &'static str {
     "--network none --memory 4g --cpus 2 --pids-limit 512"
+}
+
+fn docker_readonly_flags() -> &'static str {
+    "--read-only --tmpfs /tmp:rw,size=1g --tmpfs /dev/shm:rw,size=1g"
+}
+
+fn absolute_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn read_id_output(flag: &str) -> Option<String> {

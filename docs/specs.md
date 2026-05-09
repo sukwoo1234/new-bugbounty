@@ -100,7 +100,8 @@
 - 퍼징 임시 파일은 /dev/shm 사용을 우선한다.
 - 신규 코퍼스는 host 공유 볼륨에 저장하고 재실행 시 재사용한다.
 - AFL++ Docker 실행은 `{docker_user_flag}`를 유지하고 `{docker_hardening_flags}` 기본값 `--network none --memory 4g --cpus 2 --pids-limit 512`를 적용한다.
-- `--read-only`는 AFL++ output/workdir writable volume 분리 후 적용한다.
+- AFL++ Docker 실행은 `{docker_readonly_flags}` 기본값 `--read-only --tmpfs /tmp:rw,size=1g --tmpfs /dev/shm:rw,size=1g`를 적용한다.
+- AFL++ Docker mount는 `/work:ro`, `/corpus:ro`, `/out:rw`로 분리해 코드/입력은 읽기전용, 산출물만 쓰기 가능하게 유지한다.
 
 ### 2.1) Platform Interfaces/Traits
 - QueueTrait: enqueue, claim, ack, nack, heartbeat

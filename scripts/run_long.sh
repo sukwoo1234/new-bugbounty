@@ -53,7 +53,7 @@ case "$BACKEND" in
     export TOOL_LIBFUZZER_CMD="TOOL_HARNESS_TOOL=./target/debug/tool TOOL_HARNESS_TARGET=${TARGET} TOOL_HARNESS_EXT=${TARGET} ./harnesses/libfuzzer/tool_harness_driver -max_total_time=5 {corpus_dir} >/dev/null 2>&1"
     ;;
   aflpp)
-    export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} -v \"\$PWD\":/work -w /work aflplusplus/aflplusplus bash -lc \"afl-fuzz -n -V 5 -i {corpus_dir} -o {run_dir}/afl-out -- /work/target/debug/tool harness --target ${TARGET} --input @@ >/dev/null 2>&1 || true\""
+    export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"afl-fuzz -n -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/target/debug/tool harness --target ${TARGET} --input @@ >/dev/null 2>&1 || true\""
     ;;
   *)
     echo "[run-long] unsupported backend: $BACKEND" >&2
