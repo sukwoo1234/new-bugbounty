@@ -103,6 +103,7 @@ RETRIES="$(jq -r '.retries // 0' "$OUT_DIR/run-status.json")"
 
 NEW_CRASHES_PER_HOUR="$(jq -r '.metrics.new_crashes_per_hour // 0' "$OUT_DIR/metrics-latest.json")"
 VALID_CRASH_RATIO="$(jq -r 'if (.metrics.valid_crash_ratio_status // "legacy_unverified") == "available" then (.metrics.valid_crash_ratio // "not_available") else (.metrics.valid_crash_ratio_status // "legacy_unverified") end' "$OUT_DIR/metrics-latest.json")"
+VALID_CRASH_RATIO_SOURCE="$(jq -r '.metrics.valid_crash_ratio_source // "legacy_event_log"' "$OUT_DIR/metrics-latest.json")"
 SUCCESSFUL_RUNS_PER_HOUR_PROXY="$(jq -r '.metrics.successful_runs_per_hour_proxy // .metrics.new_paths_per_hour // 0' "$OUT_DIR/metrics-latest.json")"
 GLOBAL_ERROR_RATE_5M="$(jq -r '.metrics.global_error_rate_5m // 0' "$OUT_DIR/metrics-latest.json")"
 
@@ -183,6 +184,7 @@ cat > "$OUT_DIR/summary.md" <<EOF
 | retries | ${RETRIES} |
 | new_crashes_per_hour | ${NEW_CRASHES_PER_HOUR} |
 | valid_crash_ratio | ${VALID_CRASH_RATIO} |
+| valid_crash_ratio_source | ${VALID_CRASH_RATIO_SOURCE} |
 | reproduced_count | ${REPRODUCED_COUNT} |
 | report_count | ${REPORT_COUNT} |
 | unique_signature_count | ${UNIQUE_SIGNATURE_COUNT} |
@@ -193,7 +195,8 @@ cat > "$OUT_DIR/summary.md" <<EOF
 - \`successful_runs_per_hour_proxy\` is a success-count proxy metric, not true edge/path coverage.
 - \`new_crashes_per_hour\` is based on triage inputs where a crash was observed.
 - \`global_error_rate_5m\` is computed as recent \`errors / total\` over metric events.
-- \`valid_crash_ratio\` is \`not_available\` when there are no crash observations to support the ratio.
+- \`valid_crash_ratio\` is calculated from \`data/triage/triage-*/summary.json\` when \`valid_crash_ratio_source=triage_summary_scan\`.
+- \`valid_crash_ratio\` is \`not_available\` when there are no triage crash observations to support the ratio.
 - Legacy metrics without \`valid_crash_ratio_status\` are reported as \`legacy_unverified\`.
 EOF
 

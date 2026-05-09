@@ -1,7 +1,7 @@
 use std::{fs, fs::OpenOptions, io::Write, path::Path};
 
 use crate::common::{AppPaths, now_unix};
-use crate::json_utils::extract_json_u64_field;
+use crate::json_utils::{extract_json_string_literal, extract_json_u64_field};
 
 pub(crate) struct MetricEvent {
     pub(crate) ts: u64,
@@ -40,7 +40,7 @@ pub(crate) fn record_metrics_event(app_paths: &AppPaths, event: MetricEvent) -> 
     f.write_all(line.as_bytes())
         .map_err(|e| format!("failed to append '{}': {e}", events_path.display()))?;
 
-    let snapshot = build_metrics_snapshot(&events_path, now_unix())?;
+    let snapshot = build_metrics_snapshot(app_paths, &events_path, now_unix())?;
     let snapshot_path = metrics_dir.join("latest.json");
     // atomic write: temp 파일에 먼저 쓰고 rename으로 교체해서 partial 파일 상태 방지
     let tmp_path = metrics_dir.join("latest.json.tmp");
@@ -56,13 +56,11 @@ pub(crate) fn record_metrics_event(app_paths: &AppPaths, event: MetricEvent) -> 
     Ok(())
 }
 
-fn build_metrics_snapshot(events_path: &Path, now_ts: u64) -> Result<String, String> {
+fn build_metrics_snapshot(app_paths: &AppPaths, events_path: &Path, now_ts: u64) -> Result<String, String> {
     let content = fs::read_to_string(events_path)
         .map_err(|e| format!("failed to read '{}': {e}", events_path.display()))?;
     let mut successful_runs_proxy_1h = 0u64;
     let mut new_crashes_1h = 0u64;
-    let mut valid_crashes_total = 0u64;
-    let mut total_crashes_total = 0u64;
     let mut total_5m = 0u64;
     let mut errors_5m = 0u64;
 
@@ -74,12 +72,6 @@ fn build_metrics_snapshot(events_path: &Path, now_ts: u64) -> Result<String, Str
             .or_else(|| extract_json_u64_field(line, "new_paths"))
             .unwrap_or(0);
         let new_crashes = extract_json_u64_field(line, "new_crashes").unwrap_or(0);
-        let valid_crashes = extract_json_u64_field(line, "valid_crashes").unwrap_or(0);
-        let total_crashes = extract_json_u64_field(line, "total_crashes").unwrap_or(0);
-
-        valid_crashes_total += valid_crashes;
-        total_crashes_total += total_crashes;
-
         if now_ts.saturating_sub(ts) <= 3600 {
             successful_runs_proxy_1h += successful_runs_proxy;
             new_crashes_1h += new_crashes;
@@ -90,11 +82,15 @@ fn build_metrics_snapshot(events_path: &Path, now_ts: u64) -> Result<String, Str
         }
     }
 
-    let (valid_ratio_literal, valid_ratio_status) = if total_crashes_total == 0 {
+    let triage_ratio = calculate_valid_crash_ratio_from_triage(&app_paths.data_dir.join("triage"))?;
+    let (valid_ratio_literal, valid_ratio_status) = if triage_ratio.total_crashes == 0 {
         ("null".to_string(), "not_available")
     } else {
         (
-            format!("{:.4}", valid_crashes_total as f64 / total_crashes_total as f64),
+            format!(
+                "{:.4}",
+                triage_ratio.valid_crashes as f64 / triage_ratio.total_crashes as f64
+            ),
             "available",
         )
     };
@@ -105,12 +101,64 @@ fn build_metrics_snapshot(events_path: &Path, now_ts: u64) -> Result<String, Str
     };
 
     Ok(format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"metrics\": {{\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"global_error_rate_5m\": {:.4}\n  }}\n}}\n",
+        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"metrics\": {{\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"triage_summary_scan\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {:.4}\n  }}\n}}\n",
         now_ts,
         successful_runs_proxy_1h,
         new_crashes_1h,
         valid_ratio_literal,
         valid_ratio_status,
+        triage_ratio.valid_crashes,
+        triage_ratio.total_crashes,
+        triage_ratio.summary_count,
         error_rate_5m
     ))
+}
+
+struct TriageCrashRatio {
+    valid_crashes: u64,
+    total_crashes: u64,
+    summary_count: u64,
+}
+
+fn calculate_valid_crash_ratio_from_triage(triage_root: &Path) -> Result<TriageCrashRatio, String> {
+    let mut ratio = TriageCrashRatio {
+        valid_crashes: 0,
+        total_crashes: 0,
+        summary_count: 0,
+    };
+
+    if !triage_root.exists() {
+        return Ok(ratio);
+    }
+
+    for entry in fs::read_dir(triage_root)
+        .map_err(|e| format!("failed to read triage dir '{}': {e}", triage_root.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read triage entry: {e}"))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let summary_path = path.join("summary.json");
+        if !summary_path.is_file() {
+            continue;
+        }
+
+        let summary = fs::read_to_string(&summary_path)
+            .map_err(|e| format!("failed to read '{}': {e}", summary_path.display()))?;
+        ratio.summary_count += 1;
+
+        let crashed_count = extract_json_u64_field(&summary, "crashed_count").unwrap_or(0);
+        if crashed_count == 0 {
+            continue;
+        }
+
+        ratio.total_crashes += 1;
+        if extract_json_string_literal(&summary, "verdict").as_deref() == Some("reproduced") {
+            ratio.valid_crashes += 1;
+        }
+    }
+
+    Ok(ratio)
 }
