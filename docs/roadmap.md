@@ -78,7 +78,8 @@
 | 지표 | 수집 방법 | 목표/판정 기준 | 근거 파일 |
 | --- | --- | --- | --- |
 | 시간당 신규 crash 수 | `data/metrics/latest.json`의 `new_crashes_per_hour` 추적 | 베이스라인 대비 증가 또는 동등 + 유효율 개선 | `data/metrics/latest.json`, `data/metrics/events.jsonl` |
-| 유효 crash 비율 | `valid_crash_ratio = reproduced / total_crashes` | 베이스라인 대비 상승 | `data/metrics/latest.json`, `data/triage/triage-*/summary.json` |
+| 성공 실행 proxy | `successful_runs_per_hour_proxy` 추적 | true coverage가 아닌 처리량 proxy로만 사용 | `data/metrics/latest.json`, `data/metrics/events.jsonl` |
+| 유효 crash 비율 | `valid_crash_ratio = reproduced / total_crashes`; 근거 crash가 없으면 `not_available`, legacy status가 없으면 `legacy_unverified` | 베이스라인 대비 상승 | `data/metrics/latest.json`, `data/triage/triage-*/summary.json` |
 | 중복 제거 후 고유 시그니처 수 | `summary.json`의 `signature_top3` 해시 유니크 집계 | 동일 실행시간 대비 고유 시그니처 증가 | `data/triage/triage-*/summary.json` |
 | 실제 제출 가능한 리포트 수 | 정책 체크 + 증거 번들 충족 리포트 카운트 | 주간 제출 후보 수 증가 | `data/reports/report-*/report.md`, `data/reports/report-*/meta.json` |
 | 재현 성공률 | triage verdict 중 `reproduced` 비율 | 베이스라인 대비 상승 | `data/triage/triage-*/summary.json` |

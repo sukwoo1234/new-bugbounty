@@ -102,8 +102,8 @@ TIMEOUT="$(jq -r '.timeout // 0' "$OUT_DIR/run-status.json")"
 RETRIES="$(jq -r '.retries // 0' "$OUT_DIR/run-status.json")"
 
 NEW_CRASHES_PER_HOUR="$(jq -r '.metrics.new_crashes_per_hour // 0' "$OUT_DIR/metrics-latest.json")"
-VALID_CRASH_RATIO="$(jq -r '.metrics.valid_crash_ratio // 0' "$OUT_DIR/metrics-latest.json")"
-NEW_PATHS_PER_HOUR="$(jq -r '.metrics.new_paths_per_hour // 0' "$OUT_DIR/metrics-latest.json")"
+VALID_CRASH_RATIO="$(jq -r 'if (.metrics.valid_crash_ratio_status // "legacy_unverified") == "available" then (.metrics.valid_crash_ratio // "not_available") else (.metrics.valid_crash_ratio_status // "legacy_unverified") end' "$OUT_DIR/metrics-latest.json")"
+SUCCESSFUL_RUNS_PER_HOUR_PROXY="$(jq -r '.metrics.successful_runs_per_hour_proxy // .metrics.new_paths_per_hour // 0' "$OUT_DIR/metrics-latest.json")"
 GLOBAL_ERROR_RATE_5M="$(jq -r '.metrics.global_error_rate_5m // 0' "$OUT_DIR/metrics-latest.json")"
 
 TRIAGE_INDEX="$OUT_DIR/triage-index.tsv"
@@ -186,12 +186,13 @@ cat > "$OUT_DIR/summary.md" <<EOF
 | reproduced_count | ${REPRODUCED_COUNT} |
 | report_count | ${REPORT_COUNT} |
 | unique_signature_count | ${UNIQUE_SIGNATURE_COUNT} |
-| new_paths_per_hour* | ${NEW_PATHS_PER_HOUR} |
+| successful_runs_per_hour_proxy | ${SUCCESSFUL_RUNS_PER_HOUR_PROXY} |
 | global_error_rate_5m | ${GLOBAL_ERROR_RATE_5M} |
 
 ## Caveat
-- \`new_paths_per_hour\` is a success-based proxy metric in current implementation.
-- Do not present it as true edge/path coverage.
+- \`successful_runs_per_hour_proxy\` is a success-count proxy metric, not true edge/path coverage.
+- \`valid_crash_ratio\` is \`not_available\` when there are no crash observations to support the ratio.
+- Legacy metrics without \`valid_crash_ratio_status\` are reported as \`legacy_unverified\`.
 EOF
 
 {

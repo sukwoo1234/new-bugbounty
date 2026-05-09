@@ -246,8 +246,7 @@ pub(crate) fn run_fuzz_pipeline(
             kind: "run",
             total: s.total as u64,
             errors: (s.failed + s.timeout) as u64,
-            // v1: success count를 신규 경로 proxy로 수집
-            new_paths: s.success as u64,
+            successful_runs_proxy: s.success as u64,
             new_crashes: 0,
             valid_crashes: 0,
             total_crashes: 0,
@@ -375,7 +374,7 @@ fn run_engine_backend(
             kind: "run",
             total: workers as u64,
             errors: (failed + timeout) as u64,
-            new_paths: success as u64,
+            successful_runs_proxy: success as u64,
             new_crashes: 0,
             valid_crashes: 0,
             total_crashes: 0,

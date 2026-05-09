@@ -54,7 +54,7 @@
 <div class="row"><div class="m">Latest triage</div><div>{{latest_triage_html}}</div></div>
 <div class="row"><div class="m">Latest report</div><div>{{latest_report_html}}</div></div>
 <div class="row"><div class="m">Latest coverage</div><div>{{latest_coverage_html}}</div></div>
-<div class="row"><div class="m">new_paths_per_hour</div><div>{{new_paths_per_hour}}</div></div>
+<div class="row"><div class="m">successful_runs_per_hour_proxy</div><div>{{successful_runs_per_hour_proxy}}</div></div>
 <div class="row"><div class="m">new_crashes_per_hour</div><div>{{new_crashes_per_hour}}</div></div>
 <div class="row"><div class="m">valid_crash_ratio</div><div>{{valid_crash_ratio}}</div></div>
 <div class="row"><div class="m">global_error_rate_5m</div><div>{{global_error_rate_5m}}</div></div>
@@ -73,7 +73,7 @@
 <tr><td>Triage</td><td>{{triage_count}}</td><td>{{latest_triage_html}}</td></tr>
 <tr><td>Reports</td><td>{{report_count}}</td><td>{{latest_report_html}}</td></tr>
 <tr><td>Coverage</td><td>{{coverage_count}}</td><td>{{latest_coverage_html}}</td></tr>
-<tr><td>Metrics</td><td>{{metrics_badge}}</td><td>new_paths={{new_paths_per_hour}} | new_crashes={{new_crashes_per_hour}}</td></tr>
+<tr><td>Metrics</td><td>{{metrics_badge}}</td><td>successful_runs_proxy={{successful_runs_per_hour_proxy}} | new_crashes={{new_crashes_per_hour}}</td></tr>
 </tbody>
 </table>
 </div>
@@ -364,10 +364,10 @@
     const pw = w - pad.l - pad.r;
     const ph = h - pad.t - pad.b;
 
-    const paths = metricSeries.map((p) => p.paths);
+    const successfulRuns = metricSeries.map((p) => p.successfulRuns);
     const crashes = metricSeries.map((p) => p.crashes);
     const errors = metricSeries.map((p) => p.errors);
-    const all = paths.concat(crashes, errors);
+    const all = successfulRuns.concat(crashes, errors);
     const max = Math.max(...all, 1);
 
     ctx.clearRect(0, 0, w, h);
@@ -390,7 +390,7 @@
       ctx.stroke();
     };
 
-    drawLine(paths, "#0b5563");
+    drawLine(successfulRuns, "#0b5563");
     drawLine(crashes, "#9a3412");
     drawLine(errors, "#7c3aed");
 
@@ -398,11 +398,11 @@
     ctx.font = "11px ui-monospace, monospace";
     ctx.fillText("0", 18, pad.t + ph);
     ctx.fillText(String(max), 12, pad.t + 10);
-    ctx.fillText("paths", pad.l + 6, pad.t + 14);
+    ctx.fillText("successful_runs_proxy", pad.l + 6, pad.t + 14);
     ctx.fillStyle = "#9a3412";
-    ctx.fillText("crashes", pad.l + 56, pad.t + 14);
+    ctx.fillText("crashes", pad.l + 156, pad.t + 14);
     ctx.fillStyle = "#7c3aed";
-    ctx.fillText("error_rate", pad.l + 126, pad.t + 14);
+    ctx.fillText("error_rate", pad.l + 226, pad.t + 14);
   };
 
   const fetchMetricPoint = async () => {
@@ -411,7 +411,7 @@
     const d = await res.json();
     const p = {
       ts: Date.now(),
-      paths: safeNum(d?.metrics?.new_paths_per_hour),
+      successfulRuns: safeNum(d?.metrics?.successful_runs_per_hour_proxy),
       crashes: safeNum(d?.metrics?.new_crashes_per_hour),
       errors: safeNum(d?.metrics?.global_error_rate_5m),
     };
@@ -419,7 +419,7 @@
     while (metricSeries.length > metricMaxPoints) metricSeries.shift();
     drawMetricChart();
     if (chartMeta) {
-      chartMeta.textContent = `points=${metricSeries.length} latest(paths=${p.paths}, crashes=${p.crashes}, error_rate=${p.errors})`;
+      chartMeta.textContent = `points=${metricSeries.length} latest(successful_runs_proxy=${p.successfulRuns}, crashes=${p.crashes}, error_rate=${p.errors})`;
     }
   };
 

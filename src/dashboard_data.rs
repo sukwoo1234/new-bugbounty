@@ -21,9 +21,10 @@ pub(crate) struct DashboardSnapshot {
     pub(crate) latest_triage: String,
     pub(crate) latest_report: String,
     pub(crate) metrics_exists: bool,
-    pub(crate) new_paths_per_hour: String,
+    pub(crate) successful_runs_per_hour_proxy: String,
     pub(crate) new_crashes_per_hour: String,
     pub(crate) valid_crash_ratio: String,
+    pub(crate) valid_crash_ratio_status: String,
     pub(crate) global_error_rate_5m: String,
     pub(crate) latest_valid_triage: String,
     pub(crate) latest_valid_input: String,
@@ -103,20 +104,29 @@ pub(crate) fn collect_dashboard_snapshot(app_paths: &AppPaths) -> Result<Dashboa
             .to_string()
     };
 
-    let mut new_paths_per_hour = "0".to_string();
+    let mut successful_runs_per_hour_proxy = "0".to_string();
     let mut new_crashes_per_hour = "0".to_string();
-    let mut valid_crash_ratio = "0.0".to_string();
+    let mut valid_crash_ratio = "not_available".to_string();
+    let mut valid_crash_ratio_status = "not_available".to_string();
     let mut global_error_rate_5m = "0.0".to_string();
     let metrics_exists = metrics_path.exists();
     if metrics_exists {
         let metrics = fs::read_to_string(&metrics_path)
             .map_err(|e| format!("failed to read '{}': {e}", metrics_path.display()))?;
-        new_paths_per_hour =
-            extract_json_number_literal(&metrics, "new_paths_per_hour").unwrap_or_else(|| "0".to_string());
+        successful_runs_per_hour_proxy =
+            extract_json_number_literal(&metrics, "successful_runs_per_hour_proxy")
+                .or_else(|| extract_json_number_literal(&metrics, "new_paths_per_hour"))
+                .unwrap_or_else(|| "0".to_string());
         new_crashes_per_hour =
             extract_json_number_literal(&metrics, "new_crashes_per_hour").unwrap_or_else(|| "0".to_string());
-        valid_crash_ratio =
-            extract_json_number_literal(&metrics, "valid_crash_ratio").unwrap_or_else(|| "0.0".to_string());
+        valid_crash_ratio_status = extract_json_string_literal(&metrics, "valid_crash_ratio_status")
+            .unwrap_or_else(|| "legacy_unverified".to_string());
+        valid_crash_ratio = if valid_crash_ratio_status == "available" {
+            extract_json_number_literal(&metrics, "valid_crash_ratio")
+                .unwrap_or_else(|| "not_available".to_string())
+        } else {
+            valid_crash_ratio_status.clone()
+        };
         global_error_rate_5m =
             extract_json_number_literal(&metrics, "global_error_rate_5m").unwrap_or_else(|| "0.0".to_string());
     }
@@ -154,9 +164,10 @@ pub(crate) fn collect_dashboard_snapshot(app_paths: &AppPaths) -> Result<Dashboa
         latest_triage,
         latest_report,
         metrics_exists,
-        new_paths_per_hour,
+        successful_runs_per_hour_proxy,
         new_crashes_per_hour,
         valid_crash_ratio,
+        valid_crash_ratio_status,
         global_error_rate_5m,
         latest_valid_triage,
         latest_valid_input,

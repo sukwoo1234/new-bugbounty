@@ -8,7 +8,7 @@ pub(crate) struct MetricEvent {
     pub(crate) kind: &'static str,
     pub(crate) total: u64,
     pub(crate) errors: u64,
-    pub(crate) new_paths: u64,
+    pub(crate) successful_runs_proxy: u64,
     pub(crate) new_crashes: u64,
     pub(crate) valid_crashes: u64,
     pub(crate) total_crashes: u64,
@@ -27,12 +27,12 @@ pub(crate) fn record_metrics_event(app_paths: &AppPaths, event: MetricEvent) -> 
         .map_err(|e| format!("failed to open '{}': {e}", events_path.display()))?;
 
     let line = format!(
-        "{{\"ts\":{},\"kind\":\"{}\",\"total\":{},\"errors\":{},\"new_paths\":{},\"new_crashes\":{},\"valid_crashes\":{},\"total_crashes\":{}}}\n",
+        "{{\"ts\":{},\"kind\":\"{}\",\"total\":{},\"errors\":{},\"successful_runs_proxy\":{},\"new_crashes\":{},\"valid_crashes\":{},\"total_crashes\":{}}}\n",
         event.ts,
         event.kind,
         event.total,
         event.errors,
-        event.new_paths,
+        event.successful_runs_proxy,
         event.new_crashes,
         event.valid_crashes,
         event.total_crashes
@@ -59,7 +59,7 @@ pub(crate) fn record_metrics_event(app_paths: &AppPaths, event: MetricEvent) -> 
 fn build_metrics_snapshot(events_path: &Path, now_ts: u64) -> Result<String, String> {
     let content = fs::read_to_string(events_path)
         .map_err(|e| format!("failed to read '{}': {e}", events_path.display()))?;
-    let mut new_paths_1h = 0u64;
+    let mut successful_runs_proxy_1h = 0u64;
     let mut new_crashes_1h = 0u64;
     let mut valid_crashes_total = 0u64;
     let mut total_crashes_total = 0u64;
@@ -70,7 +70,9 @@ fn build_metrics_snapshot(events_path: &Path, now_ts: u64) -> Result<String, Str
         let ts = extract_json_u64_field(line, "ts").unwrap_or(0);
         let total = extract_json_u64_field(line, "total").unwrap_or(0);
         let errors = extract_json_u64_field(line, "errors").unwrap_or(0);
-        let new_paths = extract_json_u64_field(line, "new_paths").unwrap_or(0);
+        let successful_runs_proxy = extract_json_u64_field(line, "successful_runs_proxy")
+            .or_else(|| extract_json_u64_field(line, "new_paths"))
+            .unwrap_or(0);
         let new_crashes = extract_json_u64_field(line, "new_crashes").unwrap_or(0);
         let valid_crashes = extract_json_u64_field(line, "valid_crashes").unwrap_or(0);
         let total_crashes = extract_json_u64_field(line, "total_crashes").unwrap_or(0);
@@ -79,7 +81,7 @@ fn build_metrics_snapshot(events_path: &Path, now_ts: u64) -> Result<String, Str
         total_crashes_total += total_crashes;
 
         if now_ts.saturating_sub(ts) <= 3600 {
-            new_paths_1h += new_paths;
+            successful_runs_proxy_1h += successful_runs_proxy;
             new_crashes_1h += new_crashes;
         }
         if now_ts.saturating_sub(ts) <= 300 {
@@ -88,10 +90,13 @@ fn build_metrics_snapshot(events_path: &Path, now_ts: u64) -> Result<String, Str
         }
     }
 
-    let valid_ratio = if total_crashes_total == 0 {
-        0.0
+    let (valid_ratio_literal, valid_ratio_status) = if total_crashes_total == 0 {
+        ("null".to_string(), "not_available")
     } else {
-        valid_crashes_total as f64 / total_crashes_total as f64
+        (
+            format!("{:.4}", valid_crashes_total as f64 / total_crashes_total as f64),
+            "available",
+        )
     };
     let error_rate_5m = if total_5m == 0 {
         0.0
@@ -100,8 +105,12 @@ fn build_metrics_snapshot(events_path: &Path, now_ts: u64) -> Result<String, Str
     };
 
     Ok(format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"metrics\": {{\n    \"new_paths_per_hour\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {:.4},\n    \"global_error_rate_5m\": {:.4}\n  }}\n}}\n",
-        now_ts, new_paths_1h, new_crashes_1h, valid_ratio, error_rate_5m
+        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"metrics\": {{\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"global_error_rate_5m\": {:.4}\n  }}\n}}\n",
+        now_ts,
+        successful_runs_proxy_1h,
+        new_crashes_1h,
+        valid_ratio_literal,
+        valid_ratio_status,
+        error_rate_5m
     ))
 }
-
