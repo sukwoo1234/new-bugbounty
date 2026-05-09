@@ -57,7 +57,12 @@ fn handle_connection(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(),
     }
 
     if method != "GET" {
-        return write_response(stream, "405 Method Not Allowed", "text/plain; charset=utf-8", "method not allowed\n");
+        return write_response(
+            stream,
+            "405 Method Not Allowed",
+            "text/plain; charset=utf-8",
+            "method not allowed\n",
+        );
     }
 
     if raw_path.starts_with("/file?") {
@@ -110,7 +115,12 @@ fn handle_control_route(
         ("GET", "/control/status") => handle_control_status(app_paths, stream),
         ("POST", "/control/start") => handle_control_start(app_paths, stream, raw_path),
         ("POST", "/control/stop") => handle_control_stop(app_paths, stream),
-        _ => write_response(stream, "404 Not Found", "text/plain; charset=utf-8", "not found\n"),
+        _ => write_response(
+            stream,
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            "not found\n",
+        ),
     }
 }
 
@@ -124,7 +134,12 @@ fn handle_replay_route(
         ("GET", "/replay/status") => handle_replay_status(app_paths, stream),
         ("POST", "/replay/start") => handle_replay_start(app_paths, stream, raw_path),
         ("POST", "/replay/stop") => handle_replay_stop(app_paths, stream),
-        _ => write_response(stream, "404 Not Found", "text/plain; charset=utf-8", "not found\n"),
+        _ => write_response(
+            stream,
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            "not found\n",
+        ),
     }
 }
 
@@ -141,7 +156,12 @@ fn handle_target_route(
         ("GET", "/target/status") => handle_target_status(app_paths, stream),
         ("POST", "/target/prepare") => handle_target_prepare(app_paths, stream, raw_path),
         ("POST", "/target/stop") => handle_target_stop(app_paths, stream),
-        _ => write_response(stream, "404 Not Found", "text/plain; charset=utf-8", "not found\n"),
+        _ => write_response(
+            stream,
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            "not found\n",
+        ),
     }
 }
 
@@ -150,7 +170,10 @@ fn handle_control_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result
     let running = state.pid.map(is_process_alive).unwrap_or(false);
     let mut body = String::new();
     body.push_str("{\"schema_version\":\"1.0\"");
-    body.push_str(&format!(",\"running\":{}", if running { "true" } else { "false" }));
+    body.push_str(&format!(
+        ",\"running\":{}",
+        if running { "true" } else { "false" }
+    ));
     if let Some(pid) = state.pid {
         body.push_str(&format!(",\"pid\":{pid}"));
     } else {
@@ -164,7 +187,10 @@ fn handle_control_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result
     body.push_str(&format!(",\"duration_seconds\":{}", state.duration_seconds));
     body.push_str(&format!(",\"target\":\"{}\"", json_escape(&state.target)));
     body.push_str(&format!(",\"backend\":\"{}\"", json_escape(&state.backend)));
-    body.push_str(&format!(",\"log_file\":\"{}\"", json_escape(&state.log_file)));
+    body.push_str(&format!(
+        ",\"log_file\":\"{}\"",
+        json_escape(&state.log_file)
+    ));
     body.push('}');
     write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
 }
@@ -184,7 +210,10 @@ fn handle_replay_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<
     };
     let mut body = String::new();
     body.push_str("{\"schema_version\":\"1.0\"");
-    body.push_str(&format!(",\"running\":{}", if running { "true" } else { "false" }));
+    body.push_str(&format!(
+        ",\"running\":{}",
+        if running { "true" } else { "false" }
+    ));
     if let Some(pid) = state.pid {
         body.push_str(&format!(",\"pid\":{pid}"));
     } else {
@@ -197,8 +226,14 @@ fn handle_replay_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<
     }
     body.push_str(&format!(",\"target\":\"{}\"", json_escape(&state.target)));
     body.push_str(&format!(",\"input\":\"{}\"", json_escape(&state.input)));
-    body.push_str(&format!(",\"log_file\":\"{}\"", json_escape(&state.log_file)));
-    body.push_str(&format!(",\"summary_path\":\"{}\"", json_escape(&summary_path)));
+    body.push_str(&format!(
+        ",\"log_file\":\"{}\"",
+        json_escape(&state.log_file)
+    ));
+    body.push_str(&format!(
+        ",\"summary_path\":\"{}\"",
+        json_escape(&summary_path)
+    ));
     body.push_str(&format!(",\"verdict\":\"{}\"", json_escape(&verdict)));
     body.push('}');
     write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
@@ -207,7 +242,10 @@ fn handle_replay_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<
 fn handle_target_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
     let mut state = read_target_prepare_state(app_paths)?;
     let running = state.pid.map(is_process_alive).unwrap_or(false);
-    if !running && state.pid.is_some() && matches!(state.last_result.as_str(), "running" | "starting") {
+    if !running
+        && state.pid.is_some()
+        && matches!(state.last_result.as_str(), "running" | "starting")
+    {
         state.pid = None;
         state.started_at = None;
         if log_contains(&state.log_file, "[prepare-target] done") {
@@ -237,7 +275,10 @@ fn handle_target_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<
     };
     let mut body = String::new();
     body.push_str("{\"schema_version\":\"1.0\"");
-    body.push_str(&format!(",\"running\":{}", if running { "true" } else { "false" }));
+    body.push_str(&format!(
+        ",\"running\":{}",
+        if running { "true" } else { "false" }
+    ));
     if let Some(pid) = state.pid {
         body.push_str(&format!(",\"pid\":{pid}"));
     } else {
@@ -250,8 +291,14 @@ fn handle_target_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<
     }
     body.push_str(&format!(",\"target\":\"{}\"", json_escape(&state.target)));
     body.push_str(&format!(",\"version\":\"{}\"", json_escape(&state.version)));
-    body.push_str(&format!(",\"source_url\":\"{}\"", json_escape(&state.source_url)));
-    body.push_str(&format!(",\"log_file\":\"{}\"", json_escape(&state.log_file)));
+    body.push_str(&format!(
+        ",\"source_url\":\"{}\"",
+        json_escape(&state.source_url)
+    ));
+    body.push_str(&format!(
+        ",\"log_file\":\"{}\"",
+        json_escape(&state.log_file)
+    ));
     body.push_str(&format!(",\"meta_path\":\"{}\"", json_escape(&meta_path)));
     body.push_str(&format!(
         ",\"downloaded_file\":\"{}\"",
@@ -260,7 +307,11 @@ fn handle_target_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<
     body.push_str(&format!(",\"sha256\":\"{}\"", json_escape(&sha256)));
     body.push_str(&format!(
         ",\"result\":\"{}\"",
-        json_escape(if running { "running" } else { &state.last_result })
+        json_escape(if running {
+            "running"
+        } else {
+            &state.last_result
+        })
     ));
     body.push_str(&format!(
         ",\"message\":\"{}\"",
@@ -277,7 +328,10 @@ fn handle_target_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<
 fn handle_target_build_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
     let mut state = read_target_build_state(app_paths)?;
     let running = state.pid.map(is_process_alive).unwrap_or(false);
-    if !running && state.pid.is_some() && matches!(state.last_result.as_str(), "running" | "starting") {
+    if !running
+        && state.pid.is_some()
+        && matches!(state.last_result.as_str(), "running" | "starting")
+    {
         state.pid = None;
         state.started_at = None;
         if log_contains(&state.log_file, "[target-build] done") {
@@ -302,7 +356,10 @@ fn handle_target_build_status(app_paths: &AppPaths, stream: &mut TcpStream) -> R
     };
     let mut body = String::new();
     body.push_str("{\"schema_version\":\"1.0\"");
-    body.push_str(&format!(",\"running\":{}", if running { "true" } else { "false" }));
+    body.push_str(&format!(
+        ",\"running\":{}",
+        if running { "true" } else { "false" }
+    ));
     if let Some(pid) = state.pid {
         body.push_str(&format!(",\"pid\":{pid}"));
     } else {
@@ -315,12 +372,19 @@ fn handle_target_build_status(app_paths: &AppPaths, stream: &mut TcpStream) -> R
     }
     body.push_str(&format!(",\"target\":\"{}\"", json_escape(&state.target)));
     body.push_str(&format!(",\"version\":\"{}\"", json_escape(&state.version)));
-    body.push_str(&format!(",\"log_file\":\"{}\"", json_escape(&state.log_file)));
+    body.push_str(&format!(
+        ",\"log_file\":\"{}\"",
+        json_escape(&state.log_file)
+    ));
     body.push_str(&format!(",\"build_dir\":\"{}\"", json_escape(&build_dir)));
     body.push_str(&format!(",\"artifact\":\"{}\"", json_escape(&artifact)));
     body.push_str(&format!(
         ",\"result\":\"{}\"",
-        json_escape(if running { "running" } else { &state.last_result })
+        json_escape(if running {
+            "running"
+        } else {
+            &state.last_result
+        })
     ));
     body.push_str(&format!(
         ",\"message\":\"{}\"",
@@ -334,7 +398,11 @@ fn handle_target_build_status(app_paths: &AppPaths, stream: &mut TcpStream) -> R
     write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
 }
 
-fn handle_replay_start(app_paths: &AppPaths, stream: &mut TcpStream, raw_path: &str) -> Result<(), String> {
+fn handle_replay_start(
+    app_paths: &AppPaths,
+    stream: &mut TcpStream,
+    raw_path: &str,
+) -> Result<(), String> {
     let current = read_replay_state(app_paths)?;
     if let Some(pid) = current.pid {
         if is_process_alive(pid) {
@@ -356,7 +424,8 @@ fn handle_replay_start(app_paths: &AppPaths, stream: &mut TcpStream, raw_path: &
             "{\"error\":\"missing_input\"}",
         );
     }
-    let decoded_input = url_decode(input_value).ok_or_else(|| "invalid url encoding".to_string())?;
+    let decoded_input =
+        url_decode(input_value).ok_or_else(|| "invalid url encoding".to_string())?;
     let input_path = PathBuf::from(&decoded_input);
     if !input_path.exists() || !input_path.is_file() {
         return write_response(
@@ -368,7 +437,9 @@ fn handle_replay_start(app_paths: &AppPaths, stream: &mut TcpStream, raw_path: &
     }
 
     let target = match extract_query_param(raw_path, "target").unwrap_or("onnx") {
-        "onnx" | "gguf" | "safetensors" => extract_query_param(raw_path, "target").unwrap_or("onnx"),
+        "onnx" | "gguf" | "safetensors" => {
+            extract_query_param(raw_path, "target").unwrap_or("onnx")
+        }
         _ => {
             return write_response(
                 stream,
@@ -382,8 +453,12 @@ fn handle_replay_start(app_paths: &AppPaths, stream: &mut TcpStream, raw_path: &
     let timeout_sec = extract_query_param(raw_path, "timeout_sec").unwrap_or("30");
 
     let replay_dir = app_paths.data_dir.join("ui-replay");
-    fs::create_dir_all(&replay_dir)
-        .map_err(|e| format!("failed to create replay dir '{}': {e}", replay_dir.display()))?;
+    fs::create_dir_all(&replay_dir).map_err(|e| {
+        format!(
+            "failed to create replay dir '{}': {e}",
+            replay_dir.display()
+        )
+    })?;
     let log_path = replay_dir.join("replay.log");
     let log_file = OpenOptions::new()
         .create(true)
@@ -450,7 +525,9 @@ fn handle_target_prepare(
     }
 
     let target = match extract_query_param(raw_path, "target").unwrap_or("onnx") {
-        "onnx" | "gguf" | "safetensors" => extract_query_param(raw_path, "target").unwrap_or("onnx"),
+        "onnx" | "gguf" | "safetensors" => {
+            extract_query_param(raw_path, "target").unwrap_or("onnx")
+        }
         _ => {
             return write_response(
                 stream,
@@ -465,13 +542,19 @@ fn handle_target_prepare(
         None => String::new(),
     };
     let source_url = match extract_query_param(raw_path, "source_url") {
-        Some(value) => url_decode(value).ok_or_else(|| "invalid source url encoding".to_string())?,
+        Some(value) => {
+            url_decode(value).ok_or_else(|| "invalid source url encoding".to_string())?
+        }
         None => String::new(),
     };
 
     let target_dir = app_paths.data_dir.join("ui-target");
-    fs::create_dir_all(&target_dir)
-        .map_err(|e| format!("failed to create target dir '{}': {e}", target_dir.display()))?;
+    fs::create_dir_all(&target_dir).map_err(|e| {
+        format!(
+            "failed to create target dir '{}': {e}",
+            target_dir.display()
+        )
+    })?;
     let log_path = target_dir.join("prepare-target.log");
     let log_file = OpenOptions::new()
         .create(true)
@@ -541,7 +624,9 @@ fn handle_target_build_start(
     }
 
     let target = match extract_query_param(raw_path, "target").unwrap_or("gguf") {
-        "gguf" | "onnx" | "safetensors" => extract_query_param(raw_path, "target").unwrap_or("gguf"),
+        "gguf" | "onnx" | "safetensors" => {
+            extract_query_param(raw_path, "target").unwrap_or("gguf")
+        }
         _ => {
             return write_response(
                 stream,
@@ -557,15 +642,24 @@ fn handle_target_build_start(
     };
 
     let build_dir = app_paths.data_dir.join("ui-target-build");
-    fs::create_dir_all(&build_dir)
-        .map_err(|e| format!("failed to create target build dir '{}': {e}", build_dir.display()))?;
+    fs::create_dir_all(&build_dir).map_err(|e| {
+        format!(
+            "failed to create target build dir '{}': {e}",
+            build_dir.display()
+        )
+    })?;
     let log_path = build_dir.join("target-build.log");
     let log_file = OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)
         .open(&log_path)
-        .map_err(|e| format!("failed to open target build log '{}': {e}", log_path.display()))?;
+        .map_err(|e| {
+            format!(
+                "failed to open target build log '{}': {e}",
+                log_path.display()
+            )
+        })?;
     let log_file_err = log_file
         .try_clone()
         .map_err(|e| format!("failed to clone target build log handle: {e}"))?;
@@ -694,7 +788,11 @@ fn handle_target_build_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Res
     write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
 }
 
-fn handle_control_start(app_paths: &AppPaths, stream: &mut TcpStream, raw_path: &str) -> Result<(), String> {
+fn handle_control_start(
+    app_paths: &AppPaths,
+    stream: &mut TcpStream,
+    raw_path: &str,
+) -> Result<(), String> {
     let current = read_control_state(app_paths)?;
     if let Some(pid) = current.pid {
         if is_process_alive(pid) {
@@ -732,8 +830,12 @@ fn handle_control_start(app_paths: &AppPaths, stream: &mut TcpStream, raw_path: 
     }
 
     let control_dir = app_paths.data_dir.join("ui-control");
-    fs::create_dir_all(&control_dir)
-        .map_err(|e| format!("failed to create control dir '{}': {e}", control_dir.display()))?;
+    fs::create_dir_all(&control_dir).map_err(|e| {
+        format!(
+            "failed to create control dir '{}': {e}",
+            control_dir.display()
+        )
+    })?;
     let log_path = control_dir.join("run-backend-loop.log");
     let log_file = OpenOptions::new()
         .create(true)
@@ -872,8 +974,12 @@ fn read_control_state(app_paths: &AppPaths) -> Result<ControlState, String> {
                 .to_string(),
         });
     }
-    let content = fs::read_to_string(&state_path)
-        .map_err(|e| format!("failed to read control state '{}': {e}", state_path.display()))?;
+    let content = fs::read_to_string(&state_path).map_err(|e| {
+        format!(
+            "failed to read control state '{}': {e}",
+            state_path.display()
+        )
+    })?;
     let mut out = ControlState {
         pid: None,
         started_at: None,
@@ -920,8 +1026,12 @@ fn read_replay_state(app_paths: &AppPaths) -> Result<ReplayState, String> {
                 .to_string(),
         });
     }
-    let content = fs::read_to_string(&state_path)
-        .map_err(|e| format!("failed to read replay state '{}': {e}", state_path.display()))?;
+    let content = fs::read_to_string(&state_path).map_err(|e| {
+        format!(
+            "failed to read replay state '{}': {e}",
+            state_path.display()
+        )
+    })?;
     let mut out = ReplayState {
         pid: None,
         started_at: None,
@@ -951,7 +1061,10 @@ fn read_replay_state(app_paths: &AppPaths) -> Result<ReplayState, String> {
 }
 
 fn read_target_prepare_state(app_paths: &AppPaths) -> Result<TargetPrepareState, String> {
-    let state_path = app_paths.data_dir.join("ui-target").join("prepare-target.state");
+    let state_path = app_paths
+        .data_dir
+        .join("ui-target")
+        .join("prepare-target.state");
     if !state_path.exists() {
         return Ok(TargetPrepareState {
             pid: None,
@@ -969,8 +1082,12 @@ fn read_target_prepare_state(app_paths: &AppPaths) -> Result<TargetPrepareState,
             last_message: "ready".to_string(),
         });
     }
-    let content = fs::read_to_string(&state_path)
-        .map_err(|e| format!("failed to read target prepare state '{}': {e}", state_path.display()))?;
+    let content = fs::read_to_string(&state_path).map_err(|e| {
+        format!(
+            "failed to read target prepare state '{}': {e}",
+            state_path.display()
+        )
+    })?;
     let mut out = TargetPrepareState {
         pid: None,
         started_at: None,
@@ -1006,7 +1123,10 @@ fn read_target_prepare_state(app_paths: &AppPaths) -> Result<TargetPrepareState,
 }
 
 fn read_target_build_state(app_paths: &AppPaths) -> Result<TargetBuildState, String> {
-    let state_path = app_paths.data_dir.join("ui-target-build").join("target-build.state");
+    let state_path = app_paths
+        .data_dir
+        .join("ui-target-build")
+        .join("target-build.state");
     if !state_path.exists() {
         return Ok(TargetBuildState {
             pid: None,
@@ -1023,8 +1143,12 @@ fn read_target_build_state(app_paths: &AppPaths) -> Result<TargetBuildState, Str
             last_message: "ready".to_string(),
         });
     }
-    let content = fs::read_to_string(&state_path)
-        .map_err(|e| format!("failed to read target build state '{}': {e}", state_path.display()))?;
+    let content = fs::read_to_string(&state_path).map_err(|e| {
+        format!(
+            "failed to read target build state '{}': {e}",
+            state_path.display()
+        )
+    })?;
     let mut out = TargetBuildState {
         pid: None,
         started_at: None,
@@ -1059,8 +1183,12 @@ fn read_target_build_state(app_paths: &AppPaths) -> Result<TargetBuildState, Str
 
 fn write_control_state(app_paths: &AppPaths, state: &ControlState) -> Result<(), String> {
     let control_dir = app_paths.data_dir.join("ui-control");
-    fs::create_dir_all(&control_dir)
-        .map_err(|e| format!("failed to create control dir '{}': {e}", control_dir.display()))?;
+    fs::create_dir_all(&control_dir).map_err(|e| {
+        format!(
+            "failed to create control dir '{}': {e}",
+            control_dir.display()
+        )
+    })?;
     let state_path = control_dir.join("control.state");
     let pid_text = state.pid.map(|v| v.to_string()).unwrap_or_default();
     let started_at_text = state.started_at.map(|v| v.to_string()).unwrap_or_default();
@@ -1073,14 +1201,22 @@ fn write_control_state(app_paths: &AppPaths, state: &ControlState) -> Result<(),
         state.backend,
         state.log_file
     );
-    fs::write(&state_path, body)
-        .map_err(|e| format!("failed to write control state '{}': {e}", state_path.display()))
+    fs::write(&state_path, body).map_err(|e| {
+        format!(
+            "failed to write control state '{}': {e}",
+            state_path.display()
+        )
+    })
 }
 
 fn write_replay_state(app_paths: &AppPaths, state: &ReplayState) -> Result<(), String> {
     let replay_dir = app_paths.data_dir.join("ui-replay");
-    fs::create_dir_all(&replay_dir)
-        .map_err(|e| format!("failed to create replay dir '{}': {e}", replay_dir.display()))?;
+    fs::create_dir_all(&replay_dir).map_err(|e| {
+        format!(
+            "failed to create replay dir '{}': {e}",
+            replay_dir.display()
+        )
+    })?;
     let state_path = replay_dir.join("replay.state");
     let pid_text = state.pid.map(|v| v.to_string()).unwrap_or_default();
     let started_at_text = state.started_at.map(|v| v.to_string()).unwrap_or_default();
@@ -1088,14 +1224,25 @@ fn write_replay_state(app_paths: &AppPaths, state: &ReplayState) -> Result<(), S
         "pid={}\nstarted_at={}\ntarget={}\ninput={}\nlog_file={}\n",
         pid_text, started_at_text, state.target, state.input, state.log_file
     );
-    fs::write(&state_path, body)
-        .map_err(|e| format!("failed to write replay state '{}': {e}", state_path.display()))
+    fs::write(&state_path, body).map_err(|e| {
+        format!(
+            "failed to write replay state '{}': {e}",
+            state_path.display()
+        )
+    })
 }
 
-fn write_target_prepare_state(app_paths: &AppPaths, state: &TargetPrepareState) -> Result<(), String> {
+fn write_target_prepare_state(
+    app_paths: &AppPaths,
+    state: &TargetPrepareState,
+) -> Result<(), String> {
     let target_dir = app_paths.data_dir.join("ui-target");
-    fs::create_dir_all(&target_dir)
-        .map_err(|e| format!("failed to create target dir '{}': {e}", target_dir.display()))?;
+    fs::create_dir_all(&target_dir).map_err(|e| {
+        format!(
+            "failed to create target dir '{}': {e}",
+            target_dir.display()
+        )
+    })?;
     let state_path = target_dir.join("prepare-target.state");
     let pid_text = state.pid.map(|v| v.to_string()).unwrap_or_default();
     let started_at_text = state.started_at.map(|v| v.to_string()).unwrap_or_default();
@@ -1120,8 +1267,12 @@ fn write_target_prepare_state(app_paths: &AppPaths, state: &TargetPrepareState) 
 
 fn write_target_build_state(app_paths: &AppPaths, state: &TargetBuildState) -> Result<(), String> {
     let target_dir = app_paths.data_dir.join("ui-target-build");
-    fs::create_dir_all(&target_dir)
-        .map_err(|e| format!("failed to create target build dir '{}': {e}", target_dir.display()))?;
+    fs::create_dir_all(&target_dir).map_err(|e| {
+        format!(
+            "failed to create target build dir '{}': {e}",
+            target_dir.display()
+        )
+    })?;
     let state_path = target_dir.join("target-build.state");
     let pid_text = state.pid.map(|v| v.to_string()).unwrap_or_default();
     let started_at_text = state.started_at.map(|v| v.to_string()).unwrap_or_default();
@@ -1135,8 +1286,12 @@ fn write_target_build_state(app_paths: &AppPaths, state: &TargetBuildState) -> R
         state.last_result,
         state.last_message
     );
-    fs::write(&state_path, body)
-        .map_err(|e| format!("failed to write target build state '{}': {e}", state_path.display()))
+    fs::write(&state_path, body).map_err(|e| {
+        format!(
+            "failed to write target build state '{}': {e}",
+            state_path.display()
+        )
+    })
 }
 
 fn extract_replay_summary_path(log_file: &str) -> Option<String> {
@@ -1178,7 +1333,10 @@ fn log_contains(log_file: &str, needle: &str) -> bool {
 fn extract_target_error_message(log_file: &str) -> Option<String> {
     let body = fs::read_to_string(log_file).ok()?;
     for line in body.lines().rev() {
-        if let Some(msg) = line.split_once("prepare-target error: ").map(|(_, v)| v.trim()) {
+        if let Some(msg) = line
+            .split_once("prepare-target error: ")
+            .map(|(_, v)| v.trim())
+        {
             return Some(msg.to_string());
         }
         if line.contains("source URL") || line.contains("download failed") {
@@ -1301,7 +1459,11 @@ fn handle_entity_view(
     write_response(stream, "200 OK", "text/html; charset=utf-8", &html)
 }
 
-fn handle_file_view(app_paths: &AppPaths, stream: &mut TcpStream, raw_path: &str) -> Result<(), String> {
+fn handle_file_view(
+    app_paths: &AppPaths,
+    stream: &mut TcpStream,
+    raw_path: &str,
+) -> Result<(), String> {
     let Some(path_value) = extract_query_param(raw_path, "path") else {
         return write_response(
             stream,
@@ -1380,8 +1542,12 @@ fn from_hex(c: u8) -> Option<u8> {
 }
 
 fn resolve_safe_data_path(data_dir: &Path, requested: &str) -> Result<PathBuf, String> {
-    let data_canon = fs::canonicalize(data_dir)
-        .map_err(|e| format!("failed to canonicalize data dir '{}': {e}", data_dir.display()))?;
+    let data_canon = fs::canonicalize(data_dir).map_err(|e| {
+        format!(
+            "failed to canonicalize data dir '{}': {e}",
+            data_dir.display()
+        )
+    })?;
 
     let req_path = Path::new(requested);
     let candidate = if req_path.is_absolute() {
@@ -1391,8 +1557,12 @@ fn resolve_safe_data_path(data_dir: &Path, requested: &str) -> Result<PathBuf, S
             .map_err(|e| format!("failed to get current dir: {e}"))?
             .join(req_path)
     };
-    let canon = fs::canonicalize(&candidate)
-        .map_err(|e| format!("failed to canonicalize requested path '{}': {e}", candidate.display()))?;
+    let canon = fs::canonicalize(&candidate).map_err(|e| {
+        format!(
+            "failed to canonicalize requested path '{}': {e}",
+            candidate.display()
+        )
+    })?;
 
     if !canon.starts_with(&data_canon) {
         return Err(format!(

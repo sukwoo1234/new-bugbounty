@@ -14,8 +14,12 @@ impl AppPaths {
     pub(crate) fn prepare(data_dir: &Path, seeds_dir: &Path) -> Result<Self, String> {
         ensure_directory(data_dir)
             .map_err(|e| format!("failed to create data dir '{}': {e}", data_dir.display()))?;
-        ensure_data_layout(data_dir)
-            .map_err(|e| format!("failed to create data layout in '{}': {e}", data_dir.display()))?;
+        ensure_data_layout(data_dir).map_err(|e| {
+            format!(
+                "failed to create data layout in '{}': {e}",
+                data_dir.display()
+            )
+        })?;
         ensure_directory(seeds_dir)
             .map_err(|e| format!("failed to create seeds dir '{}': {e}", seeds_dir.display()))?;
 
@@ -174,7 +178,10 @@ pub(crate) fn validate_official_source(
 fn parse_url_host_and_path(source_url: &str) -> Option<(&str, Vec<&str>)> {
     let without_scheme = source_url.strip_prefix("https://")?;
     let without_fragment = without_scheme.split('#').next().unwrap_or(without_scheme);
-    let without_query = without_fragment.split('?').next().unwrap_or(without_fragment);
+    let without_query = without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(without_fragment);
     let mut parts = without_query.splitn(2, '/');
     let host = parts.next()?;
     if host.is_empty() {
@@ -209,7 +216,11 @@ pub(crate) fn run_capture(cmd: &str, args: &[&str]) -> Result<Option<String>, St
 }
 
 pub(crate) fn first_line(text: &str) -> String {
-    text.lines().next().unwrap_or("no output").trim().to_string()
+    text.lines()
+        .next()
+        .unwrap_or("no output")
+        .trim()
+        .to_string()
 }
 
 pub(crate) fn has_ext(path: &Path, expected: &str) -> bool {

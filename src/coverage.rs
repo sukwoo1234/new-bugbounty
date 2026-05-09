@@ -1,16 +1,11 @@
-use std::{
-    fs,
-    path::Path,
-};
+use std::{fs, path::Path};
 
 use crate::common::{
-    AppPaths, HarnessExecResult, artifact_contract, command_exists, now_unix, now_unix_millis,
+    artifact_contract, command_exists, now_unix, now_unix_millis, AppPaths, HarnessExecResult,
 };
 use crate::json_utils::json_escape;
-use crate::run::{RunJob, execute_harness_subprocess, write_job_log};
-use crate::target::{
-    TargetKind, collect_corpus_inputs, default_seed_dir, target_label,
-};
+use crate::run::{execute_harness_subprocess, write_job_log, RunJob};
+use crate::target::{collect_corpus_inputs, default_seed_dir, target_label, TargetKind};
 
 pub(crate) fn run_coverage_job(
     app_paths: &AppPaths,
@@ -41,10 +36,16 @@ pub(crate) fn run_coverage_job(
     }
 
     let coverage_id = now_unix_millis();
-    let coverage_dir = artifact.coverage_root.join(format!("coverage-{coverage_id}"));
+    let coverage_dir = artifact
+        .coverage_root
+        .join(format!("coverage-{coverage_id}"));
     let logs_dir = coverage_dir.join("logs");
-    fs::create_dir_all(&logs_dir)
-        .map_err(|e| format!("failed to create coverage dir '{}': {e}", coverage_dir.display()))?;
+    fs::create_dir_all(&logs_dir).map_err(|e| {
+        format!(
+            "failed to create coverage dir '{}': {e}",
+            coverage_dir.display()
+        )
+    })?;
 
     println!("[coverage] start");
     println!("target: {}", target_label(target));

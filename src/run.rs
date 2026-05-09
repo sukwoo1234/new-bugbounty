@@ -10,13 +10,12 @@ use std::{
 };
 
 use crate::common::{
-    AppPaths, ArtifactContract, HarnessExecResult,
-    artifact_contract, command_exists, command_with_core_dump_off,
-    first_line, now_unix, now_unix_millis, shell_escape,
+    artifact_contract, command_exists, command_with_core_dump_off, first_line, now_unix,
+    now_unix_millis, shell_escape, AppPaths, ArtifactContract, HarnessExecResult,
 };
 use crate::metrics::{self, MetricEvent};
 use crate::target::{
-    TargetKind, collect_corpus_inputs, default_seed_dir, resolve_target_adapter, target_label,
+    collect_corpus_inputs, default_seed_dir, resolve_target_adapter, target_label, TargetKind,
 };
 
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
@@ -105,10 +104,7 @@ pub(crate) fn run_fuzz_pipeline(
         None => app_paths.seeds_dir.clone(),
     };
     if !corpus_dir.exists() || !corpus_dir.is_dir() {
-        return Err(format!(
-            "corpus_dir is invalid: {}",
-            corpus_dir.display()
-        ));
+        return Err(format!("corpus_dir is invalid: {}", corpus_dir.display()));
     }
 
     // corpus reload: v1은 시작 시 코퍼스를 스냅샷으로 고정한다.
@@ -276,10 +272,7 @@ fn run_engine_backend(
         None => app_paths.seeds_dir.clone(),
     };
     if !corpus_dir.exists() || !corpus_dir.is_dir() {
-        return Err(format!(
-            "corpus_dir is invalid: {}",
-            corpus_dir.display()
-        ));
+        return Err(format!("corpus_dir is invalid: {}", corpus_dir.display()));
     }
 
     let run_id = now_unix_millis();
@@ -326,9 +319,7 @@ fn run_engine_backend(
 
     let handles = worker_plans
         .into_iter()
-        .map(|plan| {
-            thread::spawn(move || run_engine_worker(plan))
-        })
+        .map(|plan| thread::spawn(move || run_engine_worker(plan)))
         .collect::<Vec<_>>();
 
     for handle in handles {
@@ -459,7 +450,10 @@ fn build_engine_command(
         .replace("{restart_limit}", &restart_limit.to_string())
         .replace("{docker_user_flag}", &docker_user_flag)
         .replace("{run_dir}", &shell_escape(run_dir))
-        .replace("{workdir}", &shell_escape(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))))
+        .replace(
+            "{workdir}",
+            &shell_escape(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+        )
         .replace("{worker_log}", &shell_escape(worker_log_path));
 
     Ok(cmd)
@@ -565,7 +559,11 @@ pub(crate) fn execute_harness_subprocess(
         .map_err(|e| format!("failed to execute harness subprocess: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    let summary = format!("stdout: {}\nstderr: {}", first_line(&stdout), first_line(&stderr));
+    let summary = format!(
+        "stdout: {}\nstderr: {}",
+        first_line(&stdout),
+        first_line(&stderr)
+    );
 
     if timeout_available && out.status.code() == Some(124) {
         return Ok(HarnessExecResult::Timeout(summary));

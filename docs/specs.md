@@ -151,8 +151,8 @@
 - OOM 137은 1회 재시도 후 failed로 이동
 
 ## 5) Report Generation
-- 템플릿 구조: Summary -> Reproduction Steps -> PoC -> Impact -> Exploit Scenario -> Value
-- Evidence Bundle 파일: crash_report.txt, repro.sh, meta.json
+- 템플릿 구조: Title -> Summary -> Steps to Reproduce -> Impact -> Suggested Fix -> PoC -> Exploit Scenario -> Stack Top3
+- Evidence Bundle 파일: report.md, crash_report.txt, repro.sh, meta.json, manifest.json, report-*-evidence.zip, poc/<input>
 - 로그/스택 축약: 상위 50줄 + 하위 50줄
 - 키워드 포함: ERROR, WARNING, FATAL, SUMMARY, AddressSanitizer, UBSAN, SEGV, SIGABRT, panic, stack trace, backtrace, OOM, out of memory, timeout, hang, assert, abort, leak
 - 매핑 우선순위: 로그/스택 > 재현 기록 > 환경 메타

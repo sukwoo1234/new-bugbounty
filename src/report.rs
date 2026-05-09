@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::common::{AppPaths, artifact_contract_for_data_dir, now_unix_millis, sha256_file};
+use crate::common::{artifact_contract_for_data_dir, now_unix_millis, sha256_file, AppPaths};
 use crate::json_utils::{
     extract_first_signature_top3_list, extract_json_string_literal, extract_json_u64_field,
     json_escape,
@@ -27,7 +27,14 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
     // verdict gate per specs.md §4: only "reproduced" (High Confidence) generates a report.
     // Others are queued for Manual Review (§4 line 148).
     if verdict != "reproduced" {
-        record_manual_review(app_paths, triage_id, &target, &input, &verdict, &summary_path)?;
+        record_manual_review(
+            app_paths,
+            triage_id,
+            &target,
+            &input,
+            &verdict,
+            &summary_path,
+        )?;
         return Err(format!(
             "report skipped: verdict '{verdict}' != 'reproduced' (triage {triage_id}); queued for manual review"
         ));
@@ -48,8 +55,12 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         .data_dir
         .join("reports")
         .join(format!("report-{report_id}"));
-    fs::create_dir_all(&report_dir)
-        .map_err(|e| format!("failed to create report dir '{}': {e}", report_dir.display()))?;
+    fs::create_dir_all(&report_dir).map_err(|e| {
+        format!(
+            "failed to create report dir '{}': {e}",
+            report_dir.display()
+        )
+    })?;
     let poc = collect_report_poc(
         &report_dir,
         triage_id,
@@ -133,7 +144,8 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
     fs::write(&report_md_path, report_md)
         .map_err(|e| format!("failed to write '{}': {e}", report_md_path.display()))?;
 
-    let manifest_path = write_report_manifest(&report_dir, report_id, triage_id, &target, &verdict, &poc)?;
+    let manifest_path =
+        write_report_manifest(&report_dir, report_id, triage_id, &target, &verdict, &poc)?;
     let bundle_path = write_evidence_zip(&report_dir, report_id, &poc)?;
 
     println!("[report] done");
@@ -163,7 +175,10 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
 fn find_latest_triage_summary(data_dir: &Path) -> Result<(u128, PathBuf, PathBuf), String> {
     let triage_root = artifact_contract_for_data_dir(data_dir).triage_root;
     if !triage_root.exists() {
-        return Err(format!("triage directory not found: {}", triage_root.display()));
+        return Err(format!(
+            "triage directory not found: {}",
+            triage_root.display()
+        ));
     }
 
     let mut selected: Option<(u128, PathBuf, PathBuf)> = None;
@@ -269,7 +284,11 @@ fn write_report_manifest(
     Ok(manifest_path)
 }
 
-fn write_evidence_zip(report_dir: &Path, report_id: u128, poc: &PocCollection) -> Result<PathBuf, String> {
+fn write_evidence_zip(
+    report_dir: &Path,
+    report_id: u128,
+    poc: &PocCollection,
+) -> Result<PathBuf, String> {
     let mut relative_paths = vec![
         "report.md".to_string(),
         "repro.sh".to_string(),
@@ -287,8 +306,12 @@ fn write_evidence_zip(report_dir: &Path, report_id: u128, poc: &PocCollection) -
 }
 
 fn write_store_zip(zip_path: &Path, root: &Path, relative_paths: &[String]) -> Result<(), String> {
-    let mut out = File::create(zip_path)
-        .map_err(|e| format!("failed to create evidence zip '{}': {e}", zip_path.display()))?;
+    let mut out = File::create(zip_path).map_err(|e| {
+        format!(
+            "failed to create evidence zip '{}': {e}",
+            zip_path.display()
+        )
+    })?;
     let mut central_entries = Vec::new();
     let mut offset = 0u64;
 
@@ -424,7 +447,10 @@ fn excerpt_lines(text: &str, head: usize, tail: usize) -> Vec<String> {
     }
     let mut out = Vec::new();
     out.extend_from_slice(&lines[..head]);
-    out.push(format!("... ({} lines omitted) ...", lines.len() - head - tail));
+    out.push(format!(
+        "... ({} lines omitted) ...",
+        lines.len() - head - tail
+    ));
     out.extend_from_slice(&lines[lines.len() - tail..]);
     out
 }
@@ -563,7 +589,10 @@ fn record_manual_review(
 ) -> Result<(), String> {
     let review_dir = app_paths.data_dir.join("manual_review");
     fs::create_dir_all(&review_dir).map_err(|e| {
-        format!("failed to create manual_review dir '{}': {e}", review_dir.display())
+        format!(
+            "failed to create manual_review dir '{}': {e}",
+            review_dir.display()
+        )
     })?;
     let review_path = review_dir.join(format!("triage-{triage_id}.json"));
     let body = format!(
@@ -576,7 +605,10 @@ fn record_manual_review(
         now_unix_millis()
     );
     fs::write(&review_path, body).map_err(|e| {
-        format!("failed to write manual review '{}': {e}", review_path.display())
+        format!(
+            "failed to write manual review '{}': {e}",
+            review_path.display()
+        )
     })?;
     println!("[manual_review] queued: {}", review_path.display());
     Ok(())

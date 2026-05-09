@@ -1,15 +1,12 @@
-use std::{
-    fs,
-    path::Path,
-};
+use std::{fs, path::Path};
 
 use crate::common::{
-    AppPaths, HarnessExecResult,
-    command_exists, command_with_core_dump_off, now_unix, now_unix_millis,
+    command_exists, command_with_core_dump_off, now_unix, now_unix_millis, AppPaths,
+    HarnessExecResult,
 };
 use crate::json_utils::json_escape;
 use crate::metrics::MetricEvent;
-use crate::target::{TargetKind, target_label};
+use crate::target::{target_label, TargetKind};
 
 struct TriageAttempt {
     attempt: u32,
@@ -36,19 +33,18 @@ pub(crate) fn run_triage_pipeline(
         .data_dir
         .join("triage")
         .join(format!("triage-{triage_id}"));
-    fs::create_dir_all(&triage_dir)
-        .map_err(|e| format!("failed to create triage dir '{}': {e}", triage_dir.display()))?;
+    fs::create_dir_all(&triage_dir).map_err(|e| {
+        format!(
+            "failed to create triage dir '{}': {e}",
+            triage_dir.display()
+        )
+    })?;
 
     let timeout_available = command_exists("timeout");
     let mut attempts = Vec::new();
 
     for attempt in 1..=repro_retries {
-        let exec = execute_triage_subprocess(
-            target,
-            input,
-            timeout_sec,
-            timeout_available,
-        )?;
+        let exec = execute_triage_subprocess(target, input, timeout_sec, timeout_available)?;
         // harness exit 0 = 정상 종료 (clean), non-zero = 크래시 (crashed) per specs.md §3.1
         let (result_label, merged_output) = match exec {
             HarnessExecResult::Success(s) => ("clean".to_string(), s),
@@ -203,7 +199,10 @@ fn execute_triage_subprocess(
     }
     // OOM 137 triage 분기(DoS vs 인프라): v1은 infra_oom 힌트를 붙여 후속 triage/report에서 구분 가능하게 남긴다.
     if out.status.code() == Some(137) {
-        return Ok(HarnessExecResult::Failed(format!("infra_oom:exit_137\n{}", merged)));
+        return Ok(HarnessExecResult::Failed(format!(
+            "infra_oom:exit_137\n{}",
+            merged
+        )));
     }
     Ok(HarnessExecResult::Failed(merged))
 }

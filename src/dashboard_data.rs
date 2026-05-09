@@ -1,13 +1,13 @@
 use std::{
     fs,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
-use crate::common::{AppPaths, artifact_contract, has_ext, now_unix};
+use crate::common::{artifact_contract, has_ext, now_unix, AppPaths};
 use crate::json_utils::{
     extract_first_signature_top1, extract_json_number_literal, extract_json_string_literal,
 };
-use crate::target::{TargetKind, default_seed_dir, resolve_target_adapter};
+use crate::target::{default_seed_dir, resolve_target_adapter, TargetKind};
 
 #[derive(Clone, Debug)]
 pub(crate) struct DashboardSnapshot {
@@ -35,6 +35,8 @@ pub(crate) struct DashboardSnapshot {
     pub(crate) latest_valid_signature: String,
     pub(crate) latest_valid_summary: String,
     pub(crate) latest_valid_report: String,
+    pub(crate) latest_valid_manifest: String,
+    pub(crate) latest_valid_bundle: String,
     pub(crate) recent_triage_ids: Vec<String>,
     pub(crate) recent_report_ids: Vec<String>,
     pub(crate) recent_coverage_ids: Vec<String>,
@@ -66,21 +68,36 @@ pub(crate) fn list_recent_ids(
         "triages" => (artifact.triage_root, "triage-"),
         "reports" => (artifact.reports_root, "report-"),
         "coverage" => (artifact.coverage_root, "coverage-"),
-        other => return Err(format!("unknown kind: '{other}' (use runs|triages|reports|coverage|all)")),
+        other => {
+            return Err(format!(
+                "unknown kind: '{other}' (use runs|triages|reports|coverage|all)"
+            ))
+        }
     };
     recent_prefixed_dir_names(&root, prefix, limit)
 }
 
-pub(crate) fn collect_dashboard_snapshot(app_paths: &AppPaths) -> Result<DashboardSnapshot, String> {
+pub(crate) fn collect_dashboard_snapshot(
+    app_paths: &AppPaths,
+) -> Result<DashboardSnapshot, String> {
     let artifact = artifact_contract(app_paths);
     let runs_root = artifact.runs_root;
     let triage_root = artifact.triage_root;
     let reports_root = artifact.reports_root;
     let coverage_root = artifact.coverage_root;
     let metrics_path = artifact.metrics_root.join("latest.json");
-    let seeds_onnx_count = count_seed_files(&default_seed_dir(app_paths, &TargetKind::Onnx), resolve_target_adapter(&TargetKind::Onnx).input_ext)?;
-    let seeds_gguf_count = count_seed_files(&default_seed_dir(app_paths, &TargetKind::Gguf), resolve_target_adapter(&TargetKind::Gguf).input_ext)?;
-    let seeds_safetensors_count = count_seed_files(&default_seed_dir(app_paths, &TargetKind::Safetensors), resolve_target_adapter(&TargetKind::Safetensors).input_ext)?;
+    let seeds_onnx_count = count_seed_files(
+        &default_seed_dir(app_paths, &TargetKind::Onnx),
+        resolve_target_adapter(&TargetKind::Onnx).input_ext,
+    )?;
+    let seeds_gguf_count = count_seed_files(
+        &default_seed_dir(app_paths, &TargetKind::Gguf),
+        resolve_target_adapter(&TargetKind::Gguf).input_ext,
+    )?;
+    let seeds_safetensors_count = count_seed_files(
+        &default_seed_dir(app_paths, &TargetKind::Safetensors),
+        resolve_target_adapter(&TargetKind::Safetensors).input_ext,
+    )?;
     let seeds_total_count = seeds_onnx_count + seeds_gguf_count + seeds_safetensors_count;
 
     let runs_count = count_prefixed_dirs(&runs_root, "run-")?;
@@ -88,13 +105,14 @@ pub(crate) fn collect_dashboard_snapshot(app_paths: &AppPaths) -> Result<Dashboa
     let report_count = count_prefixed_dirs(&reports_root, "report-")?;
     let coverage_count = count_prefixed_dirs(&coverage_root, "coverage-")?;
 
-    let latest_run = latest_prefixed_dir_name(&runs_root, "run-")?.unwrap_or_else(|| "none".to_string());
+    let latest_run =
+        latest_prefixed_dir_name(&runs_root, "run-")?.unwrap_or_else(|| "none".to_string());
     let latest_triage =
         latest_prefixed_dir_name(&triage_root, "triage-")?.unwrap_or_else(|| "none".to_string());
     let latest_report =
         latest_prefixed_dir_name(&reports_root, "report-")?.unwrap_or_else(|| "none".to_string());
-    let latest_coverage =
-        latest_prefixed_dir_name(&coverage_root, "coverage-")?.unwrap_or_else(|| "none".to_string());
+    let latest_coverage = latest_prefixed_dir_name(&coverage_root, "coverage-")?
+        .unwrap_or_else(|| "none".to_string());
     let recent_triage_ids = recent_prefixed_dir_names(&triage_root, "triage-", 8)?;
     let recent_report_ids = recent_prefixed_dir_names(&reports_root, "report-", 8)?;
     let recent_coverage_ids = recent_prefixed_dir_names(&coverage_root, "coverage-", 8)?;
@@ -125,47 +143,74 @@ pub(crate) fn collect_dashboard_snapshot(app_paths: &AppPaths) -> Result<Dashboa
             extract_json_number_literal(&metrics, "successful_runs_per_hour_proxy")
                 .or_else(|| extract_json_number_literal(&metrics, "new_paths_per_hour"))
                 .unwrap_or_else(|| "0".to_string());
-        new_crashes_per_hour =
-            extract_json_number_literal(&metrics, "new_crashes_per_hour").unwrap_or_else(|| "0".to_string());
-        valid_crash_ratio_status = extract_json_string_literal(&metrics, "valid_crash_ratio_status")
-            .unwrap_or_else(|| "legacy_unverified".to_string());
+        new_crashes_per_hour = extract_json_number_literal(&metrics, "new_crashes_per_hour")
+            .unwrap_or_else(|| "0".to_string());
+        valid_crash_ratio_status =
+            extract_json_string_literal(&metrics, "valid_crash_ratio_status")
+                .unwrap_or_else(|| "legacy_unverified".to_string());
         valid_crash_ratio = if valid_crash_ratio_status == "available" {
             extract_json_number_literal(&metrics, "valid_crash_ratio")
                 .unwrap_or_else(|| "not_available".to_string())
         } else {
             valid_crash_ratio_status.clone()
         };
-        valid_crash_ratio_source = extract_json_string_literal(&metrics, "valid_crash_ratio_source")
-            .unwrap_or_else(|| "legacy_event_log".to_string());
-        valid_crashes = extract_json_number_literal(&metrics, "valid_crashes").unwrap_or_else(|| "0".to_string());
-        total_crashes = extract_json_number_literal(&metrics, "total_crashes").unwrap_or_else(|| "0".to_string());
-        triage_summary_count =
-            extract_json_number_literal(&metrics, "triage_summary_count").unwrap_or_else(|| "0".to_string());
-        global_error_rate_5m =
-            extract_json_number_literal(&metrics, "global_error_rate_5m").unwrap_or_else(|| "0.0".to_string());
+        valid_crash_ratio_source =
+            extract_json_string_literal(&metrics, "valid_crash_ratio_source")
+                .unwrap_or_else(|| "legacy_event_log".to_string());
+        valid_crashes = extract_json_number_literal(&metrics, "valid_crashes")
+            .unwrap_or_else(|| "0".to_string());
+        total_crashes = extract_json_number_literal(&metrics, "total_crashes")
+            .unwrap_or_else(|| "0".to_string());
+        triage_summary_count = extract_json_number_literal(&metrics, "triage_summary_count")
+            .unwrap_or_else(|| "0".to_string());
+        global_error_rate_5m = extract_json_number_literal(&metrics, "global_error_rate_5m")
+            .unwrap_or_else(|| "0.0".to_string());
     }
 
     let latest_valid = find_latest_reproduced_triage(&triage_root)?;
-    let (latest_valid_triage, latest_valid_input, latest_valid_signature, latest_valid_summary, latest_valid_report) =
-        if let Some(item) = latest_valid {
-            let report =
-                find_report_by_source_triage_id(&reports_root, &item.triage_id)?.unwrap_or_else(|| "none".to_string());
-            (
-                format!("triage-{}", item.triage_id),
-                item.input,
-                item.signature_top1,
-                item.summary_path,
-                report,
-            )
-        } else {
-            (
-                "none".to_string(),
-                "none".to_string(),
-                "none".to_string(),
-                "none".to_string(),
-                "none".to_string(),
-            )
-        };
+    let (
+        latest_valid_triage,
+        latest_valid_input,
+        latest_valid_signature,
+        latest_valid_summary,
+        latest_valid_report,
+        latest_valid_manifest,
+        latest_valid_bundle,
+    ) = if let Some(item) = latest_valid {
+        let report_dir = find_report_dir_by_source_triage_id(&reports_root, &item.triage_id)?;
+        let report = report_dir
+            .as_ref()
+            .map(|dir| dir.join("report.md").display().to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let manifest = report_dir
+            .as_ref()
+            .map(|dir| dir.join("manifest.json").display().to_string())
+            .filter(|path| Path::new(path).exists())
+            .unwrap_or_else(|| "none".to_string());
+        let bundle = report_dir
+            .as_ref()
+            .and_then(|dir| find_evidence_bundle_path(dir))
+            .unwrap_or_else(|| "none".to_string());
+        (
+            format!("triage-{}", item.triage_id),
+            item.input,
+            item.signature_top1,
+            item.summary_path,
+            report,
+            manifest,
+            bundle,
+        )
+    } else {
+        (
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+        )
+    };
 
     Ok(DashboardSnapshot {
         generated_at: now_unix(),
@@ -192,6 +237,8 @@ pub(crate) fn collect_dashboard_snapshot(app_paths: &AppPaths) -> Result<Dashboa
         latest_valid_signature,
         latest_valid_summary,
         latest_valid_report,
+        latest_valid_manifest,
+        latest_valid_bundle,
         recent_triage_ids,
         recent_report_ids,
         recent_coverage_ids,
@@ -210,8 +257,11 @@ fn count_seed_files(root: &Path, ext: &str) -> Result<usize, String> {
         return Ok(0);
     }
     let mut count = 0usize;
-    for entry in fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))? {
-        let entry = entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
+    for entry in
+        fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))?
+    {
+        let entry =
+            entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
         let path = entry.path();
         if path.is_file() && has_ext(&path, ext) {
             count += 1;
@@ -220,7 +270,9 @@ fn count_seed_files(root: &Path, ext: &str) -> Result<usize, String> {
     Ok(count)
 }
 
-fn find_latest_reproduced_triage(triage_root: &Path) -> Result<Option<ReproducedTriageView>, String> {
+fn find_latest_reproduced_triage(
+    triage_root: &Path,
+) -> Result<Option<ReproducedTriageView>, String> {
     if !triage_root.exists() {
         return Ok(None);
     }
@@ -254,7 +306,8 @@ fn find_latest_reproduced_triage(triage_root: &Path) -> Result<Option<Reproduced
         if verdict != "reproduced" {
             continue;
         }
-        let input = extract_json_string_literal(&summary, "input").unwrap_or_else(|| "unknown".to_string());
+        let input =
+            extract_json_string_literal(&summary, "input").unwrap_or_else(|| "unknown".to_string());
         let signature_top1 =
             extract_first_signature_top1(&summary).unwrap_or_else(|| "none".to_string());
 
@@ -272,7 +325,10 @@ fn find_latest_reproduced_triage(triage_root: &Path) -> Result<Option<Reproduced
     Ok(latest.map(|(_, item)| item))
 }
 
-fn find_report_by_source_triage_id(reports_root: &Path, triage_id: &str) -> Result<Option<String>, String> {
+fn find_report_dir_by_source_triage_id(
+    reports_root: &Path,
+    triage_id: &str,
+) -> Result<Option<PathBuf>, String> {
     if !reports_root.exists() {
         return Ok(None);
     }
@@ -290,17 +346,33 @@ fn find_report_by_source_triage_id(reports_root: &Path, triage_id: &str) -> Resu
         }
         let meta = fs::read_to_string(&meta_path)
             .map_err(|e| format!("failed to read '{}': {e}", meta_path.display()))?;
-        let source_triage = extract_json_string_literal(&meta, "source_triage_id").unwrap_or_default();
+        let source_triage =
+            extract_json_string_literal(&meta, "source_triage_id").unwrap_or_default();
         if source_triage != triage_id {
             continue;
         }
-        let report_path = path.join("report.md");
-        if report_path.exists() {
-            return Ok(Some(report_path.display().to_string()));
-        }
-        return Ok(Some(path.display().to_string()));
+        return Ok(Some(path));
     }
     Ok(None)
+}
+
+fn find_evidence_bundle_path(report_dir: &Path) -> Option<String> {
+    let mut selected: Option<String> = None;
+    let entries = fs::read_dir(report_dir).ok()?;
+    for entry in entries {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.ends_with("-evidence.zip") {
+            selected = Some(path.display().to_string());
+        }
+    }
+    selected
 }
 
 fn count_prefixed_dirs(root: &Path, prefix: &str) -> Result<usize, String> {
@@ -308,8 +380,11 @@ fn count_prefixed_dirs(root: &Path, prefix: &str) -> Result<usize, String> {
         return Ok(0);
     }
     let mut count = 0usize;
-    for entry in fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))? {
-        let entry = entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
+    for entry in
+        fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))?
+    {
+        let entry =
+            entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -329,8 +404,11 @@ fn latest_prefixed_dir_name(root: &Path, prefix: &str) -> Result<Option<String>,
         return Ok(None);
     }
     let mut latest: Option<(u128, String)> = None;
-    for entry in fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))? {
-        let entry = entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
+    for entry in
+        fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))?
+    {
+        let entry =
+            entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -352,13 +430,20 @@ fn latest_prefixed_dir_name(root: &Path, prefix: &str) -> Result<Option<String>,
     Ok(latest.map(|(_, n)| n))
 }
 
-fn recent_prefixed_dir_names(root: &Path, prefix: &str, limit: usize) -> Result<Vec<String>, String> {
+fn recent_prefixed_dir_names(
+    root: &Path,
+    prefix: &str,
+    limit: usize,
+) -> Result<Vec<String>, String> {
     if !root.exists() || limit == 0 {
         return Ok(Vec::new());
     }
     let mut rows: Vec<(u128, String)> = Vec::new();
-    for entry in fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))? {
-        let entry = entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
+    for entry in
+        fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))?
+    {
+        let entry =
+            entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
         let path = entry.path();
         if !path.is_dir() {
             continue;

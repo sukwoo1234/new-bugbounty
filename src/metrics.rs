@@ -1,6 +1,6 @@
 use std::{fs, fs::OpenOptions, io::Write, path::Path};
 
-use crate::common::{AppPaths, now_unix};
+use crate::common::{now_unix, AppPaths};
 use crate::json_utils::{extract_json_string_literal, extract_json_u64_field};
 
 pub(crate) struct MetricEvent {
@@ -16,8 +16,12 @@ pub(crate) struct MetricEvent {
 
 pub(crate) fn record_metrics_event(app_paths: &AppPaths, event: MetricEvent) -> Result<(), String> {
     let metrics_dir = app_paths.data_dir.join("metrics");
-    fs::create_dir_all(&metrics_dir)
-        .map_err(|e| format!("failed to create metrics dir '{}': {e}", metrics_dir.display()))?;
+    fs::create_dir_all(&metrics_dir).map_err(|e| {
+        format!(
+            "failed to create metrics dir '{}': {e}",
+            metrics_dir.display()
+        )
+    })?;
 
     let events_path = metrics_dir.join("events.jsonl");
     let mut f = OpenOptions::new()
@@ -56,7 +60,11 @@ pub(crate) fn record_metrics_event(app_paths: &AppPaths, event: MetricEvent) -> 
     Ok(())
 }
 
-fn build_metrics_snapshot(app_paths: &AppPaths, events_path: &Path, now_ts: u64) -> Result<String, String> {
+fn build_metrics_snapshot(
+    app_paths: &AppPaths,
+    events_path: &Path,
+    now_ts: u64,
+) -> Result<String, String> {
     let content = fs::read_to_string(events_path)
         .map_err(|e| format!("failed to read '{}': {e}", events_path.display()))?;
     let mut successful_runs_proxy_1h = 0u64;

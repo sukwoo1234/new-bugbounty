@@ -1,6 +1,10 @@
-use std::{fs, path::{Path, PathBuf}, time::{Duration, SystemTime}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime},
+};
 
-use crate::common::{AppPaths, command_exists, command_with_core_dump_off};
+use crate::common::{command_exists, command_with_core_dump_off, AppPaths};
 
 pub(crate) struct RetentionStats {
     pub(crate) compressed_logs: usize,
@@ -41,7 +45,11 @@ pub(crate) fn apply_retention_policy(
         }
     }
 
-    for (base, prefix) in [("runs", "run-"), ("triage", "triage-"), ("reports", "report-")] {
+    for (base, prefix) in [
+        ("runs", "run-"),
+        ("triage", "triage-"),
+        ("reports", "report-"),
+    ] {
         let root = app_paths.data_dir.join(base);
         if !root.exists() {
             continue;
@@ -82,9 +90,11 @@ fn collect_log_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 fn collect_log_files_recursive(root: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    for entry in fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))?
+    for entry in
+        fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))?
     {
-        let entry = entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
+        let entry =
+            entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
         let path = entry.path();
         if path.is_dir() {
             collect_log_files_recursive(&path, out)?;
@@ -112,4 +122,3 @@ fn is_older_than(path: &Path, now: SystemTime, age_secs: u64) -> Result<bool, St
         .as_secs();
     Ok(elapsed > age_secs)
 }
-

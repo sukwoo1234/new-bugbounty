@@ -5,7 +5,7 @@ const DASHBOARD_HTML_TEMPLATE: &str = include_str!("../../templates/dashboard.ht
 
 pub(crate) fn render_dashboard_json(s: &DashboardSnapshot) -> String {
     format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"config\": {{\n    \"data_dir\": \"{}\",\n    \"seeds_dir\": \"{}\"\n  }},\n  \"snapshot\": {{\n    \"runs_count\": {},\n    \"triage_count\": {},\n    \"report_count\": {},\n    \"coverage_count\": {},\n    \"latest_run\": \"{}\",\n    \"latest_triage\": \"{}\",\n    \"latest_report\": \"{}\",\n    \"latest_coverage\": \"{}\"\n  }},\n  \"metrics\": {{\n    \"exists\": {},\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"{}\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {}\n  }},\n  \"seeds\": {{\n    \"onnx_count\": {},\n    \"gguf_count\": {},\n    \"safetensors_count\": {},\n    \"total_count\": {}\n  }},\n  \"crash\": {{\n    \"latest_valid_triage\": \"{}\",\n    \"input\": \"{}\",\n    \"signature_top1\": \"{}\",\n    \"summary\": \"{}\",\n    \"report\": \"{}\"\n  }},\n  \"coverage\": {{\n    \"latest\": \"{}\",\n    \"summary\": \"{}\"\n  }}\n}}",
+        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"config\": {{\n    \"data_dir\": \"{}\",\n    \"seeds_dir\": \"{}\"\n  }},\n  \"snapshot\": {{\n    \"runs_count\": {},\n    \"triage_count\": {},\n    \"report_count\": {},\n    \"coverage_count\": {},\n    \"latest_run\": \"{}\",\n    \"latest_triage\": \"{}\",\n    \"latest_report\": \"{}\",\n    \"latest_coverage\": \"{}\"\n  }},\n  \"metrics\": {{\n    \"exists\": {},\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"{}\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {}\n  }},\n  \"seeds\": {{\n    \"onnx_count\": {},\n    \"gguf_count\": {},\n    \"safetensors_count\": {},\n    \"total_count\": {}\n  }},\n  \"crash\": {{\n    \"latest_valid_triage\": \"{}\",\n    \"input\": \"{}\",\n    \"signature_top1\": \"{}\",\n    \"summary\": \"{}\",\n    \"report\": \"{}\",\n    \"manifest\": \"{}\",\n    \"bundle\": \"{}\"\n  }},\n  \"coverage\": {{\n    \"latest\": \"{}\",\n    \"summary\": \"{}\"\n  }}\n}}",
         s.generated_at,
         json_escape(&s.data_dir),
         json_escape(&s.seeds_dir),
@@ -36,6 +36,8 @@ pub(crate) fn render_dashboard_json(s: &DashboardSnapshot) -> String {
         json_escape(&s.latest_valid_signature),
         json_escape(&s.latest_valid_summary),
         json_escape(&s.latest_valid_report),
+        json_escape(&s.latest_valid_manifest),
+        json_escape(&s.latest_valid_bundle),
         json_escape(&s.latest_coverage),
         json_escape(&s.latest_coverage_summary),
     )
@@ -54,7 +56,10 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
     let latest_valid_triage_html = id_to_route_link(&s.latest_valid_triage, "triage");
     let latest_valid_summary_html = file_link(&s.latest_valid_summary, &s.latest_valid_summary);
     let latest_valid_report_html = file_link(&s.latest_valid_report, &s.latest_valid_report);
-    let latest_coverage_summary_html = file_link(&s.latest_coverage_summary, &s.latest_coverage_summary);
+    let latest_valid_manifest_html = file_link(&s.latest_valid_manifest, &s.latest_valid_manifest);
+    let latest_valid_bundle_html = file_link(&s.latest_valid_bundle, &s.latest_valid_bundle);
+    let latest_coverage_summary_html =
+        file_link(&s.latest_coverage_summary, &s.latest_coverage_summary);
     let recent_triage_rows = render_recent_triage_rows(&s.recent_triage_ids);
     let recent_report_rows = render_recent_report_rows(&s.recent_report_ids);
     let recent_coverage_rows = render_recent_coverage_rows(&s.recent_coverage_ids);
@@ -65,7 +70,10 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
         .replace("{{config_seeds_dir}}", &html_escape(&s.seeds_dir))
         .replace("{{seeds_onnx_count}}", &s.seeds_onnx_count.to_string())
         .replace("{{seeds_gguf_count}}", &s.seeds_gguf_count.to_string())
-        .replace("{{seeds_safetensors_count}}", &s.seeds_safetensors_count.to_string())
+        .replace(
+            "{{seeds_safetensors_count}}",
+            &s.seeds_safetensors_count.to_string(),
+        )
         .replace("{{seeds_total_count}}", &s.seeds_total_count.to_string())
         .replace("{{runs_count}}", &s.runs_count.to_string())
         .replace("{{triage_count}}", &s.triage_count.to_string())
@@ -76,12 +84,18 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
         .replace("{{latest_triage_html}}", &latest_triage_html)
         .replace("{{latest_report_html}}", &latest_report_html)
         .replace("{{latest_coverage_html}}", &latest_coverage_html)
-        .replace("{{latest_coverage_summary_html}}", &latest_coverage_summary_html)
+        .replace(
+            "{{latest_coverage_summary_html}}",
+            &latest_coverage_summary_html,
+        )
         .replace(
             "{{successful_runs_per_hour_proxy}}",
             &html_escape(&s.successful_runs_per_hour_proxy),
         )
-        .replace("{{new_crashes_per_hour}}", &html_escape(&s.new_crashes_per_hour))
+        .replace(
+            "{{new_crashes_per_hour}}",
+            &html_escape(&s.new_crashes_per_hour),
+        )
         .replace("{{valid_crash_ratio}}", &html_escape(&s.valid_crash_ratio))
         .replace(
             "{{valid_crash_ratio_source}}",
@@ -93,12 +107,26 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
             "{{triage_summary_count}}",
             &html_escape(&s.triage_summary_count),
         )
-        .replace("{{global_error_rate_5m}}", &html_escape(&s.global_error_rate_5m))
+        .replace(
+            "{{global_error_rate_5m}}",
+            &html_escape(&s.global_error_rate_5m),
+        )
         .replace("{{latest_valid_triage}}", &latest_valid_triage_html)
-        .replace("{{latest_valid_input}}", &html_escape(&s.latest_valid_input))
-        .replace("{{latest_valid_signature}}", &html_escape(&s.latest_valid_signature))
+        .replace(
+            "{{latest_valid_input}}",
+            &html_escape(&s.latest_valid_input),
+        )
+        .replace(
+            "{{latest_valid_signature}}",
+            &html_escape(&s.latest_valid_signature),
+        )
         .replace("{{latest_valid_summary_html}}", &latest_valid_summary_html)
         .replace("{{latest_valid_report_html}}", &latest_valid_report_html)
+        .replace(
+            "{{latest_valid_manifest_html}}",
+            &latest_valid_manifest_html,
+        )
+        .replace("{{latest_valid_bundle_html}}", &latest_valid_bundle_html)
         .replace("{{recent_triage_rows}}", &recent_triage_rows)
         .replace("{{recent_report_rows}}", &recent_report_rows)
         .replace("{{recent_coverage_rows}}", &recent_coverage_rows)
@@ -159,8 +187,14 @@ fn render_recent_report_rows(ids: &[String]) -> String {
         .map(|id| {
             let route = id_to_route_link(id, "report");
             let report_md = format!("./data/reports/{id}/report.md");
+            let manifest = format!("./data/reports/{id}/manifest.json");
+            let bundle = format!("./data/reports/{id}/{id}-evidence.zip");
             let report_link = file_link(&report_md, "report.md");
-            format!("<li>{route} <span class=\"sep\">|</span> {report_link}</li>")
+            let manifest_link = file_link(&manifest, "manifest.json");
+            let bundle_link = file_link(&bundle, "evidence.zip");
+            format!(
+                "<li>{route} <span class=\"sep\">|</span> {report_link} <span class=\"sep\">|</span> {manifest_link} <span class=\"sep\">|</span> {bundle_link}</li>"
+            )
         })
         .collect::<Vec<_>>()
         .join("")

@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::common::{
-    AppPaths, command_with_core_dump_off, download_file, download_file_name,
-    first_line, has_ext, sha256_file, validate_official_source,
+    command_with_core_dump_off, download_file, download_file_name, first_line, has_ext,
+    sha256_file, validate_official_source, AppPaths,
 };
 use crate::json_utils::json_escape;
 
@@ -87,14 +87,16 @@ pub(crate) fn preset_for_target(target: &TargetKind) -> TargetPreset {
         TargetKind::Onnx => TargetPreset {
             name: "onnxruntime",
             default_version: "v1.23.2",
-            default_url: "https://github.com/microsoft/onnxruntime/archive/refs/tags/v1.23.2.tar.gz",
+            default_url:
+                "https://github.com/microsoft/onnxruntime/archive/refs/tags/v1.23.2.tar.gz",
             official_owner: "microsoft",
             official_repo: "onnxruntime",
         },
         TargetKind::Safetensors => TargetPreset {
             name: "safetensors",
             default_version: "v0.7.0",
-            default_url: "https://github.com/huggingface/safetensors/archive/refs/tags/v0.7.0.tar.gz",
+            default_url:
+                "https://github.com/huggingface/safetensors/archive/refs/tags/v0.7.0.tar.gz",
             official_owner: "huggingface",
             official_repo: "safetensors",
         },
@@ -114,7 +116,10 @@ pub(crate) fn default_seed_dir(app_paths: &AppPaths, target: &TargetKind) -> Pat
     app_paths.seeds_dir.join(adapter.seed_subdir)
 }
 
-pub(crate) fn collect_corpus_inputs(corpus_dir: &Path, target: &TargetKind) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn collect_corpus_inputs(
+    corpus_dir: &Path,
+    target: &TargetKind,
+) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
     for entry in fs::read_dir(corpus_dir)
         .map_err(|e| format!("failed to read corpus dir '{}': {e}", corpus_dir.display()))?
@@ -145,10 +150,8 @@ pub(crate) fn prepare_target(
     source_url_override: Option<String>,
 ) -> Result<(), String> {
     let preset = preset_for_target(target);
-    let version = version_override
-        .unwrap_or_else(|| preset.default_version.to_string());
-    let source_url = source_url_override
-        .unwrap_or_else(|| preset.default_url.to_string());
+    let version = version_override.unwrap_or_else(|| preset.default_version.to_string());
+    let source_url = source_url_override.unwrap_or_else(|| preset.default_url.to_string());
 
     validate_official_source(&source_url, preset.official_owner, preset.official_repo)?;
 
@@ -204,8 +207,8 @@ pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), Strin
         return Err(format!("input is not a file: {}", input.display()));
     }
 
-    let bytes = fs::read(input)
-        .map_err(|e| format!("failed to read input '{}': {e}", input.display()))?;
+    let bytes =
+        fs::read(input).map_err(|e| format!("failed to read input '{}': {e}", input.display()))?;
 
     let parser_step = match target {
         TargetKind::Gguf => gguf_precheck(&bytes)?,
@@ -411,7 +414,10 @@ fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
             Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 return LibraryConnectResult {
-                    step: format!("llama.cpp parser connected ({cmd}: {})", first_line(&stdout)),
+                    step: format!(
+                        "llama.cpp parser connected ({cmd}: {})",
+                        first_line(&stdout)
+                    ),
                     connected: true,
                 };
             }
@@ -487,12 +493,10 @@ except Exception as e:
                 }
             }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            LibraryConnectResult {
-                step: format!("onnxruntime unavailable ({python_bin} not installed)"),
-                connected: false,
-            }
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => LibraryConnectResult {
+            step: format!("onnxruntime unavailable ({python_bin} not installed)"),
+            connected: false,
+        },
         Err(e) => LibraryConnectResult {
             step: format!("onnxruntime probe error ({e})"),
             connected: false,
@@ -543,12 +547,10 @@ except Exception as e:
                 }
             }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            LibraryConnectResult {
-                step: format!("safetensors unavailable ({python_bin} not installed)"),
-                connected: false,
-            }
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => LibraryConnectResult {
+            step: format!("safetensors unavailable ({python_bin} not installed)"),
+            connected: false,
+        },
         Err(e) => LibraryConnectResult {
             step: format!("safetensors probe error ({e})"),
             connected: false,

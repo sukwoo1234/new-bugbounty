@@ -210,7 +210,6 @@ struct UiServeArgs {
     bind: String,
 }
 
-
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
 enum DashboardFormat {
     #[value(name = "json")]
@@ -285,7 +284,13 @@ fn main() -> ExitCode {
             }
         }
         Commands::Triage(args) => {
-            if let Err(err) = triage::run_triage_pipeline(&app_paths, &args.target, &args.input, args.repro_retries, args.timeout_sec) {
+            if let Err(err) = triage::run_triage_pipeline(
+                &app_paths,
+                &args.target,
+                &args.input,
+                args.repro_retries,
+                args.timeout_sec,
+            ) {
                 eprintln!("[{E_TRIAGE_PIPELINE}] triage error: {err}");
                 return ExitCode::from(6);
             }
@@ -305,11 +310,9 @@ fn main() -> ExitCode {
                     sync.to.as_deref(),
                     sync.harness_filter,
                 ),
-                SeedCommands::Stats(stats) => seed::run_seed_stats(
-                    &app_paths,
-                    &stats.target,
-                    stats.dir.as_deref(),
-                ),
+                SeedCommands::Stats(stats) => {
+                    seed::run_seed_stats(&app_paths, &stats.target, stats.dir.as_deref())
+                }
             };
             if let Err(err) = result {
                 eprintln!("[{E_CONFIG_PREPARE}] seed error: {err}");
@@ -331,7 +334,10 @@ fn main() -> ExitCode {
                         if let Some(parent) = out.parent() {
                             if !parent.as_os_str().is_empty() {
                                 fs::create_dir_all(parent).map_err(|e| {
-                                    format!("failed to create dashboard dir '{}': {e}", parent.display())
+                                    format!(
+                                        "failed to create dashboard dir '{}': {e}",
+                                        parent.display()
+                                    )
                                 })?;
                             }
                         }
@@ -402,10 +408,17 @@ fn main() -> ExitCode {
             print_stub_with_id("show", &app_paths.data_dir, &app_paths.seeds_dir, &args.id);
         }
         Commands::Export(args) => {
-            print_stub_with_id("export", &app_paths.data_dir, &app_paths.seeds_dir, &args.id);
+            print_stub_with_id(
+                "export",
+                &app_paths.data_dir,
+                &app_paths.seeds_dir,
+                &args.id,
+            );
         }
         Commands::PrepareTarget(args) => {
-            if let Err(err) = target::prepare_target(&app_paths, &args.target, args.version, args.source_url) {
+            if let Err(err) =
+                target::prepare_target(&app_paths, &args.target, args.version, args.source_url)
+            {
                 eprintln!("[{E_PREPARE_TARGET}] prepare-target error: {err}");
                 return ExitCode::from(3);
             }
@@ -420,11 +433,6 @@ fn main() -> ExitCode {
 
     ExitCode::SUCCESS
 }
-
-
-
-
-
 
 fn print_stub_with_id(command: &str, data_dir: &Path, seeds_dir: &Path, id: &str) {
     println!("[{}] not implemented yet", command);

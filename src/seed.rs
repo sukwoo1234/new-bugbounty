@@ -4,10 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::common::{
-    AppPaths, command_with_core_dump_off, has_ext, sha256_file,
-};
-use crate::target::{TargetKind, default_seed_dir, seed_ext, target_label};
+use crate::common::{command_with_core_dump_off, has_ext, sha256_file, AppPaths};
+use crate::target::{default_seed_dir, seed_ext, target_label, TargetKind};
 
 pub(crate) fn run_seed_sync(
     app_paths: &AppPaths,
