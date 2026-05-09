@@ -25,6 +25,10 @@ pub(crate) struct DashboardSnapshot {
     pub(crate) new_crashes_per_hour: String,
     pub(crate) valid_crash_ratio: String,
     pub(crate) valid_crash_ratio_status: String,
+    pub(crate) valid_crash_ratio_source: String,
+    pub(crate) valid_crashes: String,
+    pub(crate) total_crashes: String,
+    pub(crate) triage_summary_count: String,
     pub(crate) global_error_rate_5m: String,
     pub(crate) latest_valid_triage: String,
     pub(crate) latest_valid_input: String,
@@ -108,6 +112,10 @@ pub(crate) fn collect_dashboard_snapshot(app_paths: &AppPaths) -> Result<Dashboa
     let mut new_crashes_per_hour = "0".to_string();
     let mut valid_crash_ratio = "not_available".to_string();
     let mut valid_crash_ratio_status = "not_available".to_string();
+    let mut valid_crash_ratio_source = "not_available".to_string();
+    let mut valid_crashes = "0".to_string();
+    let mut total_crashes = "0".to_string();
+    let mut triage_summary_count = "0".to_string();
     let mut global_error_rate_5m = "0.0".to_string();
     let metrics_exists = metrics_path.exists();
     if metrics_exists {
@@ -127,6 +135,12 @@ pub(crate) fn collect_dashboard_snapshot(app_paths: &AppPaths) -> Result<Dashboa
         } else {
             valid_crash_ratio_status.clone()
         };
+        valid_crash_ratio_source = extract_json_string_literal(&metrics, "valid_crash_ratio_source")
+            .unwrap_or_else(|| "legacy_event_log".to_string());
+        valid_crashes = extract_json_number_literal(&metrics, "valid_crashes").unwrap_or_else(|| "0".to_string());
+        total_crashes = extract_json_number_literal(&metrics, "total_crashes").unwrap_or_else(|| "0".to_string());
+        triage_summary_count =
+            extract_json_number_literal(&metrics, "triage_summary_count").unwrap_or_else(|| "0".to_string());
         global_error_rate_5m =
             extract_json_number_literal(&metrics, "global_error_rate_5m").unwrap_or_else(|| "0.0".to_string());
     }
@@ -168,6 +182,10 @@ pub(crate) fn collect_dashboard_snapshot(app_paths: &AppPaths) -> Result<Dashboa
         new_crashes_per_hour,
         valid_crash_ratio,
         valid_crash_ratio_status,
+        valid_crash_ratio_source,
+        valid_crashes,
+        total_crashes,
+        triage_summary_count,
         global_error_rate_5m,
         latest_valid_triage,
         latest_valid_input,

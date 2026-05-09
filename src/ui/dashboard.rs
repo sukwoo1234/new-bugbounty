@@ -5,7 +5,7 @@ const DASHBOARD_HTML_TEMPLATE: &str = include_str!("../../templates/dashboard.ht
 
 pub(crate) fn render_dashboard_json(s: &DashboardSnapshot) -> String {
     format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"config\": {{\n    \"data_dir\": \"{}\",\n    \"seeds_dir\": \"{}\"\n  }},\n  \"snapshot\": {{\n    \"runs_count\": {},\n    \"triage_count\": {},\n    \"report_count\": {},\n    \"coverage_count\": {},\n    \"latest_run\": \"{}\",\n    \"latest_triage\": \"{}\",\n    \"latest_report\": \"{}\",\n    \"latest_coverage\": \"{}\"\n  }},\n  \"metrics\": {{\n    \"exists\": {},\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"global_error_rate_5m\": {}\n  }},\n  \"seeds\": {{\n    \"onnx_count\": {},\n    \"gguf_count\": {},\n    \"safetensors_count\": {},\n    \"total_count\": {}\n  }},\n  \"crash\": {{\n    \"latest_valid_triage\": \"{}\",\n    \"input\": \"{}\",\n    \"signature_top1\": \"{}\",\n    \"summary\": \"{}\",\n    \"report\": \"{}\"\n  }},\n  \"coverage\": {{\n    \"latest\": \"{}\",\n    \"summary\": \"{}\"\n  }}\n}}",
+        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"config\": {{\n    \"data_dir\": \"{}\",\n    \"seeds_dir\": \"{}\"\n  }},\n  \"snapshot\": {{\n    \"runs_count\": {},\n    \"triage_count\": {},\n    \"report_count\": {},\n    \"coverage_count\": {},\n    \"latest_run\": \"{}\",\n    \"latest_triage\": \"{}\",\n    \"latest_report\": \"{}\",\n    \"latest_coverage\": \"{}\"\n  }},\n  \"metrics\": {{\n    \"exists\": {},\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"{}\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {}\n  }},\n  \"seeds\": {{\n    \"onnx_count\": {},\n    \"gguf_count\": {},\n    \"safetensors_count\": {},\n    \"total_count\": {}\n  }},\n  \"crash\": {{\n    \"latest_valid_triage\": \"{}\",\n    \"input\": \"{}\",\n    \"signature_top1\": \"{}\",\n    \"summary\": \"{}\",\n    \"report\": \"{}\"\n  }},\n  \"coverage\": {{\n    \"latest\": \"{}\",\n    \"summary\": \"{}\"\n  }}\n}}",
         s.generated_at,
         json_escape(&s.data_dir),
         json_escape(&s.seeds_dir),
@@ -22,6 +22,10 @@ pub(crate) fn render_dashboard_json(s: &DashboardSnapshot) -> String {
         s.new_crashes_per_hour,
         valid_crash_ratio_json_literal(s),
         json_escape(&s.valid_crash_ratio_status),
+        json_escape(&s.valid_crash_ratio_source),
+        s.valid_crashes,
+        s.total_crashes,
+        s.triage_summary_count,
         s.global_error_rate_5m,
         s.seeds_onnx_count,
         s.seeds_gguf_count,
@@ -79,6 +83,16 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
         )
         .replace("{{new_crashes_per_hour}}", &html_escape(&s.new_crashes_per_hour))
         .replace("{{valid_crash_ratio}}", &html_escape(&s.valid_crash_ratio))
+        .replace(
+            "{{valid_crash_ratio_source}}",
+            &html_escape(&s.valid_crash_ratio_source),
+        )
+        .replace("{{valid_crashes}}", &html_escape(&s.valid_crashes))
+        .replace("{{total_crashes}}", &html_escape(&s.total_crashes))
+        .replace(
+            "{{triage_summary_count}}",
+            &html_escape(&s.triage_summary_count),
+        )
         .replace("{{global_error_rate_5m}}", &html_escape(&s.global_error_rate_5m))
         .replace("{{latest_valid_triage}}", &latest_valid_triage_html)
         .replace("{{latest_valid_input}}", &html_escape(&s.latest_valid_input))

@@ -56,7 +56,7 @@
 <div class="row"><div class="m">Latest coverage</div><div>{{latest_coverage_html}}</div></div>
 <div class="row"><div class="m">successful_runs_per_hour_proxy</div><div>{{successful_runs_per_hour_proxy}} <span class="hint">success-count throughput proxy, not true coverage</span></div></div>
 <div class="row"><div class="m">new_crashes_per_hour</div><div>{{new_crashes_per_hour}} <span class="hint">triage crash-observed inputs</span></div></div>
-<div class="row"><div class="m">valid_crash_ratio</div><div>{{valid_crash_ratio}} <span class="hint">not_available without crash evidence</span></div></div>
+<div class="row"><div class="m">valid_crash_ratio</div><div>{{valid_crash_ratio}} <span class="hint">source={{valid_crash_ratio_source}}, valid={{valid_crashes}}, total={{total_crashes}}, summaries={{triage_summary_count}}</span></div></div>
 <div class="row"><div class="m">global_error_rate_5m</div><div>{{global_error_rate_5m}} <span class="hint">recent errors / total events</span></div></div>
 </div>
 </section>
@@ -226,7 +226,7 @@
 <div class="row"><div class="m">Latest triage</div><div>{{latest_triage_html}}</div></div>
 <div class="row"><div class="m">Latest report</div><div>{{latest_report_html}}</div></div>
 <div class="row"><div class="m">new_crashes_per_hour</div><div>{{new_crashes_per_hour}}</div></div>
-<div class="row"><div class="m">valid_crash_ratio</div><div>{{valid_crash_ratio}}</div></div>
+<div class="row"><div class="m">valid_crash_ratio</div><div>{{valid_crash_ratio}} <span class="hint">source={{valid_crash_ratio_source}}, valid={{valid_crashes}}, total={{total_crashes}}, summaries={{triage_summary_count}}</span></div></div>
 </div>
 </section>
 </section>
