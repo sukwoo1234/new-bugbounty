@@ -94,7 +94,12 @@
 <div class="rows">
 <div class="row"><div class="m">Latest valid triage</div><div>{{latest_valid_triage}}</div></div>
 <div class="row"><div class="m">Crash input</div><div>{{latest_valid_input}}</div></div>
+<div class="row"><div class="m">Crash kind</div><div>{{latest_valid_crash_kind}}</div></div>
+<div class="row"><div class="m">Sanitizer</div><div>{{latest_valid_sanitizer}}</div></div>
+<div class="row"><div class="m">Signal</div><div>{{latest_valid_signal}}</div></div>
+<div class="row"><div class="m">Normalized signature</div><div><pre>{{latest_valid_normalized_frame_hash}}</pre><span class="hint">basis={{latest_valid_signature_basis}}</span></div></div>
 <div class="row"><div class="m">Signature top1</div><div><pre>{{latest_valid_signature}}</pre></div></div>
+<div class="row"><div class="m">Crash summary</div><div><pre>{{latest_valid_crash_summary}}</pre></div></div>
 <div class="row"><div class="m">Summary path</div><div>{{latest_valid_summary_html}}</div></div>
 <div class="row"><div class="m">Report path</div><div>{{latest_valid_report_html}}</div></div>
 <div class="row"><div class="m">Coverage summary</div><div>{{latest_coverage_summary_html}}</div></div>
@@ -174,7 +179,11 @@
 <div class="row"><div class="m">Recent triage list</div><div><ul class="mini-list">{{recent_triage_rows}}</ul></div></div>
 <div class="row"><div class="m">Latest valid triage</div><div>{{latest_valid_triage}}</div></div>
 <div class="row"><div class="m">Crash input</div><div>{{latest_valid_input}}</div></div>
+<div class="row"><div class="m">Crash kind</div><div>{{latest_valid_crash_kind}}</div></div>
+<div class="row"><div class="m">Sanitizer / Signal</div><div>{{latest_valid_sanitizer}} / {{latest_valid_signal}}</div></div>
+<div class="row"><div class="m">Normalized signature</div><div><pre>{{latest_valid_normalized_frame_hash}}</pre><span class="hint">basis={{latest_valid_signature_basis}}</span></div></div>
 <div class="row"><div class="m">Signature top1</div><div><pre id="latest-signature-text">{{latest_valid_signature}}</pre><p class="inline-actions"><button id="view-signature-btn" class="ctl-btn" type="button">View In Modal</button></p></div></div>
+<div class="row"><div class="m">Crash summary</div><div><pre>{{latest_valid_crash_summary}}</pre></div></div>
 <div class="row"><div class="m">Summary path</div><div>{{latest_valid_summary_html}}</div></div>
 <div class="row"><div class="m">Report path</div><div>{{latest_valid_report_html}}</div></div>
 <div class="row"><div class="m">Evidence manifest</div><div>{{latest_valid_manifest_html}}</div></div>
@@ -205,6 +214,8 @@
 <div class="rows">
 <div class="row"><div class="m">Latest report</div><div>{{latest_report_html}}</div></div>
 <div class="row"><div class="m">Latest valid report path</div><div>{{latest_valid_report_html}}</div></div>
+<div class="row"><div class="m">Latest crash kind</div><div>{{latest_valid_crash_kind}}</div></div>
+<div class="row"><div class="m">Latest normalized signature</div><div><pre>{{latest_valid_normalized_frame_hash}}</pre></div></div>
 <div class="row"><div class="m">Latest evidence manifest</div><div>{{latest_valid_manifest_html}}</div></div>
 <div class="row"><div class="m">Latest evidence bundle</div><div>{{latest_valid_bundle_html}}</div></div>
 <div class="row"><div class="m">Latest suggested severity</div><div>{{latest_suggested_severity}} <span class="hint">confidence={{latest_severity_confidence}}, cvss={{latest_suggested_cvss_vector}}</span></div></div>

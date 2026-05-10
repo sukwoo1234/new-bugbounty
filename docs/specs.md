@@ -137,9 +137,11 @@
 ## 4) Repro/Triage Policies
 - 재현 기준: 동일 입력/환경에서 3회 재현 성공
 - 동일 입력 판정: 입력 바이트 해시 동일
-- 스택 판정: 상위 3프레임 동일
+- 스택 판정: 정규화된 상위 프레임 해시(`normalized_frame_hash`) 동일
+- 호환 필드: 기존 `signature_top3`는 report/dashboard fallback 용도로 유지한다.
 - 스택 정규화 기본 스킵: asan, libc, libstdc++, libgcc, libfuzzer
 - 스택 정규화는 주소/오프셋을 제거하고 모듈명+심볼 기준으로 비교한다.
+- triage summary는 attempt별 `exit_code`, `signal`, `sanitizer`, `crash_kind`, `top_frames`, `normalized_frames`, `normalized_frame_hash`를 기록한다.
 - Strict 기본값: 컨테이너 이미지/라이브러리 버전 고정, 환경 변수 화이트리스트, PRNG 시드 고정 및 기록
 - Debug override 허용: 재현 목적의 한시적 변경은 허용하되 로그/메타에 기록한다
 - 재현 타임아웃: 60초, hang 판정: 30초 무응답
@@ -149,6 +151,8 @@
 - ASan 빌드 크래시 발생 시 Release 빌드로 동일 입력 재실행
 - Release 빌드에서 비정상 종료(SEGV/Abort 등) 발생 시 High Confidence
 - 기준 미달 시 Manual Review 큐로 이동
+- verdict 값은 `reproduced`, `not_reproduced`, `flaky`, `timeout`, `infra_oom`, `manual_review`만 사용한다.
+- sanitizer/signal 없이 parser/runtime error만 확인된 입력은 자동 보안 결론으로 확정하지 않고 `manual_review`로 분리한다.
 - Exploitability Triage: crashwalk -> GEF exploitable -> 간이 판정 -> gdb-exploitable(호환 시)
 - OOM 137 처리: 기본 infra_oom, 동일 입력/환경 3회 연속 재현 시 DoS 후보
 - OOM 137은 1회 재시도 후 failed로 이동
@@ -162,6 +166,7 @@
 - Summary 구성: 타깃/버전 + 취약점 유형 + 결과 1줄
 - Reproduction Steps 순서: 이미지 태그+해시, PRNG 시드, 타임아웃, 실행 커맨드
 - Suggested Severity는 `suggested_severity`, `suggested_cvss_vector`, `severity_confidence`, `severity_reason`로 기록하며 자동 확정 판정이 아니다.
+- Report metadata는 triage의 `crash_kind`, `sanitizer`, `signal`, `normalized_frame_hash`, `signature_basis`, `crash_summary`를 보존한다.
 
 ## 6) Observability/Health
 - status.json 주기 저장
@@ -172,6 +177,7 @@
 - `new_crashes_per_hour`는 triage에서 crash가 관측된 입력 수 기반 지표다.
 - `valid_crash_ratio`는 `data/triage/triage-*/summary.json` 기준의 `reproduced / total_crashes`이며, 근거 crash가 없으면 `not_available`로 표시한다.
 - `global_error_rate_5m`는 최근 5분 이벤트의 `errors / total` 운영 오류율이다.
+- Dashboard/export는 `normalized_frame_hash`, `crash_kind`, `sanitizer`, `signal`을 우선 표시하고 legacy `signature_top3`를 fallback으로 사용한다.
 - self-test: tool self-test로 전체 파이프라인 검증(성공/타임아웃/크래시/오류 시나리오 포함)
 
 ## 7) Storage/Retention
@@ -223,6 +229,9 @@
 		"libonnxruntime.so!InferenceSession::Run",
 		"libonnxruntime.so!SequentialExecutor::Execute"
 	],
+	"normalized_frame_hash": "<stable-fnv64>",
+	"crash_kind": "heap-buffer-overflow",
+	"sanitizer": "asan",
 	"signal_exit": "SEGV",
 	"time": "2026-02-10T12:34:56Z"
 }
@@ -262,7 +271,7 @@
 - 디렉터리 우선 분류: ./data/bugs/<target>/<vuln_type>/
 - 파일 이름: YYYYMMDD-HHMMSS-XX
 - crash_id: 경로+파일명으로 정의
-- 동일 크래시 묶음 기준: stack_top3 해시
+- 동일 크래시 묶음 기준: `normalized_frame_hash`
 
 ### 11.5) Optional Fields
 - fuzz_run_id, dedup_hash, artifact_paths

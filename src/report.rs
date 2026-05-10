@@ -43,6 +43,7 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
     let repro_retries = extract_json_u64_field(&summary, "repro_retries").unwrap_or(3);
     let timeout_sec = extract_json_u64_field(&summary, "timeout_sec").unwrap_or(60);
     let signature_top3 = extract_first_signature_top3_list(&summary);
+    let triage_crash = extract_triage_crash_fields(&summary);
 
     let input_sha256 = if input != "unknown" {
         sha256_file(Path::new(&input)).unwrap_or_else(|_| "unavailable".to_string())
@@ -92,10 +93,10 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
     } else {
         signature_top3
     };
-    let severity = suggest_report_severity(&crash_report, &stack_lines);
+    let severity = suggest_report_severity(&crash_report, &stack_lines, &triage_crash);
 
     let meta_json = format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"report_id\": \"{}\",\n  \"source_triage_id\": \"{}\",\n  \"source_summary\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"input_sha256\": \"{}\",\n  \"verdict\": \"{}\",\n  \"suggested_severity\": \"{}\",\n  \"suggested_cvss_vector\": \"{}\",\n  \"severity_confidence\": \"{}\",\n  \"severity_reason\": \"{}\",\n  \"poc_collected\": {},\n  \"poc_path\": \"{}\",\n  \"poc_sha256\": \"{}\",\n  \"poc_size_bytes\": {},\n  \"poc_source_input\": \"{}\",\n  \"poc_error\": \"{}\",\n  \"retention_days\": 30,\n  \"retention\": {{\n    \"compressed_logs\": {},\n    \"deleted_dirs\": {},\n    \"skipped_log_compress\": {}\n  }}\n}}\n",
+        "{{\n  \"schema_version\": \"1.1\",\n  \"report_id\": \"{}\",\n  \"source_triage_id\": \"{}\",\n  \"source_summary\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"input_sha256\": \"{}\",\n  \"verdict\": \"{}\",\n  \"crash_kind\": \"{}\",\n  \"sanitizer\": \"{}\",\n  \"signal\": \"{}\",\n  \"normalized_frame_hash\": \"{}\",\n  \"signature_basis\": \"{}\",\n  \"crash_summary\": \"{}\",\n  \"suggested_severity\": \"{}\",\n  \"suggested_cvss_vector\": \"{}\",\n  \"severity_confidence\": \"{}\",\n  \"severity_reason\": \"{}\",\n  \"poc_collected\": {},\n  \"poc_path\": \"{}\",\n  \"poc_sha256\": \"{}\",\n  \"poc_size_bytes\": {},\n  \"poc_source_input\": \"{}\",\n  \"poc_error\": \"{}\",\n  \"retention_days\": 30,\n  \"retention\": {{\n    \"compressed_logs\": {},\n    \"deleted_dirs\": {},\n    \"skipped_log_compress\": {}\n  }}\n}}\n",
         report_id,
         triage_id,
         json_escape(&summary_path.display().to_string()),
@@ -103,6 +104,12 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         json_escape(&input),
         json_escape(&input_sha256),
         json_escape(&verdict),
+        json_escape(&triage_crash.crash_kind),
+        json_escape(&triage_crash.sanitizer),
+        json_escape(&triage_crash.signal),
+        json_escape(&triage_crash.normalized_frame_hash),
+        json_escape(&triage_crash.signature_basis),
+        json_escape(&triage_crash.crash_summary),
         json_escape(severity.suggested_severity),
         json_escape(severity.suggested_cvss_vector),
         json_escape(severity.confidence),
@@ -128,11 +135,15 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         .join("\n");
 
     let report_md = format!(
-        "# {}\n\n## Summary\nA reproduced crash was observed while processing a `{}` model input.\n\n- Target: `{}`\n- Verdict: `{}`\n- Source input: `{}`\n- Evidence manifest: `manifest.json`\n\n## Steps to Reproduce\n1. Review `meta.json` for source triage metadata and input hashes.\n2. Use the collected PoC input when available: `{}`.\n3. Run: `tool triage --target {} --input '{}' --repro-retries {} --timeout-sec {}`\n4. Compare the observed crash signature with `crash_report.txt` and the stack frames below.\n\n## Impact\nObserved crash signature and parser/runtime failure require manual impact confirmation. Treat this as a submission candidate, not an automatic exploitability conclusion.\n\n## Suggested Severity\n- Suggested severity: `{}`\n- Suggested CVSS vector: `{}`\n- Confidence: `{}`\n- Reason: `{}`\n- Manual confirmation required: yes\n\n## Suggested Fix\nValidate parser assumptions around the crashing input path, add regression coverage for the PoC, and reject malformed model files before reaching the crashing code path.\n\n## PoC\n- Original input: `{}`\n- Original sha256: `{}`\n- Collected copy: `{}`\n- Collection status: `{}`\n\n## Exploit Scenario\nA crafted model file reaches the `{}` parsing path and triggers the reproduced crash condition.\n\n## Stack Top3\n{}\n",
-        build_report_title(&target, &stack_lines),
+        "# {}\n\n## Summary\nA reproduced crash was observed while processing a `{}` model input.\n\n- Target: `{}`\n- Verdict: `{}`\n- Crash kind: `{}`\n- Sanitizer: `{}`\n- Signal: `{}`\n- Normalized signature: `{}`\n- Source input: `{}`\n- Evidence manifest: `manifest.json`\n\n## Steps to Reproduce\n1. Review `meta.json` for source triage metadata and input hashes.\n2. Use the collected PoC input when available: `{}`.\n3. Run: `tool triage --target {} --input '{}' --repro-retries {} --timeout-sec {}`\n4. Compare `normalized_frame_hash` with `crash_report.txt` and the stack frames below.\n\n## Impact\nObserved crash signature and parser/runtime failure require manual impact confirmation. Treat this as a submission candidate, not an automatic exploitability conclusion.\n\n## Suggested Severity\n- Suggested severity: `{}`\n- Suggested CVSS vector: `{}`\n- Confidence: `{}`\n- Reason: `{}`\n- Manual confirmation required: yes\n\n## Suggested Fix\nValidate parser assumptions around the crashing input path, add regression coverage for the PoC, and reject malformed model files before reaching the crashing code path.\n\n## PoC\n- Original input: `{}`\n- Original sha256: `{}`\n- Collected copy: `{}`\n- Collection status: `{}`\n\n## Exploit Scenario\nA crafted model file reaches the `{}` parsing path and triggers the reproduced crash condition.\n\n## Crash Summary\n{}\n\n## Stack Top3\n{}\n",
+        build_report_title(&target, &stack_lines, &triage_crash),
         target,
         target,
         verdict,
+        triage_crash.crash_kind,
+        triage_crash.sanitizer,
+        triage_crash.signal,
+        triage_crash.normalized_frame_hash,
         input,
         if poc.path.is_empty() { "-" } else { &poc.path },
         target,
@@ -148,6 +159,7 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         if poc.path.is_empty() { "-" } else { &poc.path },
         if poc.collected { "collected" } else { "not_collected" },
         target,
+        triage_crash.crash_summary,
         stack_text
     );
     let report_md_path = report_dir.join("report.md");
@@ -237,7 +249,43 @@ fn build_crash_report(triage_dir: &Path, summary: &str) -> String {
     lines.join("\n") + "\n"
 }
 
-fn build_report_title(target: &str, stack_lines: &[String]) -> String {
+struct TriageCrashFields {
+    crash_kind: String,
+    sanitizer: String,
+    signal: String,
+    normalized_frame_hash: String,
+    signature_basis: String,
+    crash_summary: String,
+}
+
+fn extract_triage_crash_fields(summary: &str) -> TriageCrashFields {
+    TriageCrashFields {
+        crash_kind: extract_json_string_literal(summary, "crash_kind")
+            .unwrap_or_else(|| "unknown".to_string()),
+        sanitizer: extract_json_string_literal(summary, "sanitizer")
+            .unwrap_or_else(|| "unknown".to_string()),
+        signal: extract_json_string_literal(summary, "signal")
+            .unwrap_or_else(|| "unknown".to_string()),
+        normalized_frame_hash: extract_json_string_literal(summary, "normalized_frame_hash")
+            .unwrap_or_else(|| "legacy_signature_top3".to_string()),
+        signature_basis: extract_json_string_literal(summary, "signature_basis")
+            .unwrap_or_else(|| "signature_top3".to_string()),
+        crash_summary: extract_json_string_literal(summary, "crash_summary")
+            .unwrap_or_else(|| "not_available".to_string()),
+    }
+}
+
+fn build_report_title(
+    target: &str,
+    stack_lines: &[String],
+    triage_crash: &TriageCrashFields,
+) -> String {
+    if triage_crash.crash_kind != "unknown" && triage_crash.crash_kind != "none" {
+        return format!(
+            "{target} reproduced crash candidate: {}",
+            triage_crash.crash_kind
+        );
+    }
     let signature = stack_lines
         .iter()
         .find(|s| s.as_str() != "(no signature)")
@@ -253,8 +301,20 @@ struct SeveritySuggestion {
     reason: &'static str,
 }
 
-fn suggest_report_severity(crash_report: &str, stack_lines: &[String]) -> SeveritySuggestion {
-    let evidence = format!("{}\n{}", crash_report, stack_lines.join("\n")).to_ascii_lowercase();
+fn suggest_report_severity(
+    crash_report: &str,
+    stack_lines: &[String],
+    triage_crash: &TriageCrashFields,
+) -> SeveritySuggestion {
+    let evidence = format!(
+        "{}\n{}\n{}\n{}\n{}",
+        crash_report,
+        stack_lines.join("\n"),
+        triage_crash.crash_kind,
+        triage_crash.sanitizer,
+        triage_crash.signal
+    )
+    .to_ascii_lowercase();
 
     if evidence.contains("heap-buffer-overflow") {
         return SeveritySuggestion {
@@ -288,12 +348,7 @@ fn suggest_report_severity(crash_report: &str, stack_lines: &[String]) -> Severi
             reason: "null dereference pattern observed",
         };
     }
-    if evidence.contains("oom")
-        || evidence.contains("out of memory")
-        || evidence.contains("infra_oom")
-        || evidence.contains("timeout")
-        || evidence.contains("hang")
-    {
+    if has_timeout_or_oom_signal(&evidence, triage_crash) {
         return SeveritySuggestion {
             suggested_severity: "dos_candidate",
             suggested_cvss_vector: "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:L",
@@ -322,6 +377,18 @@ fn suggest_report_severity(crash_report: &str, stack_lines: &[String]) -> Severi
         confidence: "low",
         reason: "no mapped sanitizer, signal, timeout, or OOM pattern observed",
     }
+}
+
+fn has_timeout_or_oom_signal(evidence: &str, triage_crash: &TriageCrashFields) -> bool {
+    matches!(triage_crash.crash_kind.as_str(), "timeout" | "infra_oom")
+        || evidence.contains("\"verdict\": \"timeout\"")
+        || evidence.contains("\"result\": \"timeout\"")
+        || evidence.contains("\"timeout\": true")
+        || evidence.contains("\"infra_oom\": true")
+        || evidence.contains("infra_oom")
+        || evidence.contains("out of memory")
+        || evidence.contains("timed out")
+        || evidence.contains("hang")
 }
 
 fn write_report_manifest(

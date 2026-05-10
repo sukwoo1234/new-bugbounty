@@ -33,6 +33,12 @@ pub(crate) struct DashboardSnapshot {
     pub(crate) latest_valid_triage: String,
     pub(crate) latest_valid_input: String,
     pub(crate) latest_valid_signature: String,
+    pub(crate) latest_valid_crash_kind: String,
+    pub(crate) latest_valid_sanitizer: String,
+    pub(crate) latest_valid_signal: String,
+    pub(crate) latest_valid_normalized_frame_hash: String,
+    pub(crate) latest_valid_signature_basis: String,
+    pub(crate) latest_valid_crash_summary: String,
     pub(crate) latest_valid_summary: String,
     pub(crate) latest_valid_report: String,
     pub(crate) latest_valid_manifest: String,
@@ -56,6 +62,12 @@ struct ReproducedTriageView {
     triage_id: String,
     input: String,
     signature_top1: String,
+    crash_kind: String,
+    sanitizer: String,
+    signal: String,
+    normalized_frame_hash: String,
+    signature_basis: String,
+    crash_summary: String,
     summary_path: String,
 }
 
@@ -182,6 +194,12 @@ pub(crate) fn collect_dashboard_snapshot(
         latest_valid_triage,
         latest_valid_input,
         latest_valid_signature,
+        latest_valid_crash_kind,
+        latest_valid_sanitizer,
+        latest_valid_signal,
+        latest_valid_normalized_frame_hash,
+        latest_valid_signature_basis,
+        latest_valid_crash_summary,
         latest_valid_summary,
         latest_valid_report,
         latest_valid_manifest,
@@ -212,6 +230,12 @@ pub(crate) fn collect_dashboard_snapshot(
             format!("triage-{}", item.triage_id),
             item.input,
             item.signature_top1,
+            item.crash_kind,
+            item.sanitizer,
+            item.signal,
+            item.normalized_frame_hash,
+            item.signature_basis,
+            item.crash_summary,
             item.summary_path,
             report,
             manifest,
@@ -222,6 +246,12 @@ pub(crate) fn collect_dashboard_snapshot(
         )
     } else {
         (
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
             "none".to_string(),
             "none".to_string(),
             "none".to_string(),
@@ -258,6 +288,12 @@ pub(crate) fn collect_dashboard_snapshot(
         latest_valid_triage,
         latest_valid_input,
         latest_valid_signature,
+        latest_valid_crash_kind,
+        latest_valid_sanitizer,
+        latest_valid_signal,
+        latest_valid_normalized_frame_hash,
+        latest_valid_signature_basis,
+        latest_valid_crash_summary,
         latest_valid_summary,
         latest_valid_report,
         latest_valid_manifest,
@@ -336,11 +372,30 @@ fn find_latest_reproduced_triage(
             extract_json_string_literal(&summary, "input").unwrap_or_else(|| "unknown".to_string());
         let signature_top1 =
             extract_first_signature_top1(&summary).unwrap_or_else(|| "none".to_string());
+        let crash_kind = extract_json_string_literal(&summary, "crash_kind")
+            .unwrap_or_else(|| "unknown".to_string());
+        let sanitizer = extract_json_string_literal(&summary, "sanitizer")
+            .unwrap_or_else(|| "unknown".to_string());
+        let signal = extract_json_string_literal(&summary, "signal")
+            .unwrap_or_else(|| "unknown".to_string());
+        let normalized_frame_hash = extract_json_string_literal(&summary, "normalized_frame_hash")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "legacy_signature_top3".to_string());
+        let signature_basis = extract_json_string_literal(&summary, "signature_basis")
+            .unwrap_or_else(|| "signature_top3".to_string());
+        let crash_summary = extract_json_string_literal(&summary, "crash_summary")
+            .unwrap_or_else(|| "not_available".to_string());
 
         let item = ReproducedTriageView {
             triage_id: id_text.to_string(),
             input,
             signature_top1,
+            crash_kind,
+            sanitizer,
+            signal,
+            normalized_frame_hash,
+            signature_basis,
+            crash_summary,
             summary_path: summary_path.display().to_string(),
         };
         match &latest {

@@ -109,32 +109,40 @@ GLOBAL_ERROR_RATE_5M="$(jq -r '.metrics.global_error_rate_5m // 0' "$OUT_DIR/met
 
 TRIAGE_INDEX="$OUT_DIR/triage-index.tsv"
 {
-  echo -e "triage_id\tverdict\tinput_path\tsignature_top1\tsummary_path"
+  echo -e "triage_id\tverdict\tinput_path\tcrash_kind\tsanitizer\tsignal\tnormalized_frame_hash\tsignature_top1\tsummary_path"
   for f in $(ls -1 data/triage/triage-*/summary.json 2>/dev/null | sort); do
     triage_id="$(jq -r '.triage_id // ""' "$f")"
     verdict="$(jq -r '.verdict // ""' "$f")"
     input_path="$(jq -r '.input // ""' "$f")"
+    crash_kind="$(jq -r '.crash_kind // ""' "$f")"
+    sanitizer="$(jq -r '.sanitizer // ""' "$f")"
+    signal="$(jq -r '.signal // ""' "$f")"
+    normalized_frame_hash="$(jq -r '.normalized_frame_hash // ""' "$f")"
     sig="$(jq -r '.attempts[0].signature_top3[0] // ""' "$f")"
-    echo -e "${triage_id}\t${verdict}\t${input_path}\t${sig}\t${f}"
+    echo -e "${triage_id}\t${verdict}\t${input_path}\t${crash_kind}\t${sanitizer}\t${signal}\t${normalized_frame_hash}\t${sig}\t${f}"
   done
 } > "$TRIAGE_INDEX"
 
 REPORT_INDEX="$OUT_DIR/report-index.tsv"
 {
-  echo -e "report_id\tsource_triage_id\tsuggested_severity\tseverity_confidence\treport_path\tmeta_path"
+  echo -e "report_id\tsource_triage_id\tcrash_kind\tsanitizer\tsignal\tnormalized_frame_hash\tsuggested_severity\tseverity_confidence\treport_path\tmeta_path"
   for f in $(ls -1 data/reports/report-*/meta.json 2>/dev/null | sort); do
     report_id="$(jq -r '.report_id // ""' "$f")"
     source_triage_id="$(jq -r '.source_triage_id // ""' "$f")"
+    crash_kind="$(jq -r '.crash_kind // ""' "$f")"
+    sanitizer="$(jq -r '.sanitizer // ""' "$f")"
+    signal="$(jq -r '.signal // ""' "$f")"
+    normalized_frame_hash="$(jq -r '.normalized_frame_hash // ""' "$f")"
     suggested_severity="$(jq -r '.suggested_severity // ""' "$f")"
     severity_confidence="$(jq -r '.severity_confidence // ""' "$f")"
     report_path="$(dirname "$f")/report.md"
-    echo -e "${report_id}\t${source_triage_id}\t${suggested_severity}\t${severity_confidence}\t${report_path}\t${f}"
+    echo -e "${report_id}\t${source_triage_id}\t${crash_kind}\t${sanitizer}\t${signal}\t${normalized_frame_hash}\t${suggested_severity}\t${severity_confidence}\t${report_path}\t${f}"
   done
 } > "$REPORT_INDEX"
 
 REPRODUCED_COUNT="$(awk -F'\t' 'NR>1 && $2=="reproduced" {c++} END{print c+0}' "$TRIAGE_INDEX")"
 REPORT_COUNT="$(awk 'END{print NR-1}' "$REPORT_INDEX")"
-UNIQUE_SIGNATURE_COUNT="$(awk -F'\t' 'NR>1 && $4!="" {print $4}' "$TRIAGE_INDEX" | sort -u | wc -l | tr -d ' ')"
+UNIQUE_SIGNATURE_COUNT="$(awk -F'\t' 'NR>1 {sig=($7!="" ? $7 : $8); if (sig!="") print sig}' "$TRIAGE_INDEX" | sort -u | wc -l | tr -d ' ')"
 
 GIT_COMMIT="$(git rev-parse --short HEAD)"
 STARTED_AT="$(date -Iseconds)"
@@ -199,6 +207,7 @@ cat > "$OUT_DIR/summary.md" <<EOF
 - \`global_error_rate_5m\` is computed as recent \`errors / total\` over metric events.
 - \`valid_crash_ratio\` is calculated from \`data/triage/triage-*/summary.json\` when \`valid_crash_ratio_source=triage_summary_scan\`.
 - \`valid_crash_ratio\` is \`not_available\` when there are no triage crash observations to support the ratio.
+- \`unique_signature_count\` uses \`normalized_frame_hash\` when present and falls back to legacy \`signature_top1\`.
 - Legacy metrics without \`valid_crash_ratio_status\` are reported as \`legacy_unverified\`.
 EOF
 

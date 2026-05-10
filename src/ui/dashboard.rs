@@ -5,7 +5,7 @@ const DASHBOARD_HTML_TEMPLATE: &str = include_str!("../../templates/dashboard.ht
 
 pub(crate) fn render_dashboard_json(s: &DashboardSnapshot) -> String {
     format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"config\": {{\n    \"data_dir\": \"{}\",\n    \"seeds_dir\": \"{}\"\n  }},\n  \"snapshot\": {{\n    \"runs_count\": {},\n    \"triage_count\": {},\n    \"report_count\": {},\n    \"coverage_count\": {},\n    \"latest_run\": \"{}\",\n    \"latest_triage\": \"{}\",\n    \"latest_report\": \"{}\",\n    \"latest_coverage\": \"{}\"\n  }},\n  \"metrics\": {{\n    \"exists\": {},\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"{}\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {}\n  }},\n  \"seeds\": {{\n    \"onnx_count\": {},\n    \"gguf_count\": {},\n    \"safetensors_count\": {},\n    \"total_count\": {}\n  }},\n  \"crash\": {{\n    \"latest_valid_triage\": \"{}\",\n    \"input\": \"{}\",\n    \"signature_top1\": \"{}\",\n    \"summary\": \"{}\",\n    \"report\": \"{}\",\n    \"manifest\": \"{}\",\n    \"bundle\": \"{}\",\n    \"suggested_severity\": \"{}\",\n    \"severity_confidence\": \"{}\",\n    \"suggested_cvss_vector\": \"{}\"\n  }},\n  \"coverage\": {{\n    \"latest\": \"{}\",\n    \"summary\": \"{}\"\n  }}\n}}",
+        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"config\": {{\n    \"data_dir\": \"{}\",\n    \"seeds_dir\": \"{}\"\n  }},\n  \"snapshot\": {{\n    \"runs_count\": {},\n    \"triage_count\": {},\n    \"report_count\": {},\n    \"coverage_count\": {},\n    \"latest_run\": \"{}\",\n    \"latest_triage\": \"{}\",\n    \"latest_report\": \"{}\",\n    \"latest_coverage\": \"{}\"\n  }},\n  \"metrics\": {{\n    \"exists\": {},\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"{}\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {}\n  }},\n  \"seeds\": {{\n    \"onnx_count\": {},\n    \"gguf_count\": {},\n    \"safetensors_count\": {},\n    \"total_count\": {}\n  }},\n  \"crash\": {{\n    \"latest_valid_triage\": \"{}\",\n    \"input\": \"{}\",\n    \"signature_top1\": \"{}\",\n    \"crash_kind\": \"{}\",\n    \"sanitizer\": \"{}\",\n    \"signal\": \"{}\",\n    \"normalized_frame_hash\": \"{}\",\n    \"signature_basis\": \"{}\",\n    \"crash_summary\": \"{}\",\n    \"summary\": \"{}\",\n    \"report\": \"{}\",\n    \"manifest\": \"{}\",\n    \"bundle\": \"{}\",\n    \"suggested_severity\": \"{}\",\n    \"severity_confidence\": \"{}\",\n    \"suggested_cvss_vector\": \"{}\"\n  }},\n  \"coverage\": {{\n    \"latest\": \"{}\",\n    \"summary\": \"{}\"\n  }}\n}}",
         s.generated_at,
         json_escape(&s.data_dir),
         json_escape(&s.seeds_dir),
@@ -34,6 +34,12 @@ pub(crate) fn render_dashboard_json(s: &DashboardSnapshot) -> String {
         json_escape(&s.latest_valid_triage),
         json_escape(&s.latest_valid_input),
         json_escape(&s.latest_valid_signature),
+        json_escape(&s.latest_valid_crash_kind),
+        json_escape(&s.latest_valid_sanitizer),
+        json_escape(&s.latest_valid_signal),
+        json_escape(&s.latest_valid_normalized_frame_hash),
+        json_escape(&s.latest_valid_signature_basis),
+        json_escape(&s.latest_valid_crash_summary),
         json_escape(&s.latest_valid_summary),
         json_escape(&s.latest_valid_report),
         json_escape(&s.latest_valid_manifest),
@@ -122,6 +128,30 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
         .replace(
             "{{latest_valid_signature}}",
             &html_escape(&s.latest_valid_signature),
+        )
+        .replace(
+            "{{latest_valid_crash_kind}}",
+            &html_escape(&s.latest_valid_crash_kind),
+        )
+        .replace(
+            "{{latest_valid_sanitizer}}",
+            &html_escape(&s.latest_valid_sanitizer),
+        )
+        .replace(
+            "{{latest_valid_signal}}",
+            &html_escape(&s.latest_valid_signal),
+        )
+        .replace(
+            "{{latest_valid_normalized_frame_hash}}",
+            &html_escape(&s.latest_valid_normalized_frame_hash),
+        )
+        .replace(
+            "{{latest_valid_signature_basis}}",
+            &html_escape(&s.latest_valid_signature_basis),
+        )
+        .replace(
+            "{{latest_valid_crash_summary}}",
+            &html_escape(&s.latest_valid_crash_summary),
         )
         .replace("{{latest_valid_summary_html}}", &latest_valid_summary_html)
         .replace("{{latest_valid_report_html}}", &latest_valid_report_html)

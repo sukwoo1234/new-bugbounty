@@ -1,8 +1,7 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, process::ExitStatus};
 
 use crate::common::{
     command_exists, command_with_core_dump_off, now_unix, now_unix_millis, AppPaths,
-    HarnessExecResult,
 };
 use crate::json_utils::json_escape;
 use crate::metrics::MetricEvent;
@@ -11,7 +10,30 @@ use crate::target::{target_label, TargetKind};
 struct TriageAttempt {
     attempt: u32,
     result: String,
+    exit_code: Option<i32>,
+    signal: String,
+    sanitizer: String,
+    crash_kind: String,
+    crash_summary: String,
     signature_top3: Vec<String>,
+    top_frames: Vec<String>,
+    normalized_frames: Vec<String>,
+    normalized_frame_hash: String,
+    timeout: bool,
+    infra_oom: bool,
+}
+
+struct TriageExecResult {
+    result: TriageResult,
+    output: String,
+    exit_code: Option<i32>,
+    signal: Option<i32>,
+}
+
+enum TriageResult {
+    Clean,
+    Crashed,
+    Timeout,
 }
 
 pub(crate) fn run_triage_pipeline(
@@ -46,17 +68,27 @@ pub(crate) fn run_triage_pipeline(
     for attempt in 1..=repro_retries {
         let exec = execute_triage_subprocess(target, input, timeout_sec, timeout_available)?;
         // harness exit 0 = 정상 종료 (clean), non-zero = 크래시 (crashed) per specs.md §3.1
-        let (result_label, merged_output) = match exec {
-            HarnessExecResult::Success(s) => ("clean".to_string(), s),
-            HarnessExecResult::Failed(s) => ("crashed".to_string(), s),
-            HarnessExecResult::Timeout(s) => ("timeout".to_string(), s),
+        let result_label = match exec.result {
+            TriageResult::Clean => "clean".to_string(),
+            TriageResult::Crashed => "crashed".to_string(),
+            TriageResult::Timeout => "timeout".to_string(),
         };
-        let signature_top3 = extract_signature_top3(&merged_output);
+        let parsed = parse_crash_log(&exec.output, exec.exit_code, exec.signal, &result_label);
 
         let log_path = triage_dir.join(format!("attempt-{}.log", attempt));
         let log_body = format!(
-            "attempt: {}\nresult: {}\nsignature_top3: {:?}\n{}\n",
-            attempt, result_label, signature_top3, merged_output
+            "attempt: {}\nresult: {}\nexit_code: {}\nsignal: {}\nsanitizer: {}\ncrash_kind: {}\nnormalized_frame_hash: {}\nsignature_top3: {:?}\ntop_frames: {:?}\nnormalized_frames: {:?}\n{}\n",
+            attempt,
+            result_label,
+            option_i32_json_value(exec.exit_code),
+            parsed.signal,
+            parsed.sanitizer,
+            parsed.crash_kind,
+            parsed.normalized_frame_hash,
+            parsed.signature_top3,
+            parsed.top_frames,
+            parsed.normalized_frames,
+            exec.output
         );
         fs::write(&log_path, log_body)
             .map_err(|e| format!("failed to write '{}': {e}", log_path.display()))?;
@@ -64,36 +96,61 @@ pub(crate) fn run_triage_pipeline(
         attempts.push(TriageAttempt {
             attempt,
             result: result_label,
-            signature_top3,
+            exit_code: exec.exit_code,
+            signal: parsed.signal,
+            sanitizer: parsed.sanitizer,
+            crash_kind: parsed.crash_kind,
+            crash_summary: parsed.crash_summary,
+            signature_top3: parsed.signature_top3,
+            top_frames: parsed.top_frames,
+            normalized_frames: parsed.normalized_frames,
+            normalized_frame_hash: parsed.normalized_frame_hash,
+            timeout: parsed.timeout,
+            infra_oom: parsed.infra_oom,
         });
     }
 
     let timeout_count = attempts.iter().filter(|a| a.result == "timeout").count();
     let clean_count = attempts.iter().filter(|a| a.result == "clean").count();
     let crashed_count = attempts.iter().filter(|a| a.result == "crashed").count();
+    let infra_oom_count = attempts.iter().filter(|a| a.infra_oom).count();
+    let manual_review_count = attempts
+        .iter()
+        .filter(|a| a.result == "crashed" && requires_manual_review(&a.crash_kind))
+        .count();
 
     let mut signature_consistent = true;
-    if let Some(first) = attempts.first().map(|a| &a.signature_top3) {
-        signature_consistent = attempts.iter().all(|a| &a.signature_top3 == first);
+    let comparable_hashes = attempts
+        .iter()
+        .filter(|a| a.result == "crashed" && !a.normalized_frame_hash.is_empty())
+        .map(|a| a.normalized_frame_hash.as_str())
+        .collect::<Vec<_>>();
+    if let Some(first) = comparable_hashes.first() {
+        signature_consistent = comparable_hashes.iter().all(|hash| hash == first);
     }
 
-    // verdict per specs.md §4: reproduced = all crashed + sig consistent (High Confidence).
-    // flaky = 1 in N crashed (specs line 144). not_reproduced = 0 crashed.
-    let verdict = if timeout_count > 0 {
+    // Explicit verdicts: confirmed reports only come from reproduced; ambiguous cases go to manual review.
+    let verdict = if infra_oom_count > 0 {
+        "infra_oom"
+    } else if attempts.iter().any(|a| a.timeout) || timeout_count > 0 {
         "timeout"
-    } else if crashed_count == attempts.len() && signature_consistent {
-        "reproduced"
     } else if crashed_count == 0 {
         "not_reproduced"
-    } else if !signature_consistent {
-        "flaky_stack_mismatch"
-    } else if crashed_count <= 1 {
+    } else if crashed_count == attempts.len() && signature_consistent && manual_review_count == 0 {
+        "reproduced"
+    } else if crashed_count == attempts.len() && manual_review_count > 0 {
+        "manual_review"
+    } else if crashed_count <= 1 || !signature_consistent {
         "flaky"
     } else {
-        "partial"
+        "manual_review"
     };
 
     let summary_path = triage_dir.join("summary.json");
+    let representative = attempts
+        .iter()
+        .find(|a| a.result == "crashed")
+        .or_else(|| attempts.first());
     let attempts_json = attempts
         .iter()
         .map(|a| {
@@ -103,16 +160,30 @@ pub(crate) fn run_triage_pipeline(
                 .map(|s| format!("\"{}\"", json_escape(s)))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let frames = json_string_array(&a.top_frames);
+            let normalized_frames = json_string_array(&a.normalized_frames);
             format!(
-                "    {{\"attempt\": {}, \"result\": \"{}\", \"signature_top3\": [{}]}}",
-                a.attempt, a.result, sig
+                "    {{\"attempt\": {}, \"result\": \"{}\", \"exit_code\": {}, \"signal\": \"{}\", \"sanitizer\": \"{}\", \"crash_kind\": \"{}\", \"crash_summary\": \"{}\", \"timeout\": {}, \"infra_oom\": {}, \"signature_top3\": [{}], \"top_frames\": [{}], \"normalized_frames\": [{}], \"normalized_frame_hash\": \"{}\"}}",
+                a.attempt,
+                a.result,
+                option_i32_json_value(a.exit_code),
+                json_escape(&a.signal),
+                json_escape(&a.sanitizer),
+                json_escape(&a.crash_kind),
+                json_escape(&a.crash_summary),
+                if a.timeout { "true" } else { "false" },
+                if a.infra_oom { "true" } else { "false" },
+                sig,
+                frames,
+                normalized_frames,
+                json_escape(&a.normalized_frame_hash)
             )
         })
         .collect::<Vec<_>>()
         .join(",\n");
 
     let summary = format!(
-        "{{\n  \"triage_id\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"repro_retries\": {},\n  \"timeout_sec\": {},\n  \"clean_count\": {},\n  \"crashed_count\": {},\n  \"timeout_count\": {},\n  \"signature_consistent\": {},\n  \"verdict\": \"{}\",\n  \"attempts\": [\n{}\n  ]\n}}\n",
+        "{{\n  \"schema_version\": \"1.1\",\n  \"triage_id\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"repro_retries\": {},\n  \"timeout_sec\": {},\n  \"clean_count\": {},\n  \"crashed_count\": {},\n  \"timeout_count\": {},\n  \"infra_oom_count\": {},\n  \"signature_consistent\": {},\n  \"signature_basis\": \"normalized_frame_hash\",\n  \"normalized_frame_hash\": \"{}\",\n  \"crash_kind\": \"{}\",\n  \"sanitizer\": \"{}\",\n  \"signal\": \"{}\",\n  \"crash_summary\": \"{}\",\n  \"verdict\": \"{}\",\n  \"attempts\": [\n{}\n  ]\n}}\n",
         triage_id,
         target_label(target),
         json_escape(&input.display().to_string()),
@@ -121,7 +192,13 @@ pub(crate) fn run_triage_pipeline(
         clean_count,
         crashed_count,
         timeout_count,
+        infra_oom_count,
         if signature_consistent { "true" } else { "false" },
+        json_escape(representative.map(|a| a.normalized_frame_hash.as_str()).unwrap_or("")),
+        json_escape(representative.map(|a| a.crash_kind.as_str()).unwrap_or("unknown")),
+        json_escape(representative.map(|a| a.sanitizer.as_str()).unwrap_or("unknown")),
+        json_escape(representative.map(|a| a.signal.as_str()).unwrap_or("unknown")),
+        json_escape(representative.map(|a| a.crash_summary.as_str()).unwrap_or("")),
         verdict,
         attempts_json
     );
@@ -134,7 +211,14 @@ pub(crate) fn run_triage_pipeline(
     println!("clean_count: {clean_count}");
     println!("crashed_count: {crashed_count}");
     println!("timeout_count: {timeout_count}");
+    println!("infra_oom_count: {infra_oom_count}");
     println!("signature_consistent: {signature_consistent}");
+    println!(
+        "normalized_frame_hash: {}",
+        representative
+            .map(|a| a.normalized_frame_hash.as_str())
+            .unwrap_or("")
+    );
     println!("verdict: {verdict}");
     println!("summary: {}", summary_path.display());
 
@@ -162,7 +246,7 @@ fn execute_triage_subprocess(
     input: &Path,
     timeout_sec: u64,
     timeout_available: bool,
-) -> Result<HarnessExecResult, String> {
+) -> Result<TriageExecResult, String> {
     let exe = std::env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
     let mut cmd = if timeout_available {
         let mut c = command_with_core_dump_off("timeout");
@@ -189,22 +273,108 @@ fn execute_triage_subprocess(
         .map_err(|e| format!("failed to execute triage subprocess: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let merged = format!("{}\n{}", stdout, stderr);
+    let mut merged = format!("{}\n{}", stdout, stderr);
+    let exit_code = out.status.code();
+    let signal = exit_signal(&out.status);
 
-    if timeout_available && out.status.code() == Some(124) {
-        return Ok(HarnessExecResult::Timeout(merged));
+    if timeout_available && exit_code == Some(124) {
+        return Ok(TriageExecResult {
+            result: TriageResult::Timeout,
+            output: merged,
+            exit_code,
+            signal,
+        });
     }
     if out.status.success() {
-        return Ok(HarnessExecResult::Success(merged));
+        return Ok(TriageExecResult {
+            result: TriageResult::Clean,
+            output: merged,
+            exit_code,
+            signal,
+        });
     }
     // OOM 137 triage 분기(DoS vs 인프라): v1은 infra_oom 힌트를 붙여 후속 triage/report에서 구분 가능하게 남긴다.
-    if out.status.code() == Some(137) {
-        return Ok(HarnessExecResult::Failed(format!(
-            "infra_oom:exit_137\n{}",
-            merged
-        )));
+    if exit_code == Some(137) {
+        merged = format!("infra_oom:exit_137\n{}", merged);
     }
-    Ok(HarnessExecResult::Failed(merged))
+    Ok(TriageExecResult {
+        result: TriageResult::Crashed,
+        output: merged,
+        exit_code,
+        signal,
+    })
+}
+
+struct ParsedCrashLog {
+    signal: String,
+    sanitizer: String,
+    crash_kind: String,
+    crash_summary: String,
+    signature_top3: Vec<String>,
+    top_frames: Vec<String>,
+    normalized_frames: Vec<String>,
+    normalized_frame_hash: String,
+    timeout: bool,
+    infra_oom: bool,
+}
+
+fn parse_crash_log(
+    output: &str,
+    exit_code: Option<i32>,
+    signal_number: Option<i32>,
+    result_label: &str,
+) -> ParsedCrashLog {
+    if result_label == "clean" {
+        return ParsedCrashLog {
+            signal: "none".to_string(),
+            sanitizer: "none".to_string(),
+            crash_kind: "none".to_string(),
+            crash_summary: String::new(),
+            signature_top3: Vec::new(),
+            top_frames: Vec::new(),
+            normalized_frames: Vec::new(),
+            normalized_frame_hash: String::new(),
+            timeout: false,
+            infra_oom: false,
+        };
+    }
+
+    let sanitizer = extract_sanitizer(output);
+    let signal = extract_signal(output, exit_code, signal_number);
+    let timeout = result_label == "timeout" || contains_timeout(output);
+    let infra_oom = exit_code == Some(137) || contains_oom(output);
+    let crash_kind = classify_crash_kind(output, &sanitizer, &signal, timeout, infra_oom);
+    let crash_summary = extract_crash_summary(output, &crash_kind);
+    let top_frames = extract_top_frames(output);
+    let normalized_frames = top_frames
+        .iter()
+        .map(|frame| normalize_stack_frame(frame))
+        .filter(|frame| !frame.is_empty() && !is_ignored_frame(frame))
+        .take(3)
+        .collect::<Vec<_>>();
+    let signature_top3 = if top_frames.is_empty() {
+        extract_signature_top3(output)
+    } else {
+        top_frames.iter().take(3).cloned().collect()
+    };
+    let normalized_frame_hash = if normalized_frames.is_empty() {
+        stable_hash_hex(&signature_top3.join("\n"))
+    } else {
+        stable_hash_hex(&normalized_frames.join("\n"))
+    };
+
+    ParsedCrashLog {
+        signal,
+        sanitizer,
+        crash_kind,
+        crash_summary,
+        signature_top3,
+        top_frames,
+        normalized_frames,
+        normalized_frame_hash,
+        timeout,
+        infra_oom,
+    }
 }
 
 fn extract_signature_top3(output: &str) -> Vec<String> {
@@ -246,4 +416,279 @@ fn contains_stack_hint(line: &str) -> bool {
         || lower.contains("sigabrt")
         || lower.contains("onnxruntimeerror")
         || lower.contains("load_fail")
+}
+
+fn extract_sanitizer(output: &str) -> String {
+    let lower = output.to_ascii_lowercase();
+    if lower.contains("addresssanitizer") {
+        "asan".to_string()
+    } else if lower.contains("undefinedbehaviorsanitizer") || lower.contains("ubsan") {
+        "ubsan".to_string()
+    } else if lower.contains("memorysanitizer") {
+        "msan".to_string()
+    } else if lower.contains("threadsanitizer") {
+        "tsan".to_string()
+    } else if lower.contains("leaksanitizer") {
+        "lsan".to_string()
+    } else {
+        "none".to_string()
+    }
+}
+
+fn extract_signal(output: &str, exit_code: Option<i32>, signal_number: Option<i32>) -> String {
+    if let Some(signal) = signal_number {
+        return signal_name(signal).to_string();
+    }
+    let lower = output.to_ascii_lowercase();
+    if lower.contains("sigsegv")
+        || lower.contains("segmentation fault")
+        || lower.contains("signal: 11")
+    {
+        "SIGSEGV".to_string()
+    } else if lower.contains("sigabrt") || lower.contains("aborted") || lower.contains("signal: 6")
+    {
+        "SIGABRT".to_string()
+    } else if lower.contains("sigbus") || lower.contains("bus error") || lower.contains("signal: 7")
+    {
+        "SIGBUS".to_string()
+    } else if lower.contains("sigill")
+        || lower.contains("illegal instruction")
+        || lower.contains("signal: 4")
+    {
+        "SIGILL".to_string()
+    } else if lower.contains("sigfpe")
+        || lower.contains("floating point exception")
+        || lower.contains("signal: 8")
+    {
+        "SIGFPE".to_string()
+    } else if let Some(code) = exit_code.and_then(exit_code_signal_name) {
+        code.to_string()
+    } else {
+        "none".to_string()
+    }
+}
+
+fn exit_code_signal_name(exit_code: i32) -> Option<&'static str> {
+    match exit_code {
+        132 => Some("SIGILL"),
+        134 => Some("SIGABRT"),
+        135 => Some("SIGBUS"),
+        136 => Some("SIGFPE"),
+        137 => Some("SIGKILL"),
+        139 => Some("SIGSEGV"),
+        143 => Some("SIGTERM"),
+        _ => None,
+    }
+}
+
+fn signal_name(signal: i32) -> &'static str {
+    match signal {
+        4 => "SIGILL",
+        6 => "SIGABRT",
+        7 => "SIGBUS",
+        8 => "SIGFPE",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        15 => "SIGTERM",
+        _ => "unknown",
+    }
+}
+
+fn classify_crash_kind(
+    output: &str,
+    sanitizer: &str,
+    signal: &str,
+    timeout: bool,
+    infra_oom: bool,
+) -> String {
+    let lower = output.to_ascii_lowercase();
+    if timeout {
+        return "timeout".to_string();
+    }
+    if infra_oom {
+        return "infra_oom".to_string();
+    }
+    for kind in [
+        "heap-buffer-overflow",
+        "stack-buffer-overflow",
+        "use-after-free",
+        "null-dereference",
+        "undefined-behavior",
+    ] {
+        if lower.contains(kind) {
+            return kind.to_string();
+        }
+    }
+    if sanitizer != "none" {
+        sanitizer.to_string()
+    } else if signal != "none" {
+        signal.to_ascii_lowercase()
+    } else if lower.contains("panic") {
+        "panic".to_string()
+    } else if lower.contains("abort") {
+        "abort".to_string()
+    } else if lower.contains("load_fail") || lower.contains("onnxruntimeerror") {
+        "parser_or_runtime_error".to_string()
+    } else {
+        "manual_review".to_string()
+    }
+}
+
+fn requires_manual_review(crash_kind: &str) -> bool {
+    matches!(crash_kind, "manual_review" | "parser_or_runtime_error")
+}
+
+fn extract_crash_summary(output: &str, crash_kind: &str) -> String {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.contains("summary:")
+            || lower.contains("error:")
+            || lower.contains("fatal")
+            || lower.contains("runtimeerror")
+            || lower.contains("load_fail")
+            || lower.contains(crash_kind)
+        {
+            return trimmed.to_string();
+        }
+    }
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn extract_top_frames(output: &str) -> Vec<String> {
+    let mut frames = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if is_stack_frame(trimmed) {
+            frames.push(trimmed.to_string());
+        }
+        if frames.len() == 8 {
+            break;
+        }
+    }
+    frames
+}
+
+fn is_stack_frame(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    line.starts_with('#')
+        || lower.starts_with("frame ")
+        || lower.contains(" in ")
+            && (lower.contains(" at ") || lower.contains(" from ") || lower.contains("!"))
+}
+
+fn normalize_stack_frame(line: &str) -> String {
+    let mut s = line.trim().to_string();
+    if let Some(rest) = s.strip_prefix('#') {
+        let trimmed = rest
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .trim_start();
+        s = trimmed.to_string();
+    }
+    s = strip_hex_addresses(&s);
+    s = strip_file_line_suffix(&s);
+    s = strip_symbol_offsets(&s);
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_hex_addresses(input: &str) -> String {
+    input
+        .split_whitespace()
+        .filter(|token| !token.starts_with("0x"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn strip_file_line_suffix(input: &str) -> String {
+    let mut out = input.to_string();
+    if let Some(idx) = out.find(" at ") {
+        out.truncate(idx);
+    }
+    if let Some(idx) = out.find(" from ") {
+        out.truncate(idx);
+    }
+    out
+}
+
+fn strip_symbol_offsets(input: &str) -> String {
+    input
+        .split_whitespace()
+        .map(|part| {
+            if let Some(idx) = part.find("+0x") {
+                &part[..idx]
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_ignored_frame(frame: &str) -> bool {
+    let lower = frame.to_ascii_lowercase();
+    lower.contains("addresssanitizer")
+        || lower.contains("libasan")
+        || lower.contains("libubsan")
+        || lower.contains("libc.so")
+        || lower.contains("libstdc++")
+        || lower.contains("libgcc")
+        || lower.contains("libfuzzer")
+}
+
+fn contains_timeout(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("timeout") || lower.contains("timed out") || lower.contains("hang")
+}
+
+fn contains_oom(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    lower.contains("infra_oom")
+        || lower.contains("out of memory")
+        || lower.contains("oom")
+        || lower.contains("killed")
+}
+
+fn stable_hash_hex(input: &str) -> String {
+    if input.is_empty() {
+        return String::new();
+    }
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in input.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn json_string_array(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|s| format!("\"{}\"", json_escape(s)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn option_i32_json_value(value: Option<i32>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
+#[cfg(unix)]
+fn exit_signal(status: &ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn exit_signal(_status: &ExitStatus) -> Option<i32> {
+    None
 }
