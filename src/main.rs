@@ -118,7 +118,11 @@ struct TriageArgs {
 }
 
 #[derive(Args)]
-struct ReportArgs {}
+struct ReportArgs {
+    /// Add minimization metadata/artifacts without blocking report generation
+    #[arg(long, default_value_t = false)]
+    minimize: bool,
+}
 
 #[derive(Args)]
 struct SeedArgs {
@@ -295,8 +299,8 @@ fn main() -> ExitCode {
                 return ExitCode::from(6);
             }
         }
-        Commands::Report(_args) => {
-            if let Err(err) = report::run_report_pipeline(&app_paths) {
+        Commands::Report(args) => {
+            if let Err(err) = report::run_report_pipeline(&app_paths, args.minimize) {
                 eprintln!("[{E_REPORT_PIPELINE}] report error: {err}");
                 return ExitCode::from(7);
             }

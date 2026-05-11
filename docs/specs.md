@@ -167,6 +167,9 @@
 - Reproduction Steps 순서: 이미지 태그+해시, PRNG 시드, 타임아웃, 실행 커맨드
 - Suggested Severity는 `suggested_severity`, `suggested_cvss_vector`, `severity_confidence`, `severity_reason`로 기록하며 자동 확정 판정이 아니다.
 - Report metadata는 triage의 `crash_kind`, `sanitizer`, `signal`, `normalized_frame_hash`, `signature_basis`, `crash_summary`를 보존한다.
+- `tool report --minimize`는 optional minimization metadata/artifact를 생성한다.
+- minimization 실패 또는 미지원 상태는 report 생성을 막지 않으며, 원본 PoC는 항상 보존한다.
+- Phase 6-1 minimization strategy는 `copy_baseline`이며 실제 crash-preserving size reduction은 external minimizer 단계에서 검증한다.
 
 ## 6) Observability/Health
 - status.json 주기 저장

@@ -11,7 +11,10 @@ use crate::json_utils::{
 };
 use crate::retention::apply_retention_policy;
 
-pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
+pub(crate) fn run_report_pipeline(
+    app_paths: &AppPaths,
+    minimize_requested: bool,
+) -> Result<(), String> {
     let retention = apply_retention_policy(app_paths, 30)?;
     let (triage_id, triage_dir, summary_path) = find_latest_triage_summary(&app_paths.data_dir)?;
     let summary = fs::read_to_string(&summary_path)
@@ -70,6 +73,8 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         &input_sha256,
         &verdict,
     );
+    let minimization =
+        collect_minimization_artifact(&report_dir, triage_id, &target, &poc, minimize_requested);
     let repro_input = poc.repro_input_or(&input);
 
     let crash_report = build_crash_report(&triage_dir, &summary);
@@ -96,7 +101,7 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
     let severity = suggest_report_severity(&crash_report, &stack_lines, &triage_crash);
 
     let meta_json = format!(
-        "{{\n  \"schema_version\": \"1.1\",\n  \"report_id\": \"{}\",\n  \"source_triage_id\": \"{}\",\n  \"source_summary\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"input_sha256\": \"{}\",\n  \"verdict\": \"{}\",\n  \"crash_kind\": \"{}\",\n  \"sanitizer\": \"{}\",\n  \"signal\": \"{}\",\n  \"normalized_frame_hash\": \"{}\",\n  \"signature_basis\": \"{}\",\n  \"crash_summary\": \"{}\",\n  \"suggested_severity\": \"{}\",\n  \"suggested_cvss_vector\": \"{}\",\n  \"severity_confidence\": \"{}\",\n  \"severity_reason\": \"{}\",\n  \"poc_collected\": {},\n  \"poc_path\": \"{}\",\n  \"poc_sha256\": \"{}\",\n  \"poc_size_bytes\": {},\n  \"poc_source_input\": \"{}\",\n  \"poc_error\": \"{}\",\n  \"retention_days\": 30,\n  \"retention\": {{\n    \"compressed_logs\": {},\n    \"deleted_dirs\": {},\n    \"skipped_log_compress\": {}\n  }}\n}}\n",
+        "{{\n  \"schema_version\": \"1.2\",\n  \"report_id\": \"{}\",\n  \"source_triage_id\": \"{}\",\n  \"source_summary\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"input_sha256\": \"{}\",\n  \"verdict\": \"{}\",\n  \"crash_kind\": \"{}\",\n  \"sanitizer\": \"{}\",\n  \"signal\": \"{}\",\n  \"normalized_frame_hash\": \"{}\",\n  \"signature_basis\": \"{}\",\n  \"crash_summary\": \"{}\",\n  \"suggested_severity\": \"{}\",\n  \"suggested_cvss_vector\": \"{}\",\n  \"severity_confidence\": \"{}\",\n  \"severity_reason\": \"{}\",\n  \"poc_collected\": {},\n  \"poc_path\": \"{}\",\n  \"poc_sha256\": \"{}\",\n  \"poc_size_bytes\": {},\n  \"poc_source_input\": \"{}\",\n  \"poc_error\": \"{}\",\n  \"minimize_requested\": {},\n  \"minimized\": {},\n  \"minimize_strategy\": \"{}\",\n  \"minimized_input\": \"{}\",\n  \"minimized_sha256\": \"{}\",\n  \"minimized_size_bytes\": {},\n  \"original_sha256\": \"{}\",\n  \"original_size_bytes\": {},\n  \"size_reduction_ratio\": {:.4},\n  \"minimize_error\": \"{}\",\n  \"retention_days\": 30,\n  \"retention\": {{\n    \"compressed_logs\": {},\n    \"deleted_dirs\": {},\n    \"skipped_log_compress\": {}\n  }}\n}}\n",
         report_id,
         triage_id,
         json_escape(&summary_path.display().to_string()),
@@ -120,6 +125,24 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         poc.size_bytes,
         json_escape(&input),
         json_escape(&poc.error),
+        if minimization.requested {
+            "true"
+        } else {
+            "false"
+        },
+        if minimization.minimized {
+            "true"
+        } else {
+            "false"
+        },
+        json_escape(&minimization.strategy),
+        json_escape(&minimization.input_path),
+        json_escape(&minimization.sha256),
+        minimization.size_bytes,
+        json_escape(&minimization.original_sha256),
+        minimization.original_size_bytes,
+        minimization.size_reduction_ratio,
+        json_escape(&minimization.error),
         retention.compressed_logs,
         retention.deleted_dirs,
         retention.skipped_log_compress
@@ -135,7 +158,7 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         .join("\n");
 
     let report_md = format!(
-        "# {}\n\n## Summary\nA reproduced crash was observed while processing a `{}` model input.\n\n- Target: `{}`\n- Verdict: `{}`\n- Crash kind: `{}`\n- Sanitizer: `{}`\n- Signal: `{}`\n- Normalized signature: `{}`\n- Source input: `{}`\n- Evidence manifest: `manifest.json`\n\n## Steps to Reproduce\n1. Review `meta.json` for source triage metadata and input hashes.\n2. Use the collected PoC input when available: `{}`.\n3. Run: `tool triage --target {} --input '{}' --repro-retries {} --timeout-sec {}`\n4. Compare `normalized_frame_hash` with `crash_report.txt` and the stack frames below.\n\n## Impact\nObserved crash signature and parser/runtime failure require manual impact confirmation. Treat this as a submission candidate, not an automatic exploitability conclusion.\n\n## Suggested Severity\n- Suggested severity: `{}`\n- Suggested CVSS vector: `{}`\n- Confidence: `{}`\n- Reason: `{}`\n- Manual confirmation required: yes\n\n## Suggested Fix\nValidate parser assumptions around the crashing input path, add regression coverage for the PoC, and reject malformed model files before reaching the crashing code path.\n\n## PoC\n- Original input: `{}`\n- Original sha256: `{}`\n- Collected copy: `{}`\n- Collection status: `{}`\n\n## Exploit Scenario\nA crafted model file reaches the `{}` parsing path and triggers the reproduced crash condition.\n\n## Crash Summary\n{}\n\n## Stack Top3\n{}\n",
+        "# {}\n\n## Summary\nA reproduced crash was observed while processing a `{}` model input.\n\n- Target: `{}`\n- Verdict: `{}`\n- Crash kind: `{}`\n- Sanitizer: `{}`\n- Signal: `{}`\n- Normalized signature: `{}`\n- Source input: `{}`\n- Evidence manifest: `manifest.json`\n\n## Steps to Reproduce\n1. Review `meta.json` for source triage metadata and input hashes.\n2. Use the collected PoC input when available: `{}`.\n3. Run: `tool triage --target {} --input '{}' --repro-retries {} --timeout-sec {}`\n4. Compare `normalized_frame_hash` with `crash_report.txt` and the stack frames below.\n\n## Impact\nObserved crash signature and parser/runtime failure require manual impact confirmation. Treat this as a submission candidate, not an automatic exploitability conclusion.\n\n## Suggested Severity\n- Suggested severity: `{}`\n- Suggested CVSS vector: `{}`\n- Confidence: `{}`\n- Reason: `{}`\n- Manual confirmation required: yes\n\n## Suggested Fix\nValidate parser assumptions around the crashing input path, add regression coverage for the PoC, and reject malformed model files before reaching the crashing code path.\n\n## PoC\n- Original input: `{}`\n- Original sha256: `{}`\n- Collected copy: `{}`\n- Collection status: `{}`\n\n## Minimization\n- Requested: `{}`\n- Minimized: `{}`\n- Strategy: `{}`\n- Minimized input: `{}`\n- Original size: `{}` bytes\n- Minimized size: `{}` bytes\n- Size reduction ratio: `{:.4}`\n- Error: `{}`\n- Report generation blocked by minimization failure: no\n\n## Exploit Scenario\nA crafted model file reaches the `{}` parsing path and triggers the reproduced crash condition.\n\n## Crash Summary\n{}\n\n## Stack Top3\n{}\n",
         build_report_title(&target, &stack_lines, &triage_crash),
         target,
         target,
@@ -158,6 +181,22 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
         input_sha256,
         if poc.path.is_empty() { "-" } else { &poc.path },
         if poc.collected { "collected" } else { "not_collected" },
+        if minimization.requested { "yes" } else { "no" },
+        if minimization.minimized { "yes" } else { "no" },
+        minimization.strategy,
+        if minimization.input_path.is_empty() {
+            "-"
+        } else {
+            &minimization.input_path
+        },
+        minimization.original_size_bytes,
+        minimization.size_bytes,
+        minimization.size_reduction_ratio,
+        if minimization.error.is_empty() {
+            "-"
+        } else {
+            &minimization.error
+        },
         target,
         triage_crash.crash_summary,
         stack_text
@@ -166,9 +205,16 @@ pub(crate) fn run_report_pipeline(app_paths: &AppPaths) -> Result<(), String> {
     fs::write(&report_md_path, report_md)
         .map_err(|e| format!("failed to write '{}': {e}", report_md_path.display()))?;
 
-    let manifest_path =
-        write_report_manifest(&report_dir, report_id, triage_id, &target, &verdict, &poc)?;
-    let bundle_path = write_evidence_zip(&report_dir, report_id, &poc)?;
+    let manifest_path = write_report_manifest(
+        &report_dir,
+        report_id,
+        triage_id,
+        &target,
+        &verdict,
+        &poc,
+        &minimization,
+    )?;
+    let bundle_path = write_evidence_zip(&report_dir, report_id, &poc, &minimization)?;
 
     println!("[report] done");
     println!("source_triage: {}", triage_dir.display());
@@ -398,6 +444,7 @@ fn write_report_manifest(
     target: &str,
     verdict: &str,
     poc: &PocCollection,
+    minimization: &MinimizationResult,
 ) -> Result<PathBuf, String> {
     let mut relative_paths = vec![
         "report.md".to_string(),
@@ -406,6 +453,9 @@ fn write_report_manifest(
         "crash_report.txt".to_string(),
     ];
     if let Some(path) = relative_report_path(report_dir, &poc.path) {
+        relative_paths.push(path);
+    }
+    if let Some(path) = relative_report_path(report_dir, &minimization.input_path) {
         relative_paths.push(path);
     }
 
@@ -443,6 +493,7 @@ fn write_evidence_zip(
     report_dir: &Path,
     report_id: u128,
     poc: &PocCollection,
+    minimization: &MinimizationResult,
 ) -> Result<PathBuf, String> {
     let mut relative_paths = vec![
         "report.md".to_string(),
@@ -452,6 +503,9 @@ fn write_evidence_zip(
         "manifest.json".to_string(),
     ];
     if let Some(path) = relative_report_path(report_dir, &poc.path) {
+        relative_paths.push(path);
+    }
+    if let Some(path) = relative_report_path(report_dir, &minimization.input_path) {
         relative_paths.push(path);
     }
 
@@ -629,6 +683,107 @@ impl PocCollection {
         } else {
             default_input.to_string()
         }
+    }
+}
+
+struct MinimizationResult {
+    requested: bool,
+    minimized: bool,
+    strategy: String,
+    input_path: String,
+    sha256: String,
+    size_bytes: u64,
+    original_sha256: String,
+    original_size_bytes: u64,
+    size_reduction_ratio: f64,
+    error: String,
+}
+
+fn collect_minimization_artifact(
+    report_dir: &Path,
+    triage_id: u128,
+    target: &str,
+    poc: &PocCollection,
+    requested: bool,
+) -> MinimizationResult {
+    if !requested {
+        return MinimizationResult {
+            requested: false,
+            minimized: false,
+            strategy: "not_requested".to_string(),
+            input_path: String::new(),
+            sha256: String::new(),
+            size_bytes: 0,
+            original_sha256: poc.sha256.clone(),
+            original_size_bytes: poc.size_bytes,
+            size_reduction_ratio: 0.0,
+            error: String::new(),
+        };
+    }
+
+    if !poc.collected || poc.path.is_empty() {
+        return MinimizationResult {
+            requested: true,
+            minimized: false,
+            strategy: "copy_baseline".to_string(),
+            input_path: String::new(),
+            sha256: String::new(),
+            size_bytes: 0,
+            original_sha256: poc.sha256.clone(),
+            original_size_bytes: poc.size_bytes,
+            size_reduction_ratio: 0.0,
+            error: "poc_not_collected".to_string(),
+        };
+    }
+
+    let poc_path = Path::new(&poc.path);
+    let ext = poc_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .filter(|e| !e.is_empty())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let hash12 = short_hash12(&poc.sha256);
+    let target_safe = sanitize_filename_component(target);
+    let filename = format!("minimized-{target_safe}-triage-{triage_id}-{hash12}{ext}");
+    let dst = report_dir.join("poc").join(filename);
+
+    if let Err(e) = fs::copy(poc_path, &dst) {
+        return MinimizationResult {
+            requested: true,
+            minimized: false,
+            strategy: "copy_baseline".to_string(),
+            input_path: String::new(),
+            sha256: String::new(),
+            size_bytes: 0,
+            original_sha256: poc.sha256.clone(),
+            original_size_bytes: poc.size_bytes,
+            size_reduction_ratio: 0.0,
+            error: format!("baseline_copy_failed:{e}"),
+        };
+    }
+
+    let size_bytes = fs::metadata(&dst).map(|m| m.len()).unwrap_or(0);
+    let sha256 = sha256_file(&dst).unwrap_or_else(|_| "unavailable".to_string());
+    MinimizationResult {
+        requested: true,
+        minimized: false,
+        strategy: "copy_baseline".to_string(),
+        input_path: dst.display().to_string(),
+        sha256,
+        size_bytes,
+        original_sha256: poc.sha256.clone(),
+        original_size_bytes: poc.size_bytes,
+        size_reduction_ratio: calculate_size_reduction_ratio(poc.size_bytes, size_bytes),
+        error: String::new(),
+    }
+}
+
+fn calculate_size_reduction_ratio(original_size: u64, minimized_size: u64) -> f64 {
+    if original_size == 0 || minimized_size >= original_size {
+        0.0
+    } else {
+        (original_size - minimized_size) as f64 / original_size as f64
     }
 }
 
