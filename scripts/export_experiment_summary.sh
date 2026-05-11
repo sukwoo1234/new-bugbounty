@@ -142,7 +142,7 @@ REPORT_INDEX="$OUT_DIR/report-index.tsv"
 
 REPRODUCED_COUNT="$(awk -F'\t' 'NR>1 && $2=="reproduced" {c++} END{print c+0}' "$TRIAGE_INDEX")"
 REPORT_COUNT="$(awk 'END{print NR-1}' "$REPORT_INDEX")"
-UNIQUE_SIGNATURE_COUNT="$(awk -F'\t' 'NR>1 {sig=($7!="" ? $7 : $8); if (sig!="") print sig}' "$TRIAGE_INDEX" | sort -u | wc -l | tr -d ' ')"
+UNIQUE_SIGNATURE_COUNT="$(awk -F'\t' 'NR>1 && $2=="reproduced" {sig=($7!="" ? $7 : $8); if (sig!="") print sig}' "$TRIAGE_INDEX" | sort -u | wc -l | tr -d ' ')"
 
 GIT_COMMIT="$(git rev-parse --short HEAD)"
 STARTED_AT="$(date -Iseconds)"
@@ -207,7 +207,7 @@ cat > "$OUT_DIR/summary.md" <<EOF
 - \`global_error_rate_5m\` is computed as recent \`errors / total\` over metric events.
 - \`valid_crash_ratio\` is calculated from \`data/triage/triage-*/summary.json\` when \`valid_crash_ratio_source=triage_summary_scan\`.
 - \`valid_crash_ratio\` is \`not_available\` when there are no triage crash observations to support the ratio.
-- \`unique_signature_count\` uses \`normalized_frame_hash\` when present and falls back to legacy \`signature_top1\`.
+- \`unique_signature_count\` counts only \`reproduced\` triage rows, using \`normalized_frame_hash\` when present and falling back to legacy \`signature_top1\`.
 - Legacy metrics without \`valid_crash_ratio_status\` are reported as \`legacy_unverified\`.
 EOF
 
