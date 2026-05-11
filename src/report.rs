@@ -2,9 +2,13 @@ use std::{
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
+    process::Command,
 };
 
-use crate::common::{artifact_contract_for_data_dir, now_unix_millis, sha256_file, AppPaths};
+use crate::common::{
+    artifact_contract_for_data_dir, command_exists, command_with_core_dump_off, now_unix_millis,
+    sha256_file, AppPaths,
+};
 use crate::json_utils::{
     extract_first_signature_top3_list, extract_json_string_literal, extract_json_u64_field,
     json_escape,
@@ -668,6 +672,10 @@ fn shell_escape_single_quoted(input: &str) -> String {
     input.replace('\'', "'\"'\"'")
 }
 
+fn shell_quote_arg(input: &str) -> String {
+    format!("'{}'", shell_escape_single_quoted(input))
+}
+
 struct PocCollection {
     collected: bool,
     path: String,
@@ -736,6 +744,21 @@ fn collect_minimization_artifact(
         };
     }
 
+    if let Ok(template) = std::env::var("TOOL_MINIMIZER_CMD") {
+        if !template.trim().is_empty() {
+            return run_external_minimizer(report_dir, triage_id, target, poc, &template);
+        }
+    }
+
+    collect_baseline_minimization_artifact(report_dir, triage_id, target, poc)
+}
+
+fn collect_baseline_minimization_artifact(
+    report_dir: &Path,
+    triage_id: u128,
+    target: &str,
+    poc: &PocCollection,
+) -> MinimizationResult {
     let poc_path = Path::new(&poc.path);
     let ext = poc_path
         .extension()
@@ -780,10 +803,175 @@ fn collect_minimization_artifact(
 }
 
 fn calculate_size_reduction_ratio(original_size: u64, minimized_size: u64) -> f64 {
-    if original_size == 0 || minimized_size >= original_size {
+    if original_size == 0 || minimized_size == 0 || minimized_size >= original_size {
         0.0
     } else {
         (original_size - minimized_size) as f64 / original_size as f64
+    }
+}
+
+fn run_external_minimizer(
+    report_dir: &Path,
+    triage_id: u128,
+    target: &str,
+    poc: &PocCollection,
+    template: &str,
+) -> MinimizationResult {
+    let output_path = minimization_output_path(report_dir, triage_id, target, poc);
+    let command = render_minimizer_command(template, &poc.path, &output_path, target, triage_id);
+    let timeout_sec = std::env::var("TOOL_MINIMIZER_TIMEOUT_SEC")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(60);
+    let timeout_available = command_exists("timeout");
+
+    let output = if timeout_available {
+        let mut cmd = command_with_core_dump_off("timeout");
+        cmd.arg(format!("{}s", timeout_sec))
+            .arg("bash")
+            .arg("-lc")
+            .arg(&command)
+            .output()
+    } else {
+        Command::new("bash").arg("-lc").arg(&command).output()
+    };
+
+    match output {
+        Ok(out) if out.status.success() && output_path.is_file() => {
+            build_external_minimization_result(poc, output_path, true, String::new())
+        }
+        Ok(out) => {
+            let error = external_minimizer_error(&out, timeout_available, timeout_sec);
+            if output_path.is_file() {
+                build_external_minimization_result(poc, output_path, false, error)
+            } else {
+                MinimizationResult {
+                    requested: true,
+                    minimized: false,
+                    strategy: "external_command".to_string(),
+                    input_path: String::new(),
+                    sha256: String::new(),
+                    size_bytes: 0,
+                    original_sha256: poc.sha256.clone(),
+                    original_size_bytes: poc.size_bytes,
+                    size_reduction_ratio: 0.0,
+                    error,
+                }
+            }
+        }
+        Err(e) => MinimizationResult {
+            requested: true,
+            minimized: false,
+            strategy: "external_command".to_string(),
+            input_path: String::new(),
+            sha256: String::new(),
+            size_bytes: 0,
+            original_sha256: poc.sha256.clone(),
+            original_size_bytes: poc.size_bytes,
+            size_reduction_ratio: 0.0,
+            error: format!("external_command_spawn_failed:{e}"),
+        },
+    }
+}
+
+fn minimization_output_path(
+    report_dir: &Path,
+    triage_id: u128,
+    target: &str,
+    poc: &PocCollection,
+) -> PathBuf {
+    let poc_path = Path::new(&poc.path);
+    let ext = poc_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .filter(|e| !e.is_empty())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let hash12 = short_hash12(&poc.sha256);
+    let target_safe = sanitize_filename_component(target);
+    report_dir.join("poc").join(format!(
+        "minimized-{target_safe}-triage-{triage_id}-{hash12}{ext}"
+    ))
+}
+
+fn render_minimizer_command(
+    template: &str,
+    input_path: &str,
+    output_path: &Path,
+    target: &str,
+    triage_id: u128,
+) -> String {
+    template
+        .replace("{input}", &shell_quote_arg(input_path))
+        .replace(
+            "{output}",
+            &shell_quote_arg(&output_path.display().to_string()),
+        )
+        .replace("{target}", &shell_quote_arg(target))
+        .replace("{triage_id}", &triage_id.to_string())
+}
+
+fn build_external_minimization_result(
+    poc: &PocCollection,
+    output_path: PathBuf,
+    command_success: bool,
+    error: String,
+) -> MinimizationResult {
+    let size_bytes = fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
+    let sha256 = sha256_file(&output_path).unwrap_or_else(|_| "unavailable".to_string());
+    let size_reduction_ratio = calculate_size_reduction_ratio(poc.size_bytes, size_bytes);
+    let minimized = command_success && size_bytes > 0 && size_bytes < poc.size_bytes;
+    MinimizationResult {
+        requested: true,
+        minimized,
+        strategy: "external_command".to_string(),
+        input_path: output_path.display().to_string(),
+        sha256,
+        size_bytes,
+        original_sha256: poc.sha256.clone(),
+        original_size_bytes: poc.size_bytes,
+        size_reduction_ratio,
+        error,
+    }
+}
+
+fn external_minimizer_error(
+    output: &std::process::Output,
+    timeout_available: bool,
+    timeout_sec: u64,
+) -> String {
+    if timeout_available && output.status.code() == Some(124) {
+        return format!("external_command_timeout:{timeout_sec}s");
+    }
+    let code = output
+        .status
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "signal".to_string());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim()
+    } else {
+        stdout.trim()
+    };
+    if detail.is_empty() {
+        format!("external_command_failed:exit_code={code}")
+    } else {
+        format!(
+            "external_command_failed:exit_code={code}:{}",
+            single_line_excerpt(detail, 240)
+        )
+    }
+}
+
+fn single_line_excerpt(input: &str, max_len: usize) -> String {
+    let compact = input.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.len() <= max_len {
+        compact
+    } else {
+        format!("{}...", &compact[..max_len])
     }
 }
 

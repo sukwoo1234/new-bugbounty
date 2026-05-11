@@ -169,7 +169,9 @@
 - Report metadata는 triage의 `crash_kind`, `sanitizer`, `signal`, `normalized_frame_hash`, `signature_basis`, `crash_summary`를 보존한다.
 - `tool report --minimize`는 optional minimization metadata/artifact를 생성한다.
 - minimization 실패 또는 미지원 상태는 report 생성을 막지 않으며, 원본 PoC는 항상 보존한다.
-- Phase 6-1 minimization strategy는 `copy_baseline`이며 실제 crash-preserving size reduction은 external minimizer 단계에서 검증한다.
+- 기본 minimization strategy는 `copy_baseline`이며, `TOOL_MINIMIZER_CMD`가 있으면 external command template을 사용한다.
+- `TOOL_MINIMIZER_CMD` placeholder는 `{input}`, `{output}`, `{target}`, `{triage_id}`를 지원한다.
+- `minimized=true`는 external command가 성공하고 출력 파일 크기가 원본보다 작을 때만 기록하며, crash-preserving confirmation은 별도 재현 검증 단계에서 확인한다.
 
 ## 6) Observability/Health
 - status.json 주기 저장
