@@ -1,5 +1,6 @@
 /target
 /data
+/results
 /.venv
 /tools/llama.cpp
 /seeds
@@ -12,11 +13,15 @@ crash-*
 
 # internal/private docs
 AGENTS.md
+.github/
+docs/
 docs/dev-todo.md
 docs/rules.md
 docs/dev-todo-legacy-upgrade.md
 docs/experiment-ops.md
 docs/progress-log.md
+docs/dashboard-phase-a.md
+docs/format-scope-roadmap.md
 docs/legacy/
 docs/plans/
 .codex/

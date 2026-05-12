@@ -1,2 +1,0 @@
-triage_id	verdict	input_path	signature_top1	summary_path
-1775630494	reproduced	seeds/onnx/onnx_10_model.onnx	[harness] done	data/triage/triage-1775630494/summary.json

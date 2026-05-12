@@ -4,8 +4,6 @@
 
 ## 먼저 읽기
 - 설계/결정: [first.md](first.md)
-- 구현 명세: [docs/specs.md](docs/specs.md)
-- 유효 코퍼스 준비: [docs/corpus-sop.md](docs/corpus-sop.md)
 
 ## 기존 툴 대비 차별점 (Differentiators)
 - **Deep & Structured Fuzzing**: 구조 인지형 mutator/harness로 얕은 파싱 에러가 아니라 깊은 경로의 메모리 오염을 겨냥한다.
@@ -17,10 +15,10 @@
 ### 목표 (Goals)
 - 구조 인지형 mutator/harness로 더 깊은 경로를 타겟한다.
 - 기존 툴 대비 재현 성공률/제출 승인률을 수치로 개선한다.
-- 차별점 근거 지표 체크리스트: [docs/roadmap.md](docs/roadmap.md) `차별점 검증 체크리스트 (릴리즈 이후)`
+- 차별점 근거 지표 체크리스트는 내부 문서에서 관리한다.
 
 ## RCE 탐지 방법론 (요약)
-- 핵심 본체는 **하네스/뮤테이터/triage**이며, 자세한 정책은 [first.md](first.md)와 [docs/specs.md](docs/specs.md)에 정리한다.
+- 핵심 본체는 **하네스/뮤테이터/triage**이며, 공개 방향은 [first.md](first.md)에 정리한다.
 - **Format-Aware Mutator**: 헤더/메타/오프셋/길이 필드를 의도적으로 변조해 깊은 경로를 자극한다.
 - **Targeted Harness**: mmap/텐서 디코딩/메모리 할당 경로를 직접 통과하도록 하네스를 설계한다.
 - **Exploitability Triage**: 레지스터/스택/PC 오염 여부를 분석해 RCE 후보 등급을 부여한다.
@@ -36,12 +34,8 @@
 - Artifact Store: 크래시/재현/증거 번들 저장
 
 ## 문서 가이드
-- 설계/결정: [first.md](first.md)
-- 구현 명세: [docs/specs.md](docs/specs.md)
-- 문서 TODO: [docs/todo.md](docs/todo.md)
-- 개발 로드맵: [docs/roadmap.md](docs/roadmap.md)
-- 리포트 샘플: [docs/report-sample.md](docs/report-sample.md)
-- 유효 코퍼스 SOP: [docs/corpus-sop.md](docs/corpus-sop.md)
+- 공개 문서: [first.md](first.md)
+- 그 외 운영 계획, 상세 명세, 실험 기록, 후속 계획은 내부 문서로 관리한다.
 
 ## CLI (확정)
 - `tool run`, `tool triage`, `tool report`
