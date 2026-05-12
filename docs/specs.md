@@ -172,6 +172,10 @@
 - 기본 minimization strategy는 `copy_baseline`이며, `TOOL_MINIMIZER_CMD`가 있으면 external command template을 사용한다.
 - `TOOL_MINIMIZER_CMD` placeholder는 `{input}`, `{output}`, `{target}`, `{triage_id}`를 지원한다.
 - `minimized=true`는 external command가 성공하고 출력 파일 크기가 원본보다 작을 때만 기록하며, crash-preserving confirmation은 별도 재현 검증 단계에서 확인한다.
+- `TOOL_MINIMIZER_VALIDATE_CMD`가 있으면 minimized candidate 검증 command template을 실행하며 `{input}`, `{original_input}`, `{target}`, `{triage_id}`를 지원한다.
+- 검증 결과는 `minimize_validation_status`, `minimize_validation_verdict`, `minimize_validation_summary`, `minimized_normalized_frame_hash`에 기록한다.
+- `same_signature_candidate`는 후보 상태이며 자동 보안 결론이 아니고 manual confirmation required를 유지한다.
+- minimization validation 실패 또는 미수행 상태는 report 생성을 막지 않는다.
 
 ## 6) Observability/Health
 - status.json 주기 저장

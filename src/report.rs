@@ -77,8 +77,15 @@ pub(crate) fn run_report_pipeline(
         &input_sha256,
         &verdict,
     );
-    let minimization =
+    let mut minimization =
         collect_minimization_artifact(&report_dir, triage_id, &target, &poc, minimize_requested);
+    apply_minimization_validation(
+        &mut minimization,
+        triage_id,
+        &target,
+        &poc,
+        &triage_crash.normalized_frame_hash,
+    );
     let repro_input = poc.repro_input_or(&input);
 
     let crash_report = build_crash_report(&triage_dir, &summary);
@@ -105,7 +112,7 @@ pub(crate) fn run_report_pipeline(
     let severity = suggest_report_severity(&crash_report, &stack_lines, &triage_crash);
 
     let meta_json = format!(
-        "{{\n  \"schema_version\": \"1.2\",\n  \"report_id\": \"{}\",\n  \"source_triage_id\": \"{}\",\n  \"source_summary\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"input_sha256\": \"{}\",\n  \"verdict\": \"{}\",\n  \"crash_kind\": \"{}\",\n  \"sanitizer\": \"{}\",\n  \"signal\": \"{}\",\n  \"normalized_frame_hash\": \"{}\",\n  \"signature_basis\": \"{}\",\n  \"crash_summary\": \"{}\",\n  \"suggested_severity\": \"{}\",\n  \"suggested_cvss_vector\": \"{}\",\n  \"severity_confidence\": \"{}\",\n  \"severity_reason\": \"{}\",\n  \"poc_collected\": {},\n  \"poc_path\": \"{}\",\n  \"poc_sha256\": \"{}\",\n  \"poc_size_bytes\": {},\n  \"poc_source_input\": \"{}\",\n  \"poc_error\": \"{}\",\n  \"minimize_requested\": {},\n  \"minimized\": {},\n  \"minimize_strategy\": \"{}\",\n  \"minimized_input\": \"{}\",\n  \"minimized_sha256\": \"{}\",\n  \"minimized_size_bytes\": {},\n  \"original_sha256\": \"{}\",\n  \"original_size_bytes\": {},\n  \"size_reduction_ratio\": {:.4},\n  \"minimize_error\": \"{}\",\n  \"retention_days\": 30,\n  \"retention\": {{\n    \"compressed_logs\": {},\n    \"deleted_dirs\": {},\n    \"skipped_log_compress\": {}\n  }}\n}}\n",
+        "{{\n  \"schema_version\": \"1.3\",\n  \"report_id\": \"{}\",\n  \"source_triage_id\": \"{}\",\n  \"source_summary\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"input_sha256\": \"{}\",\n  \"verdict\": \"{}\",\n  \"crash_kind\": \"{}\",\n  \"sanitizer\": \"{}\",\n  \"signal\": \"{}\",\n  \"normalized_frame_hash\": \"{}\",\n  \"signature_basis\": \"{}\",\n  \"crash_summary\": \"{}\",\n  \"suggested_severity\": \"{}\",\n  \"suggested_cvss_vector\": \"{}\",\n  \"severity_confidence\": \"{}\",\n  \"severity_reason\": \"{}\",\n  \"poc_collected\": {},\n  \"poc_path\": \"{}\",\n  \"poc_sha256\": \"{}\",\n  \"poc_size_bytes\": {},\n  \"poc_source_input\": \"{}\",\n  \"poc_error\": \"{}\",\n  \"minimize_requested\": {},\n  \"minimized\": {},\n  \"minimize_strategy\": \"{}\",\n  \"minimized_input\": \"{}\",\n  \"minimized_sha256\": \"{}\",\n  \"minimized_size_bytes\": {},\n  \"original_sha256\": \"{}\",\n  \"original_size_bytes\": {},\n  \"size_reduction_ratio\": {:.4},\n  \"minimize_error\": \"{}\",\n  \"minimize_validation_status\": \"{}\",\n  \"minimize_validation_verdict\": \"{}\",\n  \"minimize_validation_summary\": \"{}\",\n  \"minimized_normalized_frame_hash\": \"{}\",\n  \"retention_days\": 30,\n  \"retention\": {{\n    \"compressed_logs\": {},\n    \"deleted_dirs\": {},\n    \"skipped_log_compress\": {}\n  }}\n}}\n",
         report_id,
         triage_id,
         json_escape(&summary_path.display().to_string()),
@@ -147,6 +154,10 @@ pub(crate) fn run_report_pipeline(
         minimization.original_size_bytes,
         minimization.size_reduction_ratio,
         json_escape(&minimization.error),
+        json_escape(&minimization.validation_status),
+        json_escape(&minimization.validation_verdict),
+        json_escape(&minimization.validation_summary),
+        json_escape(&minimization.validation_normalized_frame_hash),
         retention.compressed_logs,
         retention.deleted_dirs,
         retention.skipped_log_compress
@@ -162,7 +173,7 @@ pub(crate) fn run_report_pipeline(
         .join("\n");
 
     let report_md = format!(
-        "# {}\n\n## Summary\nA reproduced crash was observed while processing a `{}` model input.\n\n- Target: `{}`\n- Verdict: `{}`\n- Crash kind: `{}`\n- Sanitizer: `{}`\n- Signal: `{}`\n- Normalized signature: `{}`\n- Source input: `{}`\n- Evidence manifest: `manifest.json`\n\n## Steps to Reproduce\n1. Review `meta.json` for source triage metadata and input hashes.\n2. Use the collected PoC input when available: `{}`.\n3. Run: `tool triage --target {} --input '{}' --repro-retries {} --timeout-sec {}`\n4. Compare `normalized_frame_hash` with `crash_report.txt` and the stack frames below.\n\n## Impact\nObserved crash signature and parser/runtime failure require manual impact confirmation. Treat this as a submission candidate, not an automatic exploitability conclusion.\n\n## Suggested Severity\n- Suggested severity: `{}`\n- Suggested CVSS vector: `{}`\n- Confidence: `{}`\n- Reason: `{}`\n- Manual confirmation required: yes\n\n## Suggested Fix\nValidate parser assumptions around the crashing input path, add regression coverage for the PoC, and reject malformed model files before reaching the crashing code path.\n\n## PoC\n- Original input: `{}`\n- Original sha256: `{}`\n- Collected copy: `{}`\n- Collection status: `{}`\n\n## Minimization\n- Requested: `{}`\n- Minimized: `{}`\n- Strategy: `{}`\n- Minimized input: `{}`\n- Original size: `{}` bytes\n- Minimized size: `{}` bytes\n- Size reduction ratio: `{:.4}`\n- Error: `{}`\n- Report generation blocked by minimization failure: no\n\n## Exploit Scenario\nA crafted model file reaches the `{}` parsing path and triggers the reproduced crash condition.\n\n## Crash Summary\n{}\n\n## Stack Top3\n{}\n",
+        "# {}\n\n## Summary\nA reproduced crash was observed while processing a `{}` model input.\n\n- Target: `{}`\n- Verdict: `{}`\n- Crash kind: `{}`\n- Sanitizer: `{}`\n- Signal: `{}`\n- Normalized signature: `{}`\n- Source input: `{}`\n- Evidence manifest: `manifest.json`\n\n## Steps to Reproduce\n1. Review `meta.json` for source triage metadata and input hashes.\n2. Use the collected PoC input when available: `{}`.\n3. Run: `tool triage --target {} --input '{}' --repro-retries {} --timeout-sec {}`\n4. Compare `normalized_frame_hash` with `crash_report.txt` and the stack frames below.\n\n## Impact\nObserved crash signature and parser/runtime failure require manual impact confirmation. Treat this as a submission candidate, not an automatic exploitability conclusion.\n\n## Suggested Severity\n- Suggested severity: `{}`\n- Suggested CVSS vector: `{}`\n- Confidence: `{}`\n- Reason: `{}`\n- Manual confirmation required: yes\n\n## Suggested Fix\nValidate parser assumptions around the crashing input path, add regression coverage for the PoC, and reject malformed model files before reaching the crashing code path.\n\n## PoC\n- Original input: `{}`\n- Original sha256: `{}`\n- Collected copy: `{}`\n- Collection status: `{}`\n\n## Minimization\n- Requested: `{}`\n- Minimized: `{}`\n- Strategy: `{}`\n- Minimized input: `{}`\n- Original size: `{}` bytes\n- Minimized size: `{}` bytes\n- Size reduction ratio: `{:.4}`\n- Error: `{}`\n- Validation status: `{}`\n- Validation verdict: `{}`\n- Minimized normalized signature: `{}`\n- Validation summary: `{}`\n- Report generation blocked by minimization failure: no\n\n## Exploit Scenario\nA crafted model file reaches the `{}` parsing path and triggers the reproduced crash condition.\n\n## Crash Summary\n{}\n\n## Stack Top3\n{}\n",
         build_report_title(&target, &stack_lines, &triage_crash),
         target,
         target,
@@ -200,6 +211,18 @@ pub(crate) fn run_report_pipeline(
             "-"
         } else {
             &minimization.error
+        },
+        minimization.validation_status,
+        minimization.validation_verdict,
+        if minimization.validation_normalized_frame_hash.is_empty() {
+            "-"
+        } else {
+            &minimization.validation_normalized_frame_hash
+        },
+        if minimization.validation_summary.is_empty() {
+            "-"
+        } else {
+            &minimization.validation_summary
         },
         target,
         triage_crash.crash_summary,
@@ -705,6 +728,10 @@ struct MinimizationResult {
     original_size_bytes: u64,
     size_reduction_ratio: f64,
     error: String,
+    validation_status: String,
+    validation_verdict: String,
+    validation_summary: String,
+    validation_normalized_frame_hash: String,
 }
 
 fn collect_minimization_artifact(
@@ -726,6 +753,10 @@ fn collect_minimization_artifact(
             original_size_bytes: poc.size_bytes,
             size_reduction_ratio: 0.0,
             error: String::new(),
+            validation_status: "not_checked".to_string(),
+            validation_verdict: "not_checked".to_string(),
+            validation_summary: "minimization not requested".to_string(),
+            validation_normalized_frame_hash: String::new(),
         };
     }
 
@@ -741,6 +772,11 @@ fn collect_minimization_artifact(
             original_size_bytes: poc.size_bytes,
             size_reduction_ratio: 0.0,
             error: "poc_not_collected".to_string(),
+            validation_status: "skipped".to_string(),
+            validation_verdict: "no_candidate_manual_review".to_string(),
+            validation_summary: "PoC was not collected; no minimized candidate to validate"
+                .to_string(),
+            validation_normalized_frame_hash: String::new(),
         };
     }
 
@@ -783,6 +819,11 @@ fn collect_baseline_minimization_artifact(
             original_size_bytes: poc.size_bytes,
             size_reduction_ratio: 0.0,
             error: format!("baseline_copy_failed:{e}"),
+            validation_status: "skipped".to_string(),
+            validation_verdict: "no_candidate_manual_review".to_string(),
+            validation_summary: "baseline copy failed; no minimized candidate to validate"
+                .to_string(),
+            validation_normalized_frame_hash: String::new(),
         };
     }
 
@@ -799,6 +840,10 @@ fn collect_baseline_minimization_artifact(
         original_size_bytes: poc.size_bytes,
         size_reduction_ratio: calculate_size_reduction_ratio(poc.size_bytes, size_bytes),
         error: String::new(),
+        validation_status: "not_checked".to_string(),
+        validation_verdict: "not_checked".to_string(),
+        validation_summary: "validation command not configured".to_string(),
+        validation_normalized_frame_hash: String::new(),
     }
 }
 
@@ -857,6 +902,11 @@ fn run_external_minimizer(
                     original_size_bytes: poc.size_bytes,
                     size_reduction_ratio: 0.0,
                     error,
+                    validation_status: "skipped".to_string(),
+                    validation_verdict: "no_candidate_manual_review".to_string(),
+                    validation_summary: "external minimizer did not produce a candidate"
+                        .to_string(),
+                    validation_normalized_frame_hash: String::new(),
                 }
             }
         }
@@ -871,6 +921,10 @@ fn run_external_minimizer(
             original_size_bytes: poc.size_bytes,
             size_reduction_ratio: 0.0,
             error: format!("external_command_spawn_failed:{e}"),
+            validation_status: "skipped".to_string(),
+            validation_verdict: "no_candidate_manual_review".to_string(),
+            validation_summary: "external minimizer did not produce a candidate".to_string(),
+            validation_normalized_frame_hash: String::new(),
         },
     }
 }
@@ -933,6 +987,10 @@ fn build_external_minimization_result(
         original_size_bytes: poc.size_bytes,
         size_reduction_ratio,
         error,
+        validation_status: "not_checked".to_string(),
+        validation_verdict: "not_checked".to_string(),
+        validation_summary: "validation command not configured".to_string(),
+        validation_normalized_frame_hash: String::new(),
     }
 }
 
@@ -972,6 +1030,219 @@ fn single_line_excerpt(input: &str, max_len: usize) -> String {
         compact
     } else {
         format!("{}...", &compact[..max_len])
+    }
+}
+
+fn apply_minimization_validation(
+    minimization: &mut MinimizationResult,
+    triage_id: u128,
+    target: &str,
+    poc: &PocCollection,
+    expected_normalized_frame_hash: &str,
+) {
+    if !minimization.requested {
+        return;
+    }
+    if minimization.input_path.is_empty() {
+        minimization.validation_status = "skipped".to_string();
+        minimization.validation_verdict = "no_candidate_manual_review".to_string();
+        if minimization.validation_summary.is_empty()
+            || minimization.validation_summary == "validation command not configured"
+        {
+            minimization.validation_summary =
+                "no minimized candidate path available for validation".to_string();
+        }
+        return;
+    }
+
+    let Ok(template) = std::env::var("TOOL_MINIMIZER_VALIDATE_CMD") else {
+        return;
+    };
+    if template.trim().is_empty() {
+        return;
+    }
+
+    let candidate_path = Path::new(&minimization.input_path);
+    if !candidate_path.is_file() {
+        minimization.validation_status = "skipped".to_string();
+        minimization.validation_verdict = "no_candidate_manual_review".to_string();
+        minimization.validation_summary =
+            "minimized candidate path does not exist for validation".to_string();
+        return;
+    }
+
+    let command = render_minimizer_validation_command(
+        &template,
+        &minimization.input_path,
+        &poc.path,
+        target,
+        triage_id,
+    );
+    let timeout_sec = std::env::var("TOOL_MINIMIZER_VALIDATE_TIMEOUT_SEC")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(60);
+    let timeout_available = command_exists("timeout");
+
+    let output = if timeout_available {
+        let mut cmd = command_with_core_dump_off("timeout");
+        cmd.arg(format!("{}s", timeout_sec))
+            .arg("bash")
+            .arg("-lc")
+            .arg(&command)
+            .output()
+    } else {
+        Command::new("bash").arg("-lc").arg(&command).output()
+    };
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let evidence = validation_output_text(&out);
+            let candidate_hash = extract_validation_normalized_frame_hash(&evidence);
+            let candidate_verdict = extract_validation_verdict(&evidence);
+            minimization.validation_status = "checked".to_string();
+            minimization.validation_normalized_frame_hash = candidate_hash.clone();
+            minimization.validation_verdict = classify_minimization_validation(
+                expected_normalized_frame_hash,
+                &candidate_hash,
+                &candidate_verdict,
+            );
+            minimization.validation_summary = build_minimization_validation_summary(
+                expected_normalized_frame_hash,
+                &candidate_hash,
+                &candidate_verdict,
+            );
+        }
+        Ok(out) => {
+            minimization.validation_status = "failed".to_string();
+            minimization.validation_verdict = "validation_failed_manual_review".to_string();
+            minimization.validation_summary =
+                external_validation_error(&out, timeout_available, timeout_sec);
+        }
+        Err(e) => {
+            minimization.validation_status = "failed".to_string();
+            minimization.validation_verdict = "validation_failed_manual_review".to_string();
+            minimization.validation_summary = format!("validation_command_spawn_failed:{e}");
+        }
+    }
+}
+
+fn render_minimizer_validation_command(
+    template: &str,
+    input_path: &str,
+    original_input_path: &str,
+    target: &str,
+    triage_id: u128,
+) -> String {
+    template
+        .replace("{input}", &shell_quote_arg(input_path))
+        .replace("{original_input}", &shell_quote_arg(original_input_path))
+        .replace("{target}", &shell_quote_arg(target))
+        .replace("{triage_id}", &triage_id.to_string())
+}
+
+fn validation_output_text(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    format!("{stdout}\n{stderr}")
+}
+
+fn extract_validation_normalized_frame_hash(output: &str) -> String {
+    extract_json_string_literal(output, "normalized_frame_hash")
+        .or_else(|| extract_prefixed_value(output, "normalized_frame_hash"))
+        .unwrap_or_default()
+}
+
+fn extract_validation_verdict(output: &str) -> String {
+    extract_json_string_literal(output, "verdict")
+        .or_else(|| extract_prefixed_value(output, "verdict"))
+        .unwrap_or_default()
+}
+
+fn extract_prefixed_value(output: &str, key: &str) -> Option<String> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix(&format!("{key}:")) {
+            return Some(value.trim().to_string());
+        }
+        if let Some(value) = trimmed.strip_prefix(&format!("{key}=")) {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}
+
+fn classify_minimization_validation(
+    expected_hash: &str,
+    candidate_hash: &str,
+    candidate_verdict: &str,
+) -> String {
+    if !candidate_verdict.is_empty() && candidate_verdict != "reproduced" {
+        return "not_reproduced_manual_review".to_string();
+    }
+    if expected_hash.is_empty() {
+        return "missing_original_signature_manual_review".to_string();
+    }
+    if candidate_hash.is_empty() {
+        return "missing_candidate_signature_manual_review".to_string();
+    }
+    if candidate_hash == expected_hash {
+        "same_signature_candidate".to_string()
+    } else {
+        "different_signature_manual_review".to_string()
+    }
+}
+
+fn build_minimization_validation_summary(
+    expected_hash: &str,
+    candidate_hash: &str,
+    candidate_verdict: &str,
+) -> String {
+    let verdict = if candidate_verdict.is_empty() {
+        "not_reported"
+    } else {
+        candidate_verdict
+    };
+    let candidate = if candidate_hash.is_empty() {
+        "not_reported"
+    } else {
+        candidate_hash
+    };
+    format!(
+        "manual confirmation required; original_hash={}; candidate_hash={}; candidate_verdict={}",
+        if expected_hash.is_empty() {
+            "not_reported"
+        } else {
+            expected_hash
+        },
+        candidate,
+        verdict
+    )
+}
+
+fn external_validation_error(
+    output: &std::process::Output,
+    timeout_available: bool,
+    timeout_sec: u64,
+) -> String {
+    if timeout_available && output.status.code() == Some(124) {
+        return format!("validation_command_timeout:{timeout_sec}s");
+    }
+    let code = output
+        .status
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "signal".to_string());
+    let detail = validation_output_text(output);
+    let detail = detail.trim();
+    if detail.is_empty() {
+        format!("validation_command_failed:exit_code={code}")
+    } else {
+        format!(
+            "validation_command_failed:exit_code={code}:{}",
+            single_line_excerpt(detail, 240)
+        )
     }
 }
 
