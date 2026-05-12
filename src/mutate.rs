@@ -3,7 +3,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::target::{target_label, TargetKind};
+use crate::{
+    common::sha256_file,
+    json_utils::json_escape,
+    target::{target_label, TargetKind},
+};
 
 struct MutationReport {
     strategy: &'static str,
@@ -16,6 +20,18 @@ struct BatchMutationReport {
     requested: usize,
     input_count: usize,
     out_dir: String,
+    manifest_path: String,
+}
+
+struct MutationManifestEntry {
+    index: usize,
+    source_seed: String,
+    output_path: String,
+    strategy: &'static str,
+    mutation_seed: u64,
+    input_size: usize,
+    output_size: usize,
+    output_sha256: String,
 }
 
 #[derive(Clone, Copy)]
@@ -134,7 +150,7 @@ fn run_batch_mutation(
     fs::create_dir_all(out_dir)
         .map_err(|e| format!("failed to create out_dir '{}': {e}", out_dir.display()))?;
 
-    let mut generated = 0usize;
+    let mut entries = Vec::new();
     for idx in 0..count {
         let input = &inputs[idx % inputs.len()];
         let bytes = fs::read(input)
@@ -144,18 +160,32 @@ fn run_batch_mutation(
         }
 
         let mut rng = DeterministicRng::new(seed.wrapping_add(idx as u64));
-        let (mutated, _strategy) = mutate_onnx_wire(&bytes, &mut rng);
+        let mutation_seed = seed.wrapping_add(idx as u64);
+        let (mutated, strategy) = mutate_onnx_wire(&bytes, &mut rng);
+        let output_size = mutated.len();
         let out = out_dir.join(format!("mut-onnx-{:06}.onnx", idx + 1));
         fs::write(&out, mutated)
             .map_err(|e| format!("failed to write output '{}': {e}", out.display()))?;
-        generated += 1;
+        let output_sha256 = sha256_file(&out).unwrap_or_else(|_| "unavailable".to_string());
+        entries.push(MutationManifestEntry {
+            index: idx + 1,
+            source_seed: input.display().to_string(),
+            output_path: out.display().to_string(),
+            strategy,
+            mutation_seed,
+            input_size: bytes.len(),
+            output_size,
+            output_sha256,
+        });
     }
 
+    let manifest_path = write_mutation_manifest(out_dir, target, input_dir, count, seed, &entries)?;
     let report = BatchMutationReport {
-        generated,
+        generated: entries.len(),
         requested: count,
         input_count: inputs.len(),
         out_dir: out_dir.display().to_string(),
+        manifest_path: manifest_path.display().to_string(),
     };
     print_batch_mutation_report(target, input_dir, seed, &report);
     Ok(())
@@ -339,6 +369,51 @@ fn write_output(out: &Path, bytes: &[u8]) -> Result<(), String> {
     fs::write(out, bytes).map_err(|e| format!("failed to write output '{}': {e}", out.display()))
 }
 
+fn write_mutation_manifest(
+    out_dir: &Path,
+    target: &TargetKind,
+    input_dir: &Path,
+    requested: usize,
+    seed: u64,
+    entries: &[MutationManifestEntry],
+) -> Result<PathBuf, String> {
+    let entries_json = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "    {{\"index\": {}, \"source_seed\": \"{}\", \"output_path\": \"{}\", \"strategy\": \"{}\", \"mutation_seed\": {}, \"input_size\": {}, \"output_size\": {}, \"output_sha256\": \"{}\"}}",
+                entry.index,
+                json_escape(&entry.source_seed),
+                json_escape(&entry.output_path),
+                json_escape(entry.strategy),
+                entry.mutation_seed,
+                entry.input_size,
+                entry.output_size,
+                json_escape(&entry.output_sha256)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let body = format!(
+        "{{\n  \"schema_version\": \"1.0\",\n  \"target\": \"{}\",\n  \"mode\": \"batch\",\n  \"input_dir\": \"{}\",\n  \"out_dir\": \"{}\",\n  \"requested\": {},\n  \"generated\": {},\n  \"seed\": {},\n  \"entries\": [\n{}\n  ]\n}}\n",
+        json_escape(target_label(target)),
+        json_escape(&input_dir.display().to_string()),
+        json_escape(&out_dir.display().to_string()),
+        requested,
+        entries.len(),
+        seed,
+        entries_json
+    );
+    let manifest_path = out_dir.join("manifest.json");
+    fs::write(&manifest_path, body).map_err(|e| {
+        format!(
+            "failed to write mutation manifest '{}': {e}",
+            manifest_path.display()
+        )
+    })?;
+    Ok(manifest_path)
+}
+
 fn print_mutation_report(
     target: &TargetKind,
     input: &Path,
@@ -371,4 +446,5 @@ fn print_batch_mutation_report(
     println!("requested: {}", report.requested);
     println!("generated: {}", report.generated);
     println!("input_count: {}", report.input_count);
+    println!("manifest: {}", report.manifest_path);
 }

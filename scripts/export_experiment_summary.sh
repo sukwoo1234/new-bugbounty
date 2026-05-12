@@ -92,7 +92,13 @@ cp "$METRICS_FILE" "$OUT_DIR/metrics-latest.json"
 
 SEED_COUNT=0
 if [[ -d "$CORPUS_DIR" ]]; then
-  SEED_COUNT="$(find "$CORPUS_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')"
+  SEED_COUNT="$(find "$CORPUS_DIR" -maxdepth 1 -type f -name "*.${TARGET}" | wc -l | tr -d ' ')"
+fi
+MUTATION_MANIFEST=""
+MUTATED_COUNT=0
+if [[ -f "$CORPUS_DIR/manifest.json" ]]; then
+  MUTATION_MANIFEST="$CORPUS_DIR/manifest.json"
+  MUTATED_COUNT="$(jq -r '.generated // 0' "$MUTATION_MANIFEST")"
 fi
 
 TOTAL_RUNS="$(jq -r '.total // 0' "$OUT_DIR/run-status.json")"
@@ -160,6 +166,8 @@ cat > "$OUT_DIR/manifest.json" <<EOF
   "duration_hours": ${DURATION_HOURS},
   "corpus_dir": "${CORPUS_DIR}",
   "seed_count": ${SEED_COUNT},
+  "mutation_manifest": "${MUTATION_MANIFEST}",
+  "mutated_count": ${MUTATED_COUNT},
   "git_commit": "${GIT_COMMIT}",
   "started_at": "${STARTED_AT}",
   "finished_at": "${FINISHED_AT}",
@@ -179,6 +187,8 @@ cat > "$OUT_DIR/summary.md" <<EOF
 - duration_hours: \`${DURATION_HOURS}\`
 - corpus_dir: \`${CORPUS_DIR}\`
 - seed_count: \`${SEED_COUNT}\`
+- mutation_manifest: \`${MUTATION_MANIFEST:-none}\`
+- mutated_count: \`${MUTATED_COUNT}\`
 - workers: \`${WORKERS}\`
 - timeout_sec: \`${TIMEOUT_SEC}\`
 - restart_limit: \`${RESTART_LIMIT}\`
@@ -208,6 +218,7 @@ cat > "$OUT_DIR/summary.md" <<EOF
 - \`valid_crash_ratio\` is calculated from \`data/triage/triage-*/summary.json\` when \`valid_crash_ratio_source=triage_summary_scan\`.
 - \`valid_crash_ratio\` is \`not_available\` when there are no triage crash observations to support the ratio.
 - \`unique_signature_count\` counts only \`reproduced\` triage rows, using \`normalized_frame_hash\` when present and falling back to legacy \`signature_top1\`.
+- \`mutation_manifest\` is recorded when the experiment corpus directory contains a mutator-generated \`manifest.json\`.
 - Legacy metrics without \`valid_crash_ratio_status\` are reported as \`legacy_unverified\`.
 EOF
 

@@ -332,6 +332,8 @@
 - Batch mode는 `tool mutate --target onnx --input-dir <dir> --out-dir <dir> --count <n>` 형태로 mutated corpus를 생성한다.
 - Batch output은 `tool run --target onnx --corpus-dir <mutated-dir>` 입력으로 사용할 수 있어야 한다.
 - Mutated corpus는 실행 산출물이며 장기 보관 시 experiment manifest/hash와 함께 압축 보관한다.
+- Batch mode는 `manifest.json`에 source seed, output path, mutation strategy, mutation seed, output sha256을 기록한다.
+- Experiment export는 corpus dir에 mutator `manifest.json`이 있으면 `mutation_manifest`, `mutated_count`를 기록한다.
 
 ## 14) Ops Convenience Options
 - 장시간 운영 시 corpus distillation 옵션을 둔다
