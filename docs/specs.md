@@ -322,6 +322,14 @@
 ### 13.5) Post-1.0 Strategy
 - 포맷만 고정하고 구현 라이브러리는 추후 재선정
 
+### 13.6) ONNX Structure-Aware Mutator PoC
+- 목표 CLI: `tool mutate --target onnx --input <seed.onnx> --out <mutated.onnx>`
+- Phase 7-1 mutator는 protobuf wire-level shallow mutation PoC다.
+- 우선순위는 length-delimited field payload 변형, varint field payload 변형, byte flip fallback 순서다.
+- 변형은 구조를 완전히 보존한다고 확정하지 않으며, 결과는 harness/run 단계에서 별도 검증한다.
+- 이 단계는 정량 우월성 증명이나 real coverage feedback loop가 아니다.
+- GGUF/SafeTensors structure-aware mutator는 별도 후속 작업으로 분리한다.
+
 ## 14) Ops Convenience Options
 - 장시간 운영 시 corpus distillation 옵션을 둔다
 - tool merge로 LibFuzzer -merge=1 작업을 주기 실행한다

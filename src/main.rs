@@ -11,6 +11,7 @@ mod coverage;
 mod dashboard_data;
 mod json_utils;
 mod metrics;
+mod mutate;
 mod report;
 mod retention;
 mod run;
@@ -61,6 +62,7 @@ enum Commands {
     Export(ExportArgs),
     PrepareTarget(PrepareTargetArgs),
     Harness(HarnessArgs),
+    Mutate(MutateArgs),
 }
 
 #[derive(Args)]
@@ -260,6 +262,25 @@ struct HarnessArgs {
     input: PathBuf,
 }
 
+#[derive(Args)]
+struct MutateArgs {
+    /// Target type: gguf | onnx | safetensors
+    #[arg(long, value_enum)]
+    target: TargetKind,
+
+    /// Input seed file path
+    #[arg(long)]
+    input: PathBuf,
+
+    /// Output mutated file path
+    #[arg(long)]
+    out: PathBuf,
+
+    /// Deterministic mutation seed
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let app_paths = match AppPaths::prepare(&cli.data_dir, &cli.seeds_dir) {
@@ -431,6 +452,14 @@ fn main() -> ExitCode {
             if let Err(err) = target::run_harness(&args.target, &args.input) {
                 eprintln!("[{E_HARNESS_EXEC}] harness error: {err}");
                 return ExitCode::from(4);
+            }
+        }
+        Commands::Mutate(args) => {
+            if let Err(err) =
+                mutate::run_mutate_pipeline(&args.target, &args.input, &args.out, args.seed)
+            {
+                eprintln!("[{E_CONFIG_PREPARE}] mutate error: {err}");
+                return ExitCode::from(2);
             }
         }
     }
