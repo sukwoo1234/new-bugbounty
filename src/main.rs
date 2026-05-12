@@ -268,13 +268,25 @@ struct MutateArgs {
     #[arg(long, value_enum)]
     target: TargetKind,
 
-    /// Input seed file path
+    /// Input seed file path for single-file mode
     #[arg(long)]
-    input: PathBuf,
+    input: Option<PathBuf>,
 
-    /// Output mutated file path
+    /// Output mutated file path for single-file mode
     #[arg(long)]
-    out: PathBuf,
+    out: Option<PathBuf>,
+
+    /// Input seed directory for batch mode
+    #[arg(long)]
+    input_dir: Option<PathBuf>,
+
+    /// Output directory for batch mode
+    #[arg(long)]
+    out_dir: Option<PathBuf>,
+
+    /// Number of mutated files to generate in batch mode
+    #[arg(long, default_value_t = 1)]
+    count: usize,
 
     /// Deterministic mutation seed
     #[arg(long, default_value_t = 1)]
@@ -455,9 +467,15 @@ fn main() -> ExitCode {
             }
         }
         Commands::Mutate(args) => {
-            if let Err(err) =
-                mutate::run_mutate_pipeline(&args.target, &args.input, &args.out, args.seed)
-            {
+            if let Err(err) = mutate::run_mutate_pipeline(
+                &args.target,
+                args.input.as_deref(),
+                args.out.as_deref(),
+                args.input_dir.as_deref(),
+                args.out_dir.as_deref(),
+                args.count,
+                args.seed,
+            ) {
                 eprintln!("[{E_CONFIG_PREPARE}] mutate error: {err}");
                 return ExitCode::from(2);
             }

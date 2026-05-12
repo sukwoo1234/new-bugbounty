@@ -329,6 +329,9 @@
 - 변형은 구조를 완전히 보존한다고 확정하지 않으며, 결과는 harness/run 단계에서 별도 검증한다.
 - 이 단계는 정량 우월성 증명이나 real coverage feedback loop가 아니다.
 - GGUF/SafeTensors structure-aware mutator는 별도 후속 작업으로 분리한다.
+- Batch mode는 `tool mutate --target onnx --input-dir <dir> --out-dir <dir> --count <n>` 형태로 mutated corpus를 생성한다.
+- Batch output은 `tool run --target onnx --corpus-dir <mutated-dir>` 입력으로 사용할 수 있어야 한다.
+- Mutated corpus는 실행 산출물이며 장기 보관 시 experiment manifest/hash와 함께 압축 보관한다.
 
 ## 14) Ops Convenience Options
 - 장시간 운영 시 corpus distillation 옵션을 둔다

@@ -1,4 +1,7 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::target::{target_label, TargetKind};
 
@@ -6,6 +9,13 @@ struct MutationReport {
     strategy: &'static str,
     input_size: usize,
     output_size: usize,
+}
+
+struct BatchMutationReport {
+    generated: usize,
+    requested: usize,
+    input_count: usize,
+    out_dir: String,
 }
 
 #[derive(Clone, Copy)]
@@ -45,8 +55,11 @@ impl DeterministicRng {
 
 pub(crate) fn run_mutate_pipeline(
     target: &TargetKind,
-    input: &Path,
-    out: &Path,
+    input: Option<&Path>,
+    out: Option<&Path>,
+    input_dir: Option<&Path>,
+    out_dir: Option<&Path>,
+    count: usize,
     seed: u64,
 ) -> Result<(), String> {
     if !matches!(target, TargetKind::Onnx) {
@@ -55,6 +68,25 @@ pub(crate) fn run_mutate_pipeline(
             target_label(target)
         ));
     }
+
+    match (input, out, input_dir, out_dir) {
+        (Some(input), Some(out), None, None) => run_single_mutation(target, input, out, seed),
+        (None, None, Some(input_dir), Some(out_dir)) => {
+            run_batch_mutation(target, input_dir, out_dir, count, seed)
+        }
+        _ => Err(
+            "choose exactly one mode: --input <file> --out <file> or --input-dir <dir> --out-dir <dir>"
+                .to_string(),
+        ),
+    }
+}
+
+fn run_single_mutation(
+    target: &TargetKind,
+    input: &Path,
+    out: &Path,
+    seed: u64,
+) -> Result<(), String> {
     if !input.exists() || !input.is_file() {
         return Err(format!("input is invalid: {}", input.display()));
     }
@@ -76,6 +108,78 @@ pub(crate) fn run_mutate_pipeline(
     };
     print_mutation_report(target, input, out, seed, &report);
     Ok(())
+}
+
+fn run_batch_mutation(
+    target: &TargetKind,
+    input_dir: &Path,
+    out_dir: &Path,
+    count: usize,
+    seed: u64,
+) -> Result<(), String> {
+    if count == 0 {
+        return Err("count must be >= 1".to_string());
+    }
+    if !input_dir.exists() || !input_dir.is_dir() {
+        return Err(format!("input_dir is invalid: {}", input_dir.display()));
+    }
+
+    let inputs = collect_onnx_inputs(input_dir)?;
+    if inputs.is_empty() {
+        return Err(format!(
+            "no .onnx input files found in {}",
+            input_dir.display()
+        ));
+    }
+    fs::create_dir_all(out_dir)
+        .map_err(|e| format!("failed to create out_dir '{}': {e}", out_dir.display()))?;
+
+    let mut generated = 0usize;
+    for idx in 0..count {
+        let input = &inputs[idx % inputs.len()];
+        let bytes = fs::read(input)
+            .map_err(|e| format!("failed to read input '{}': {e}", input.display()))?;
+        if bytes.is_empty() {
+            continue;
+        }
+
+        let mut rng = DeterministicRng::new(seed.wrapping_add(idx as u64));
+        let (mutated, _strategy) = mutate_onnx_wire(&bytes, &mut rng);
+        let out = out_dir.join(format!("mut-onnx-{:06}.onnx", idx + 1));
+        fs::write(&out, mutated)
+            .map_err(|e| format!("failed to write output '{}': {e}", out.display()))?;
+        generated += 1;
+    }
+
+    let report = BatchMutationReport {
+        generated,
+        requested: count,
+        input_count: inputs.len(),
+        out_dir: out_dir.display().to_string(),
+    };
+    print_batch_mutation_report(target, input_dir, seed, &report);
+    Ok(())
+}
+
+fn collect_onnx_inputs(input_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut inputs = Vec::new();
+    for entry in fs::read_dir(input_dir)
+        .map_err(|e| format!("failed to read input_dir '{}': {e}", input_dir.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read input_dir entry: {e}"))?;
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("onnx"))
+                .unwrap_or(false)
+        {
+            inputs.push(path);
+        }
+    }
+    inputs.sort();
+    Ok(inputs)
 }
 
 fn mutate_onnx_wire(bytes: &[u8], rng: &mut DeterministicRng) -> (Vec<u8>, &'static str) {
@@ -250,4 +354,21 @@ fn print_mutation_report(
     println!("strategy: {}", report.strategy);
     println!("input_size: {}", report.input_size);
     println!("output_size: {}", report.output_size);
+}
+
+fn print_batch_mutation_report(
+    target: &TargetKind,
+    input_dir: &Path,
+    seed: u64,
+    report: &BatchMutationReport,
+) {
+    println!("[mutate] done");
+    println!("mode: batch");
+    println!("target: {}", target_label(target));
+    println!("input_dir: {}", input_dir.display());
+    println!("out_dir: {}", report.out_dir);
+    println!("seed: {seed}");
+    println!("requested: {}", report.requested);
+    println!("generated: {}", report.generated);
+    println!("input_count: {}", report.input_count);
 }
