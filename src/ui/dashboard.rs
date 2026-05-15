@@ -343,16 +343,16 @@ fn valid_crash_ratio_json_literal(s: &DashboardSnapshot) -> &str {
 }
 
 fn artifact_status_label(id_text: &str) -> &'static str {
-    if id_text == "none" {
-        "none"
+    if id_text == "not_available" {
+        "not_available"
     } else {
         "present"
     }
 }
 
 fn id_to_route_link(id_text: &str, route: &str) -> String {
-    if id_text == "none" {
-        return "none".to_string();
+    if id_text == "not_available" {
+        return "not_available".to_string();
     }
     format!(
         "<a class=\"path-link\" href=\"/{}/{}\">{}</a>",
@@ -363,8 +363,8 @@ fn id_to_route_link(id_text: &str, route: &str) -> String {
 }
 
 fn file_link(path: &str, label: &str) -> String {
-    if path == "none" {
-        return "none".to_string();
+    if path == "not_available" {
+        return "not_available".to_string();
     }
     let href = format!("/file?path={}", url_encode(path));
     format!(
@@ -376,7 +376,7 @@ fn file_link(path: &str, label: &str) -> String {
 
 fn render_recent_triage_rows(ids: &[String]) -> String {
     if ids.is_empty() {
-        return "<li>none</li>".to_string();
+        return "<li>not_available</li>".to_string();
     }
     ids.iter()
         .map(|id| {
@@ -391,7 +391,7 @@ fn render_recent_triage_rows(ids: &[String]) -> String {
 
 fn render_recent_report_rows(ids: &[String]) -> String {
     if ids.is_empty() {
-        return "<li>none</li>".to_string();
+        return "<li>not_available</li>".to_string();
     }
     ids.iter()
         .map(|id| {
@@ -412,7 +412,7 @@ fn render_recent_report_rows(ids: &[String]) -> String {
 
 fn render_recent_coverage_rows(ids: &[String]) -> String {
     if ids.is_empty() {
-        return "<li>none</li>".to_string();
+        return "<li>not_available</li>".to_string();
     }
     ids.iter()
         .map(|id| {
@@ -502,13 +502,13 @@ fn render_logs_section(
     limit: usize,
     error: &str,
 ) -> (String, String) {
-    if source_path == "none" {
+    if source_path == "not_available" {
         return (
             "no log available".to_string(),
             "<p class=\"chart-empty\">no log available</p>".to_string(),
         );
     }
-    if error != "none" {
+    if error != "not_available" {
         return (
             format!(
                 "source: {} <span class=\"hint\">read error: {}</span>",
@@ -546,17 +546,17 @@ fn render_logs_section(
 }
 
 fn render_suggested_commands(s: &DashboardSnapshot) -> String {
-    let target = if s.latest_run_target != "none" {
+    let target = if s.latest_run_target != "not_available" {
         s.latest_run_target.as_str()
     } else {
         "<target>"
     };
-    let latest_run = if s.latest_run != "none" {
+    let latest_run = if s.latest_run != "not_available" {
         s.latest_run.as_str()
     } else {
         "<run-id>"
     };
-    let latest_triage = if s.latest_triage != "none" {
+    let latest_triage = if s.latest_triage != "not_available" {
         s.latest_triage.as_str()
     } else {
         "<triage-id>"

@@ -181,18 +181,18 @@ pub(crate) fn collect_dashboard_snapshot(
     let coverage_count = count_prefixed_dirs(&coverage_root, "coverage-")?;
 
     let latest_run =
-        latest_prefixed_dir_name(&runs_root, "run-")?.unwrap_or_else(|| "none".to_string());
+        latest_prefixed_dir_name(&runs_root, "run-")?.unwrap_or_else(|| "not_available".to_string());
     let latest_triage =
-        latest_prefixed_dir_name(&triage_root, "triage-")?.unwrap_or_else(|| "none".to_string());
+        latest_prefixed_dir_name(&triage_root, "triage-")?.unwrap_or_else(|| "not_available".to_string());
     let latest_report =
-        latest_prefixed_dir_name(&reports_root, "report-")?.unwrap_or_else(|| "none".to_string());
+        latest_prefixed_dir_name(&reports_root, "report-")?.unwrap_or_else(|| "not_available".to_string());
     let latest_coverage = latest_prefixed_dir_name(&coverage_root, "coverage-")?
-        .unwrap_or_else(|| "none".to_string());
+        .unwrap_or_else(|| "not_available".to_string());
     let recent_triage_ids = recent_prefixed_dir_names(&triage_root, "triage-", 8)?;
     let recent_report_ids = recent_prefixed_dir_names(&reports_root, "report-", 8)?;
     let recent_coverage_ids = recent_prefixed_dir_names(&coverage_root, "coverage-", 8)?;
-    let latest_coverage_summary = if latest_coverage == "none" {
-        "none".to_string()
+    let latest_coverage_summary = if latest_coverage == "not_available" {
+        "not_available".to_string()
     } else {
         coverage_root
             .join(&latest_coverage)
@@ -211,10 +211,10 @@ pub(crate) fn collect_dashboard_snapshot(
         (view.id, view.path, view.summary, view.updated_at)
     } else {
         (
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
         )
     };
 
@@ -239,13 +239,13 @@ pub(crate) fn collect_dashboard_snapshot(
         )
     } else {
         (
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
         )
     };
 
@@ -260,15 +260,15 @@ pub(crate) fn collect_dashboard_snapshot(
         (view.target, view.total, view.success, view.failed, view.timeout)
     } else {
         (
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
         )
     };
-    let latest_run_backend = "none".to_string();
-    let run_state = if latest_run == "none" {
+    let latest_run_backend = "not_available".to_string();
+    let run_state = if latest_run == "not_available" {
         "no_run".to_string()
     } else {
         "finished".to_string()
@@ -277,7 +277,7 @@ pub(crate) fn collect_dashboard_snapshot(
     let latest_triage_summary = read_latest_triage_summary(&triage_root, &latest_triage)?;
     let (latest_triage_verdict, latest_triage_target) = match latest_triage_summary {
         Some(view) => (view.verdict, view.target),
-        None => ("none".to_string(), "none".to_string()),
+        None => ("not_available".to_string(), "not_available".to_string()),
     };
 
     let latest_run_updated_at = dir_mtime_unix_string(&runs_root, &latest_run);
@@ -297,7 +297,7 @@ pub(crate) fn collect_dashboard_snapshot(
     let logs_view = collect_latest_log_tail(&runs_root, &latest_run, LOG_TAIL_LIMIT);
     let (logs_source_path, logs_tail, logs_total_lines, logs_error) = match logs_view {
         Ok(view) => (view.source_path, view.tail, view.total_lines, view.error),
-        Err(message) => ("none".to_string(), Vec::new(), 0, message),
+        Err(message) => ("not_available".to_string(), Vec::new(), 0, message),
     };
 
     let mut successful_runs_per_hour_proxy = "0".to_string();
@@ -364,16 +364,16 @@ pub(crate) fn collect_dashboard_snapshot(
         let report = report_dir
             .as_ref()
             .map(|dir| dir.join("report.md").display().to_string())
-            .unwrap_or_else(|| "none".to_string());
+            .unwrap_or_else(|| "not_available".to_string());
         let manifest = report_dir
             .as_ref()
             .map(|dir| dir.join("manifest.json").display().to_string())
             .filter(|path| Path::new(path).exists())
-            .unwrap_or_else(|| "none".to_string());
+            .unwrap_or_else(|| "not_available".to_string());
         let bundle = report_dir
             .as_ref()
             .and_then(|dir| find_evidence_bundle_path(dir))
-            .unwrap_or_else(|| "none".to_string());
+            .unwrap_or_else(|| "not_available".to_string());
         let severity = report_dir
             .as_ref()
             .and_then(|dir| read_report_severity_fields(dir).ok())
@@ -398,22 +398,22 @@ pub(crate) fn collect_dashboard_snapshot(
         )
     } else {
         (
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
-            "none".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
         )
     };
 
@@ -561,7 +561,7 @@ fn find_latest_reproduced_triage(
         let input =
             extract_json_string_literal(&summary, "input").unwrap_or_else(|| "unknown".to_string());
         let signature_top1 =
-            extract_first_signature_top1(&summary).unwrap_or_else(|| "none".to_string());
+            extract_first_signature_top1(&summary).unwrap_or_else(|| "not_available".to_string());
         let crash_kind = extract_json_string_literal(&summary, "crash_kind")
             .unwrap_or_else(|| "unknown".to_string());
         let sanitizer = extract_json_string_literal(&summary, "sanitizer")
@@ -652,11 +652,11 @@ fn read_report_severity_fields(report_dir: &Path) -> Result<ReportSeverityView, 
         .map_err(|e| format!("failed to read '{}': {e}", meta_path.display()))?;
     Ok(ReportSeverityView {
         suggested_severity: extract_json_string_literal(&meta, "suggested_severity")
-            .unwrap_or_else(|| "none".to_string()),
+            .unwrap_or_else(|| "not_available".to_string()),
         confidence: extract_json_string_literal(&meta, "severity_confidence")
-            .unwrap_or_else(|| "none".to_string()),
+            .unwrap_or_else(|| "not_available".to_string()),
         suggested_cvss_vector: extract_json_string_literal(&meta, "suggested_cvss_vector")
-            .unwrap_or_else(|| "none".to_string()),
+            .unwrap_or_else(|| "not_available".to_string()),
     })
 }
 
@@ -884,12 +884,12 @@ fn consider_mutation_manifest(
         .unwrap_or_else(|| "unknown".to_string());
     let count = extract_json_number_literal(&body, "generated")
         .or_else(|| extract_json_number_literal(&body, "requested"))
-        .unwrap_or_else(|| "none".to_string());
+        .unwrap_or_else(|| "not_available".to_string());
     let source_corpus = extract_json_string_literal(&body, "input_dir")
-        .unwrap_or_else(|| "none".to_string());
+        .unwrap_or_else(|| "not_available".to_string());
     let validation_summary = extract_json_string_literal(&body, "validation_status")
         .or_else(|| extract_json_string_literal(&body, "validation_summary"))
-        .unwrap_or_else(|| "none".to_string());
+        .unwrap_or_else(|| "not_available".to_string());
     let view = LatestMutationView {
         batch_id: batch_name.to_string(),
         manifest_path: manifest_path.display().to_string(),
@@ -922,28 +922,28 @@ fn collect_latest_log_tail(
     latest_run_name: &str,
     tail_limit: usize,
 ) -> Result<LatestLogTailView, String> {
-    if latest_run_name == "none" {
+    if latest_run_name == "not_available" {
         return Ok(LatestLogTailView {
-            source_path: "none".to_string(),
+            source_path: "not_available".to_string(),
             tail: Vec::new(),
             total_lines: 0,
-            error: "none".to_string(),
+            error: "not_available".to_string(),
         });
     }
     let logs_dir = runs_root.join(latest_run_name).join("logs");
     if !logs_dir.is_dir() {
         return Ok(LatestLogTailView {
-            source_path: "none".to_string(),
+            source_path: "not_available".to_string(),
             tail: Vec::new(),
             total_lines: 0,
-            error: "none".to_string(),
+            error: "not_available".to_string(),
         });
     }
     let selected = match select_most_recent_log(&logs_dir) {
         Ok(opt) => opt,
         Err(message) => {
             return Ok(LatestLogTailView {
-                source_path: "none".to_string(),
+                source_path: "not_available".to_string(),
                 tail: Vec::new(),
                 total_lines: 0,
                 error: message,
@@ -952,10 +952,10 @@ fn collect_latest_log_tail(
     };
     let Some(log_path) = selected else {
         return Ok(LatestLogTailView {
-            source_path: "none".to_string(),
+            source_path: "not_available".to_string(),
             tail: Vec::new(),
             total_lines: 0,
-            error: "none".to_string(),
+            error: "not_available".to_string(),
         });
     };
     let total_lines = match count_log_lines(&log_path) {
@@ -984,7 +984,7 @@ fn collect_latest_log_tail(
         source_path: log_path.display().to_string(),
         tail,
         total_lines,
-        error: "none".to_string(),
+        error: "not_available".to_string(),
     })
 }
 
@@ -1042,17 +1042,17 @@ fn read_log_tail(path: &Path, tail_limit: usize) -> Result<Vec<String>, String> 
 fn system_time_to_unix_string(t: SystemTime) -> String {
     t.duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())
-        .unwrap_or_else(|_| "none".to_string())
+        .unwrap_or_else(|_| "not_available".to_string())
 }
 
 fn dir_mtime_unix_string(root: &Path, dir_name: &str) -> String {
-    if dir_name == "none" {
-        return "none".to_string();
+    if dir_name == "not_available" {
+        return "not_available".to_string();
     }
     let path = root.join(dir_name);
     entry_mtime(&path)
         .map(system_time_to_unix_string)
-        .unwrap_or_else(|| "none".to_string())
+        .unwrap_or_else(|| "not_available".to_string())
 }
 
 struct LatestTriageSummaryView {
@@ -1064,7 +1064,7 @@ fn read_latest_triage_summary(
     triage_root: &Path,
     triage_dir_name: &str,
 ) -> Result<Option<LatestTriageSummaryView>, String> {
-    if triage_dir_name == "none" {
+    if triage_dir_name == "not_available" {
         return Ok(None);
     }
     let summary_path = triage_root.join(triage_dir_name).join("summary.json");
@@ -1075,9 +1075,9 @@ fn read_latest_triage_summary(
         .map_err(|e| format!("failed to read '{}': {e}", summary_path.display()))?;
     Ok(Some(LatestTriageSummaryView {
         verdict: extract_json_string_literal(&body, "verdict")
-            .unwrap_or_else(|| "none".to_string()),
+            .unwrap_or_else(|| "not_available".to_string()),
         target: extract_json_string_literal(&body, "target")
-            .unwrap_or_else(|| "none".to_string()),
+            .unwrap_or_else(|| "not_available".to_string()),
     }))
 }
 
@@ -1093,7 +1093,7 @@ pub(crate) fn read_run_status(
     runs_root: &Path,
     run_dir_name: &str,
 ) -> Result<Option<RunStatusView>, String> {
-    if run_dir_name == "none" {
+    if run_dir_name == "not_available" {
         return Ok(None);
     }
     let status_path = runs_root.join(run_dir_name).join("status.json");
@@ -1104,15 +1104,15 @@ pub(crate) fn read_run_status(
         .map_err(|e| format!("failed to read '{}': {e}", status_path.display()))?;
     Ok(Some(RunStatusView {
         target: extract_json_string_literal(&body, "target")
-            .unwrap_or_else(|| "none".to_string()),
+            .unwrap_or_else(|| "not_available".to_string()),
         total: extract_json_number_literal(&body, "total")
-            .unwrap_or_else(|| "none".to_string()),
+            .unwrap_or_else(|| "not_available".to_string()),
         success: extract_json_number_literal(&body, "success")
-            .unwrap_or_else(|| "none".to_string()),
+            .unwrap_or_else(|| "not_available".to_string()),
         failed: extract_json_number_literal(&body, "failed")
-            .unwrap_or_else(|| "none".to_string()),
+            .unwrap_or_else(|| "not_available".to_string()),
         timeout: extract_json_number_literal(&body, "timeout")
-            .unwrap_or_else(|| "none".to_string()),
+            .unwrap_or_else(|| "not_available".to_string()),
     }))
 }
 

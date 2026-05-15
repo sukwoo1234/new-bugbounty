@@ -90,13 +90,13 @@ pub(crate) fn collect_recent_triage_verdicts(
     for id in recent_ids {
         let summary_path = triage_root.join(&id).join("summary.json");
         if !summary_path.is_file() {
-            rows.push((id, "none".to_string()));
+            rows.push((id, "not_available".to_string()));
             continue;
         }
         let body = fs::read_to_string(&summary_path)
             .map_err(|e| format!("failed to read '{}': {e}", summary_path.display()))?;
         let verdict = extract_json_string_literal(&body, "verdict")
-            .unwrap_or_else(|| "none".to_string());
+            .unwrap_or_else(|| "not_available".to_string());
         rows.push((id, verdict));
     }
     rows.reverse();

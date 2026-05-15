@@ -558,7 +558,7 @@
   if (replayStart && replayInput) {
     replayStart.addEventListener("click", async () => {
       const input = (replayInput.textContent || "").trim();
-      if (!input || input === "none") {
+      if (!input || input === "not_available") {
         showToast("error", "no replay input available");
         return;
       }
@@ -656,7 +656,7 @@
 
   if (viewSignatureBtn && latestSignatureText) {
     viewSignatureBtn.addEventListener("click", () => {
-      openModal("Latest Signature Top1", latestSignatureText.textContent || "none");
+      openModal("Latest Signature Top1", latestSignatureText.textContent || "not_available");
     });
   }
   if (uiModalClose) {
