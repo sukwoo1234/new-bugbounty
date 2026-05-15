@@ -10,6 +10,7 @@ mod common;
 mod coverage;
 mod dashboard_charts;
 mod dashboard_data;
+mod dashboard_discovery;
 mod json_utils;
 mod metrics;
 mod mutate;

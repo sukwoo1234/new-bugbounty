@@ -1,9 +1,8 @@
 use std::fs;
 use std::path::Path;
 
-use crate::dashboard_data::{
-    read_run_status, recent_prefixed_dir_names, RunStatusView, TriageVerdictCounts,
-};
+use crate::dashboard_data::{read_run_status, RunStatusView, TriageVerdictCounts};
+use crate::dashboard_discovery::recent_prefixed_dir_names;
 use crate::json_utils::extract_json_string_literal;
 
 pub(crate) const CHART_SERIES_LIMIT: usize = 30;
