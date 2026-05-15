@@ -8,6 +8,7 @@ use clap::{Args, Parser, Subcommand};
 
 mod common;
 mod coverage;
+mod dashboard_charts;
 mod dashboard_data;
 mod json_utils;
 mod metrics;

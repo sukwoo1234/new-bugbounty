@@ -4,6 +4,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::dashboard_charts::{
+    build_crash_intake_series, build_run_result_series, build_throughput_proxy_series,
+    build_triage_verdict_breakdown, collect_recent_run_statuses, collect_recent_triage_verdicts,
+    CrashIntakePoint, RunResultPoint, ThroughputProxyPoint, VerdictBreakdownPoint,
+    CHART_SERIES_LIMIT,
+};
+
 use crate::common::{artifact_contract, has_ext, now_unix, AppPaths};
 use crate::json_utils::{
     extract_first_signature_top1, extract_json_number_literal, extract_json_string_literal,
@@ -85,6 +92,12 @@ pub(crate) struct DashboardSnapshot {
     pub(crate) latest_report_updated_at: String,
     pub(crate) latest_export_updated_at: String,
     pub(crate) latest_mutation_updated_at: String,
+    pub(crate) latest_mutation_source_corpus: String,
+    pub(crate) latest_mutation_validation_summary: String,
+    pub(crate) run_result_series: Vec<RunResultPoint>,
+    pub(crate) throughput_proxy_series: Vec<ThroughputProxyPoint>,
+    pub(crate) crash_intake_series: Vec<CrashIntakePoint>,
+    pub(crate) triage_verdict_breakdown: Vec<VerdictBreakdownPoint>,
 }
 
 struct ReproducedTriageView {
@@ -204,6 +217,8 @@ pub(crate) fn collect_dashboard_snapshot(
         latest_mutation_target,
         latest_mutation_count,
         latest_mutation_updated_at,
+        latest_mutation_source_corpus,
+        latest_mutation_validation_summary,
     ) = if let Some(view) = latest_mutation {
         (
             view.batch_id,
@@ -211,9 +226,13 @@ pub(crate) fn collect_dashboard_snapshot(
             view.target,
             view.count,
             view.updated_at,
+            view.source_corpus,
+            view.validation_summary,
         )
     } else {
         (
+            "none".to_string(),
+            "none".to_string(),
             "none".to_string(),
             "none".to_string(),
             "none".to_string(),
@@ -258,6 +277,14 @@ pub(crate) fn collect_dashboard_snapshot(
     let latest_report_updated_at = dir_mtime_unix_string(&reports_root, &latest_report);
 
     let triage_verdicts = count_triage_verdicts(&triage_root)?;
+
+    let recent_run_statuses = collect_recent_run_statuses(&runs_root, CHART_SERIES_LIMIT)?;
+    let run_result_series = build_run_result_series(&recent_run_statuses);
+    let throughput_proxy_series = build_throughput_proxy_series(&recent_run_statuses);
+    let recent_triage_verdicts =
+        collect_recent_triage_verdicts(&triage_root, CHART_SERIES_LIMIT)?;
+    let crash_intake_series = build_crash_intake_series(&recent_triage_verdicts);
+    let triage_verdict_breakdown = build_triage_verdict_breakdown(&triage_verdicts);
 
     let mut successful_runs_per_hour_proxy = "0".to_string();
     let mut new_crashes_per_hour = "0".to_string();
@@ -450,6 +477,12 @@ pub(crate) fn collect_dashboard_snapshot(
         latest_report_updated_at,
         latest_export_updated_at,
         latest_mutation_updated_at,
+        latest_mutation_source_corpus,
+        latest_mutation_validation_summary,
+        run_result_series,
+        throughput_proxy_series,
+        crash_intake_series,
+        triage_verdict_breakdown,
     })
 }
 
@@ -664,7 +697,7 @@ fn latest_prefixed_dir_name(root: &Path, prefix: &str) -> Result<Option<String>,
     Ok(latest.map(|(_, n)| n))
 }
 
-fn recent_prefixed_dir_names(
+pub(crate) fn recent_prefixed_dir_names(
     root: &Path,
     prefix: &str,
     limit: usize,
@@ -710,6 +743,8 @@ struct LatestMutationView {
     target: String,
     count: String,
     updated_at: String,
+    source_corpus: String,
+    validation_summary: String,
 }
 
 fn find_latest_export(exports_root: &Path) -> Result<Option<LatestExportView>, String> {
@@ -832,12 +867,19 @@ fn consider_mutation_manifest(
     let count = extract_json_number_literal(&body, "generated")
         .or_else(|| extract_json_number_literal(&body, "requested"))
         .unwrap_or_else(|| "none".to_string());
+    let source_corpus = extract_json_string_literal(&body, "input_dir")
+        .unwrap_or_else(|| "none".to_string());
+    let validation_summary = extract_json_string_literal(&body, "validation_status")
+        .or_else(|| extract_json_string_literal(&body, "validation_summary"))
+        .unwrap_or_else(|| "none".to_string());
     let view = LatestMutationView {
         batch_id: batch_name.to_string(),
         manifest_path: manifest_path.display().to_string(),
         target,
         count,
         updated_at: system_time_to_unix_string(mtime),
+        source_corpus,
+        validation_summary,
     };
     match best {
         Some((best_mtime, _)) if mtime <= *best_mtime => {}
@@ -892,15 +934,15 @@ fn read_latest_triage_summary(
     }))
 }
 
-struct RunStatusView {
-    target: String,
-    total: String,
-    success: String,
-    failed: String,
-    timeout: String,
+pub(crate) struct RunStatusView {
+    pub(crate) target: String,
+    pub(crate) total: String,
+    pub(crate) success: String,
+    pub(crate) failed: String,
+    pub(crate) timeout: String,
 }
 
-fn read_run_status(
+pub(crate) fn read_run_status(
     runs_root: &Path,
     run_dir_name: &str,
 ) -> Result<Option<RunStatusView>, String> {
@@ -928,14 +970,14 @@ fn read_run_status(
 }
 
 #[derive(Default)]
-struct TriageVerdictCounts {
-    reproduced: usize,
-    manual_review: usize,
-    not_reproduced: usize,
-    timeout: usize,
-    infra_oom: usize,
-    flaky: usize,
-    other: usize,
+pub(crate) struct TriageVerdictCounts {
+    pub(crate) reproduced: usize,
+    pub(crate) manual_review: usize,
+    pub(crate) not_reproduced: usize,
+    pub(crate) timeout: usize,
+    pub(crate) infra_oom: usize,
+    pub(crate) flaky: usize,
+    pub(crate) other: usize,
 }
 
 fn count_triage_verdicts(triage_root: &Path) -> Result<TriageVerdictCounts, String> {

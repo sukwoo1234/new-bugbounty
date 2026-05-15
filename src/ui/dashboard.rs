@@ -1,3 +1,6 @@
+use crate::dashboard_charts::{
+    CrashIntakePoint, RunResultPoint, ThroughputProxyPoint, VerdictBreakdownPoint,
+};
 use crate::dashboard_data::DashboardSnapshot;
 use crate::json_utils::{html_escape, json_escape, url_encode};
 
@@ -5,7 +8,7 @@ const DASHBOARD_HTML_TEMPLATE: &str = include_str!("../../templates/dashboard.ht
 
 pub(crate) fn render_dashboard_json(s: &DashboardSnapshot) -> String {
     format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"config\": {{\n    \"data_dir\": \"{}\",\n    \"seeds_dir\": \"{}\"\n  }},\n  \"snapshot\": {{\n    \"runs_count\": {},\n    \"triage_count\": {},\n    \"report_count\": {},\n    \"coverage_count\": {},\n    \"latest_run\": \"{}\",\n    \"latest_triage\": \"{}\",\n    \"latest_report\": \"{}\",\n    \"latest_coverage\": \"{}\"\n  }},\n  \"metrics\": {{\n    \"exists\": {},\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"{}\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {}\n  }},\n  \"seeds\": {{\n    \"onnx_count\": {},\n    \"gguf_count\": {},\n    \"safetensors_count\": {},\n    \"total_count\": {}\n  }},\n  \"crash\": {{\n    \"latest_valid_triage\": \"{}\",\n    \"input\": \"{}\",\n    \"signature_top1\": \"{}\",\n    \"crash_kind\": \"{}\",\n    \"sanitizer\": \"{}\",\n    \"signal\": \"{}\",\n    \"normalized_frame_hash\": \"{}\",\n    \"signature_basis\": \"{}\",\n    \"crash_summary\": \"{}\",\n    \"summary\": \"{}\",\n    \"report\": \"{}\",\n    \"manifest\": \"{}\",\n    \"bundle\": \"{}\",\n    \"suggested_severity\": \"{}\",\n    \"severity_confidence\": \"{}\",\n    \"suggested_cvss_vector\": \"{}\"\n  }},\n  \"coverage\": {{\n    \"latest\": \"{}\",\n    \"summary\": \"{}\"\n  }},\n  \"exports\": {{\n    \"latest_id\": \"{}\",\n    \"latest_path\": \"{}\",\n    \"latest_summary\": \"{}\",\n    \"latest_updated_at\": \"{}\"\n  }},\n  \"mutation\": {{\n    \"latest_batch_id\": \"{}\",\n    \"latest_manifest_path\": \"{}\",\n    \"latest_target\": \"{}\",\n    \"latest_count\": \"{}\",\n    \"latest_updated_at\": \"{}\"\n  }},\n  \"run_state\": {{\n    \"state\": \"{}\",\n    \"target\": \"{}\",\n    \"backend\": \"{}\",\n    \"total\": \"{}\",\n    \"success\": \"{}\",\n    \"failed\": \"{}\",\n    \"timeout\": \"{}\",\n    \"updated_at\": \"{}\"\n  }},\n  \"latest_triage\": {{\n    \"verdict\": \"{}\",\n    \"target\": \"{}\",\n    \"updated_at\": \"{}\"\n  }},\n  \"latest_report\": {{\n    \"updated_at\": \"{}\"\n  }},\n  \"triage_verdicts\": {{\n    \"reproduced\": {},\n    \"manual_review\": {},\n    \"not_reproduced\": {},\n    \"timeout\": {},\n    \"infra_oom\": {},\n    \"flaky\": {},\n    \"other\": {}\n  }}\n}}",
+        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"config\": {{\n    \"data_dir\": \"{}\",\n    \"seeds_dir\": \"{}\"\n  }},\n  \"snapshot\": {{\n    \"runs_count\": {},\n    \"triage_count\": {},\n    \"report_count\": {},\n    \"coverage_count\": {},\n    \"latest_run\": \"{}\",\n    \"latest_triage\": \"{}\",\n    \"latest_report\": \"{}\",\n    \"latest_coverage\": \"{}\"\n  }},\n  \"metrics\": {{\n    \"exists\": {},\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"{}\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {}\n  }},\n  \"seeds\": {{\n    \"onnx_count\": {},\n    \"gguf_count\": {},\n    \"safetensors_count\": {},\n    \"total_count\": {}\n  }},\n  \"crash\": {{\n    \"latest_valid_triage\": \"{}\",\n    \"input\": \"{}\",\n    \"signature_top1\": \"{}\",\n    \"crash_kind\": \"{}\",\n    \"sanitizer\": \"{}\",\n    \"signal\": \"{}\",\n    \"normalized_frame_hash\": \"{}\",\n    \"signature_basis\": \"{}\",\n    \"crash_summary\": \"{}\",\n    \"summary\": \"{}\",\n    \"report\": \"{}\",\n    \"manifest\": \"{}\",\n    \"bundle\": \"{}\",\n    \"suggested_severity\": \"{}\",\n    \"severity_confidence\": \"{}\",\n    \"suggested_cvss_vector\": \"{}\"\n  }},\n  \"coverage\": {{\n    \"latest\": \"{}\",\n    \"summary\": \"{}\"\n  }},\n  \"exports\": {{\n    \"latest_id\": \"{}\",\n    \"latest_path\": \"{}\",\n    \"latest_summary\": \"{}\",\n    \"latest_updated_at\": \"{}\"\n  }},\n  \"mutation\": {{\n    \"latest_batch_id\": \"{}\",\n    \"latest_manifest_path\": \"{}\",\n    \"latest_target\": \"{}\",\n    \"latest_count\": \"{}\",\n    \"latest_updated_at\": \"{}\",\n    \"latest_source_corpus\": \"{}\",\n    \"latest_validation_summary\": \"{}\"\n  }},\n  \"run_state\": {{\n    \"state\": \"{}\",\n    \"target\": \"{}\",\n    \"backend\": \"{}\",\n    \"total\": \"{}\",\n    \"success\": \"{}\",\n    \"failed\": \"{}\",\n    \"timeout\": \"{}\",\n    \"updated_at\": \"{}\"\n  }},\n  \"latest_triage\": {{\n    \"verdict\": \"{}\",\n    \"target\": \"{}\",\n    \"updated_at\": \"{}\"\n  }},\n  \"latest_report\": {{\n    \"updated_at\": \"{}\"\n  }},\n  \"triage_verdicts\": {{\n    \"reproduced\": {},\n    \"manual_review\": {},\n    \"not_reproduced\": {},\n    \"timeout\": {},\n    \"infra_oom\": {},\n    \"flaky\": {},\n    \"other\": {}\n  }}\n}}",
         s.generated_at,
         json_escape(&s.data_dir),
         json_escape(&s.seeds_dir),
@@ -58,6 +61,8 @@ pub(crate) fn render_dashboard_json(s: &DashboardSnapshot) -> String {
         json_escape(&s.latest_mutation_target),
         json_escape(&s.latest_mutation_count),
         json_escape(&s.latest_mutation_updated_at),
+        json_escape(&s.latest_mutation_source_corpus),
+        json_escape(&s.latest_mutation_validation_summary),
         json_escape(&s.run_state),
         json_escape(&s.latest_run_target),
         json_escape(&s.latest_run_backend),
@@ -105,6 +110,10 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
     let latest_report_status = artifact_status_label(&s.latest_report);
     let latest_export_status = artifact_status_label(&s.latest_export_id);
     let latest_mutation_status = artifact_status_label(&s.latest_mutation_batch_id);
+    let run_result_chart = render_run_result_chart(&s.run_result_series);
+    let throughput_proxy_chart = render_throughput_proxy_chart(&s.throughput_proxy_series);
+    let crash_intake_chart = render_crash_intake_chart(&s.crash_intake_series);
+    let verdict_breakdown_chart = render_verdict_breakdown_chart(&s.triage_verdict_breakdown);
     let recent_triage_rows = render_recent_triage_rows(&s.recent_triage_ids);
     let recent_report_rows = render_recent_report_rows(&s.recent_report_ids);
     let recent_coverage_rows = render_recent_coverage_rows(&s.recent_coverage_ids);
@@ -222,6 +231,18 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
         .replace("{{latest_report_status}}", latest_report_status)
         .replace("{{latest_export_status}}", latest_export_status)
         .replace("{{latest_mutation_status}}", latest_mutation_status)
+        .replace(
+            "{{latest_mutation_source_corpus}}",
+            &html_escape(&s.latest_mutation_source_corpus),
+        )
+        .replace(
+            "{{latest_mutation_validation_summary}}",
+            &html_escape(&s.latest_mutation_validation_summary),
+        )
+        .replace("{{run_result_chart}}", &run_result_chart)
+        .replace("{{throughput_proxy_chart}}", &throughput_proxy_chart)
+        .replace("{{crash_intake_chart}}", &crash_intake_chart)
+        .replace("{{verdict_breakdown_chart}}", &verdict_breakdown_chart)
         .replace(
             "{{successful_runs_per_hour_proxy}}",
             &html_escape(&s.successful_runs_per_hour_proxy),
@@ -391,4 +412,100 @@ fn render_recent_coverage_rows(ids: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+fn render_run_result_chart(points: &[RunResultPoint]) -> String {
+    if points.is_empty() {
+        return "<p class=\"chart-empty\">no recent runs</p>".to_string();
+    }
+    let max = points
+        .iter()
+        .map(|p| p.success + p.failed + p.timeout)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let rows = points
+        .iter()
+        .map(|p| {
+            let s_pct = (p.success as f64 / max as f64) * 100.0;
+            let f_pct = (p.failed as f64 / max as f64) * 100.0;
+            let t_pct = (p.timeout as f64 / max as f64) * 100.0;
+            format!(
+                "<div class=\"chart-row\"><span class=\"chart-label\">{}</span><div class=\"chart-bar-track\"><div class=\"chart-bar chart-bar-success\" style=\"width:{:.1}%\"></div><div class=\"chart-bar chart-bar-failed\" style=\"width:{:.1}%\"></div><div class=\"chart-bar chart-bar-timeout\" style=\"width:{:.1}%\"></div></div><span class=\"chart-value\">s={} f={} t={}</span></div>",
+                html_escape(&p.run_id), s_pct, f_pct, t_pct, p.success, p.failed, p.timeout
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    format!("<div class=\"chart-stack\">{rows}</div><div class=\"chart-legend\"><span class=\"chart-bar-success\"></span>success <span class=\"chart-bar-failed\"></span>failed <span class=\"chart-bar-timeout\"></span>timeout</div>")
+}
+
+fn render_throughput_proxy_chart(points: &[ThroughputProxyPoint]) -> String {
+    if points.is_empty() {
+        return "<p class=\"chart-empty\">no recent runs</p>".to_string();
+    }
+    let max = points.iter().map(|p| p.success).max().unwrap_or(1).max(1);
+    let rows = points
+        .iter()
+        .map(|p| {
+            let pct = (p.success as f64 / max as f64) * 100.0;
+            format!(
+                "<div class=\"chart-row\"><span class=\"chart-label\">{}</span><div class=\"chart-bar-track\"><div class=\"chart-bar chart-bar-success\" style=\"width:{:.1}%\"></div></div><span class=\"chart-value\">{}</span></div>",
+                html_escape(&p.run_id), pct, p.success
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    format!("<div class=\"chart-stack\">{rows}</div>")
+}
+
+fn render_crash_intake_chart(points: &[CrashIntakePoint]) -> String {
+    if points.is_empty() {
+        return "<p class=\"chart-empty\">no recent triages</p>".to_string();
+    }
+    let cells = points
+        .iter()
+        .map(|p| {
+            let class = match p.verdict.as_str() {
+                "reproduced" => "chart-bar-success",
+                "manual_review" => "chart-bar-warn",
+                "timeout" | "infra_oom" => "chart-bar-timeout",
+                "flaky" => "chart-bar-failed",
+                _ => "chart-bar-neutral",
+            };
+            format!(
+                "<div class=\"chart-strip-cell {class}\" title=\"{} verdict={}\"></div>",
+                html_escape(&p.triage_id),
+                html_escape(&p.verdict)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    format!("<div class=\"chart-strip\">{cells}</div><div class=\"chart-legend\"><span class=\"chart-bar-success\"></span>reproduced <span class=\"chart-bar-warn\"></span>manual_review <span class=\"chart-bar-timeout\"></span>timeout/infra_oom <span class=\"chart-bar-failed\"></span>flaky <span class=\"chart-bar-neutral\"></span>not_reproduced/other</div>")
+}
+
+fn render_verdict_breakdown_chart(points: &[VerdictBreakdownPoint]) -> String {
+    if points.is_empty() {
+        return "<p class=\"chart-empty\">no triage verdicts</p>".to_string();
+    }
+    let max = points.iter().map(|p| p.count).max().unwrap_or(1).max(1);
+    let rows = points
+        .iter()
+        .map(|p| {
+            let pct = (p.count as f64 / max as f64) * 100.0;
+            let class = match p.verdict.as_str() {
+                "reproduced" => "chart-bar-success",
+                "manual_review" => "chart-bar-warn",
+                "timeout" | "infra_oom" => "chart-bar-timeout",
+                "flaky" => "chart-bar-failed",
+                _ => "chart-bar-neutral",
+            };
+            format!(
+                "<div class=\"chart-row\"><span class=\"chart-label\">{}</span><div class=\"chart-bar-track\"><div class=\"chart-bar {class}\" style=\"width:{:.1}%\"></div></div><span class=\"chart-value\">{}</span></div>",
+                html_escape(&p.verdict), pct, p.count
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    format!("<div class=\"chart-stack\">{rows}</div>")
 }

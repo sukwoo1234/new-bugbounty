@@ -45,7 +45,29 @@
 
 <section class="panel">
 <div class="panel-head">Operational Charts</div>
-<p class="hint">Default charts (Run Result Trend, Throughput Proxy, Crash Intake Trend, Triage Verdict Breakdown) land in A2 third commit. <code>_proxy</code> metrics never claim true coverage.</p>
+<p class="hint"><code>_proxy</code> metric names never claim true coverage. Charts use the most recent 30 records as a fixed window.</p>
+<div class="chart-grid">
+<div class="chart-block">
+<div class="chart-title">Run Result Trend</div>
+<p class="chart-hint">Recent 30 runs, success/failed/timeout from <code>data/runs/&lt;run-id&gt;/status.json</code>.</p>
+{{run_result_chart}}
+</div>
+<div class="chart-block">
+<div class="chart-title">Throughput Proxy</div>
+<p class="chart-hint">successful_runs_per_hour_proxy — recent 30 runs, success-count proxy. Time-window definition deferred to future-backlog "Chart time window definition".</p>
+{{throughput_proxy_chart}}
+</div>
+<div class="chart-block">
+<div class="chart-title">Crash Intake Trend</div>
+<p class="chart-hint">new_crashes_per_hour — recent 30 triage verdicts plotted in order, time-window definition deferred to future-backlog "Chart time window definition".</p>
+{{crash_intake_chart}}
+</div>
+<div class="chart-block">
+<div class="chart-title">Triage Verdict Breakdown</div>
+<p class="chart-hint">All-time triage verdict distribution across <code>data/triage</code>.</p>
+{{verdict_breakdown_chart}}
+</div>
+</div>
 <div class="rows">
 <div class="row"><div class="m">successful_runs_per_hour_proxy</div><div>{{successful_runs_per_hour_proxy}} <span class="hint">success-count throughput proxy, not true coverage</span></div></div>
 <div class="row"><div class="m">new_crashes_per_hour</div><div>{{new_crashes_per_hour}} <span class="hint">triage crash-observed inputs</span></div></div>
@@ -77,9 +99,11 @@
 <div class="rows">
 <div class="row"><div class="m">mutated_count</div><div>{{latest_mutation_count}}</div></div>
 <div class="row"><div class="m">target</div><div>{{latest_mutation_target}}</div></div>
+<div class="row"><div class="m">source corpus</div><div>{{latest_mutation_source_corpus}}</div></div>
 <div class="row"><div class="m">manifest</div><div>{{latest_mutation_html}}</div></div>
+<div class="row"><div class="m">latest mutation time</div><div>{{latest_mutation_updated_at}}</div></div>
+<div class="row"><div class="m">validation summary</div><div>{{latest_mutation_validation_summary}} <span class="hint">mutator must write <code>validation_status</code>; see future-backlog "Mutated Corpus validation dependency note"</span></div></div>
 </div>
-<p class="hint">Source corpus, latest mutation time, and validation summary fields land in A2 third commit. Validation summary depends on the mutator writing <code>validation_status</code>; see future-backlog.</p>
 </section>
 
 <section class="panel">
