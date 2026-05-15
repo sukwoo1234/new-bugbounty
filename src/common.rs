@@ -37,6 +37,9 @@ pub(crate) struct ArtifactContract {
     pub(crate) reports_root: PathBuf,
     pub(crate) coverage_root: PathBuf,
     pub(crate) metrics_root: PathBuf,
+    pub(crate) exports_root: PathBuf,
+    pub(crate) mutated_root: PathBuf,
+    pub(crate) legacy_mutated_root: PathBuf,
 }
 
 pub(crate) fn artifact_contract(app_paths: &AppPaths) -> ArtifactContract {
@@ -50,6 +53,9 @@ pub(crate) fn artifact_contract_for_data_dir(data_dir: &Path) -> ArtifactContrac
         reports_root: data_dir.join("reports"),
         coverage_root: data_dir.join("coverage"),
         metrics_root: data_dir.join("metrics"),
+        exports_root: data_dir.join("exports"),
+        mutated_root: data_dir.join("corpus").join("mutated"),
+        legacy_mutated_root: data_dir.join("mutated"),
     }
 }
 

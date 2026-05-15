@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 use crate::common::{artifact_contract, has_ext, now_unix, AppPaths};
@@ -56,6 +57,12 @@ pub(crate) struct DashboardSnapshot {
     pub(crate) coverage_count: usize,
     pub(crate) latest_coverage: String,
     pub(crate) latest_coverage_summary: String,
+    pub(crate) latest_export_id: String,
+    pub(crate) latest_export_path: String,
+    pub(crate) latest_export_summary: String,
+    pub(crate) latest_mutation_batch_id: String,
+    pub(crate) latest_mutation_manifest_path: String,
+    pub(crate) latest_mutation_target: String,
 }
 
 struct ReproducedTriageView {
@@ -107,6 +114,9 @@ pub(crate) fn collect_dashboard_snapshot(
     let triage_root = artifact.triage_root;
     let reports_root = artifact.reports_root;
     let coverage_root = artifact.coverage_root;
+    let exports_root = artifact.exports_root;
+    let mutated_root = artifact.mutated_root;
+    let legacy_mutated_root = artifact.legacy_mutated_root;
     let metrics_path = artifact.metrics_root.join("latest.json");
     let seeds_onnx_count = count_seed_files(
         &default_seed_dir(app_paths, &TargetKind::Onnx),
@@ -147,6 +157,30 @@ pub(crate) fn collect_dashboard_snapshot(
             .display()
             .to_string()
     };
+
+    let latest_export = find_latest_export(&exports_root)?;
+    let (latest_export_id, latest_export_path, latest_export_summary) =
+        if let Some(view) = latest_export {
+            (view.id, view.path, view.summary)
+        } else {
+            (
+                "none".to_string(),
+                "none".to_string(),
+                "none".to_string(),
+            )
+        };
+
+    let latest_mutation = find_latest_mutation_manifest(&mutated_root, &legacy_mutated_root)?;
+    let (latest_mutation_batch_id, latest_mutation_manifest_path, latest_mutation_target) =
+        if let Some(view) = latest_mutation {
+            (view.batch_id, view.manifest_path, view.target)
+        } else {
+            (
+                "none".to_string(),
+                "none".to_string(),
+                "none".to_string(),
+            )
+        };
 
     let mut successful_runs_per_hour_proxy = "0".to_string();
     let mut new_crashes_per_hour = "0".to_string();
@@ -311,6 +345,12 @@ pub(crate) fn collect_dashboard_snapshot(
         coverage_count,
         latest_coverage,
         latest_coverage_summary,
+        latest_export_id,
+        latest_export_path,
+        latest_export_summary,
+        latest_mutation_batch_id,
+        latest_mutation_manifest_path,
+        latest_mutation_target,
     })
 }
 
@@ -556,4 +596,148 @@ fn recent_prefixed_dir_names(
     }
     rows.sort_by(|a, b| b.0.cmp(&a.0));
     Ok(rows.into_iter().take(limit).map(|(_, name)| name).collect())
+}
+
+struct LatestExportView {
+    id: String,
+    path: String,
+    summary: String,
+}
+
+struct LatestMutationView {
+    batch_id: String,
+    manifest_path: String,
+    target: String,
+}
+
+fn find_latest_export(exports_root: &Path) -> Result<Option<LatestExportView>, String> {
+    if !exports_root.exists() {
+        return Ok(None);
+    }
+    let mut best: Option<(SystemTime, LatestExportView)> = None;
+    for entry in fs::read_dir(exports_root)
+        .map_err(|e| format!("failed to read '{}': {e}", exports_root.display()))?
+    {
+        let entry = entry
+            .map_err(|e| format!("failed to read entry in '{}': {e}", exports_root.display()))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let mtime = entry_mtime(&path).unwrap_or(SystemTime::UNIX_EPOCH);
+        let manifest_path = path.join("manifest.json");
+        let summary = if manifest_path.is_file() {
+            manifest_path.display().to_string()
+        } else {
+            "no_manifest".to_string()
+        };
+        let view = LatestExportView {
+            id: name.to_string(),
+            path: path.display().to_string(),
+            summary,
+        };
+        match &best {
+            Some((best_mtime, _)) if mtime <= *best_mtime => {}
+            _ => best = Some((mtime, view)),
+        }
+    }
+    Ok(best.map(|(_, v)| v))
+}
+
+fn find_latest_mutation_manifest(
+    primary_root: &Path,
+    legacy_root: &Path,
+) -> Result<Option<LatestMutationView>, String> {
+    if let Some(view) = scan_mutation_tree(primary_root)? {
+        return Ok(Some(view));
+    }
+    scan_mutation_tree(legacy_root)
+}
+
+fn scan_mutation_tree(root: &Path) -> Result<Option<LatestMutationView>, String> {
+    if !root.exists() {
+        return Ok(None);
+    }
+    let mut best: Option<(SystemTime, LatestMutationView)> = None;
+    for top_entry in
+        fs::read_dir(root).map_err(|e| format!("failed to read '{}': {e}", root.display()))?
+    {
+        let top_entry = top_entry
+            .map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
+        let top_path = top_entry.path();
+        if !top_path.is_dir() {
+            continue;
+        }
+        let top_name = top_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let manifest_at_top = top_path.join("manifest.json");
+        if manifest_at_top.is_file() {
+            consider_mutation_manifest(&manifest_at_top, &top_path, &top_name, None, &mut best)?;
+            continue;
+        }
+        for sub_entry in fs::read_dir(&top_path)
+            .map_err(|e| format!("failed to read '{}': {e}", top_path.display()))?
+        {
+            let sub_entry = sub_entry
+                .map_err(|e| format!("failed to read entry in '{}': {e}", top_path.display()))?;
+            let sub_path = sub_entry.path();
+            if !sub_path.is_dir() {
+                continue;
+            }
+            let manifest = sub_path.join("manifest.json");
+            if !manifest.is_file() {
+                continue;
+            }
+            let sub_name = sub_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            consider_mutation_manifest(
+                &manifest,
+                &sub_path,
+                &sub_name,
+                Some(top_name.clone()),
+                &mut best,
+            )?;
+        }
+    }
+    Ok(best.map(|(_, v)| v))
+}
+
+fn consider_mutation_manifest(
+    manifest_path: &Path,
+    batch_dir: &Path,
+    batch_name: &str,
+    parent_target_hint: Option<String>,
+    best: &mut Option<(SystemTime, LatestMutationView)>,
+) -> Result<(), String> {
+    let mtime = entry_mtime(manifest_path)
+        .or_else(|| entry_mtime(batch_dir))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let body = fs::read_to_string(manifest_path)
+        .map_err(|e| format!("failed to read '{}': {e}", manifest_path.display()))?;
+    let target = extract_json_string_literal(&body, "target")
+        .or(parent_target_hint)
+        .unwrap_or_else(|| "unknown".to_string());
+    let view = LatestMutationView {
+        batch_id: batch_name.to_string(),
+        manifest_path: manifest_path.display().to_string(),
+        target,
+    };
+    match best {
+        Some((best_mtime, _)) if mtime <= *best_mtime => {}
+        _ => *best = Some((mtime, view)),
+    }
+    Ok(())
+}
+
+fn entry_mtime(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).and_then(|m| m.modified()).ok()
 }
