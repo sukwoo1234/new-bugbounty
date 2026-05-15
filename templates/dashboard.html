@@ -25,20 +25,9 @@
 
 <div class="tab-panels">
 <section class="tab-panel is-active" data-panel="dashboard" role="tabpanel">
-<section class="panel control-panel">
-<div class="panel-head">Run Control</div>
-<div class="rows">
-<div class="row"><div class="m">Status</div><div><span id="control-badge" class="badge badge-neutral">unknown</span></div></div>
-<div class="row"><div class="m">Timer</div><div id="control-timer" class="mono-text">00:00:00</div></div>
-<div class="row"><div class="m">Progress</div><div><div class="progress-track"><div id="control-progress" class="progress-fill"></div></div><p id="control-progress-text" class="progress-text">0%</p></div></div>
-<div class="row"><div class="m">Actions</div><div class="control-actions"><button id="control-start" class="ctl-btn" type="button">Start</button><button id="control-stop" class="ctl-btn ctl-btn-stop" type="button">Stop</button></div></div>
-<div class="row"><div class="m">Loop log</div><div id="control-log" class="mono-text">-</div></div>
-<div class="row"><div class="m">Message</div><div id="control-msg" class="mono-text">ready</div></div>
-</div>
-</section>
 
-<div class="sections">
-<div class="left">
+<section class="panel">
+<div class="panel-head">Overview</div>
 <div class="grid">
 <div class="card"><div class="k">Runs</div><div class="v">{{runs_count}}</div></div>
 <div class="card"><div class="k">Triage</div><div class="v">{{triage_count}}</div></div>
@@ -46,16 +35,19 @@
 <div class="card"><div class="k">Coverage Jobs</div><div class="v">{{coverage_count}}</div></div>
 <div class="card"><div class="k">Metrics</div><div class="v">{{metrics_badge}}</div></div>
 </div>
+<div class="rows">
+<div class="row"><div class="m">Latest run target</div><div>{{latest_run_target}}</div></div>
+<div class="row"><div class="m">Latest run backend</div><div>{{latest_run_backend}} <span class="hint">backend field is not written into status.json yet; see future-backlog</span></div></div>
+<div class="row"><div class="m">Latest run result</div><div>total={{latest_run_total}} | success={{latest_run_success}} | failed={{latest_run_failed}} | timeout={{latest_run_timeout}}</div></div>
+<div class="row"><div class="m">Triage verdicts</div><div>reproduced={{triage_verdict_reproduced}} | manual_review={{triage_verdict_manual_review}} | not_reproduced={{triage_verdict_not_reproduced}} | timeout={{triage_verdict_timeout}} | infra_oom={{triage_verdict_infra_oom}} | flaky={{triage_verdict_flaky}} | other={{triage_verdict_other}}</div></div>
+</div>
+<p class="hint">Overview card grid lands in A2 second commit.</p>
+</section>
 
 <section class="panel">
-<div class="panel-head">Runtime Snapshot</div>
+<div class="panel-head">Operational Charts</div>
+<p class="hint">Default charts (Run Result Trend, Throughput Proxy, Crash Intake Trend, Triage Verdict Breakdown) land in A2 third commit. <code>_proxy</code> metrics never claim true coverage.</p>
 <div class="rows">
-<div class="row"><div class="m">Latest run</div><div>{{latest_run_html}}</div></div>
-<div class="row"><div class="m">Latest triage</div><div>{{latest_triage_html}}</div></div>
-<div class="row"><div class="m">Latest report</div><div>{{latest_report_html}}</div></div>
-<div class="row"><div class="m">Latest export</div><div>{{latest_export_html}} <span class="hint">summary={{latest_export_summary_html}}</span></div></div>
-<div class="row"><div class="m">Latest mutation manifest</div><div>{{latest_mutation_html}} <span class="hint">target={{latest_mutation_target}}</span></div></div>
-<div class="row"><div class="m">Latest coverage</div><div>{{latest_coverage_html}}</div></div>
 <div class="row"><div class="m">successful_runs_per_hour_proxy</div><div>{{successful_runs_per_hour_proxy}} <span class="hint">success-count throughput proxy, not true coverage</span></div></div>
 <div class="row"><div class="m">new_crashes_per_hour</div><div>{{new_crashes_per_hour}} <span class="hint">triage crash-observed inputs</span></div></div>
 <div class="row"><div class="m">valid_crash_ratio</div><div>{{valid_crash_ratio}} <span class="hint">source={{valid_crash_ratio_source}}, valid={{valid_crashes}}, total={{total_crashes}}, summaries={{triage_summary_count}}</span></div></div>
@@ -64,51 +56,38 @@
 </section>
 
 <section class="panel">
-<div class="panel-head">Operational Table</div>
-<div class="table-wrap">
-<table class="ops-table">
-<thead>
-<tr><th>Item</th><th>Value</th><th>Latest</th></tr>
-</thead>
-<tbody>
-<tr><td>Runs</td><td>{{runs_count}}</td><td>{{latest_run_html}}</td></tr>
-<tr><td>Triage</td><td>{{triage_count}}</td><td>{{latest_triage_html}}</td></tr>
-<tr><td>Reports</td><td>{{report_count}}</td><td>{{latest_report_html}}</td></tr>
-<tr><td>Coverage</td><td>{{coverage_count}}</td><td>{{latest_coverage_html}}</td></tr>
-<tr><td>Metrics</td><td>{{metrics_badge}}</td><td>successful_runs_proxy={{successful_runs_per_hour_proxy}} | new_crashes={{new_crashes_per_hour}}</td></tr>
-</tbody>
-</table>
-</div>
-</section>
-
-<section class="panel">
-<div class="panel-head">Operational Metric Trend (Recent 30)</div>
-<div class="chart-wrap">
-<canvas id="metric-chart" width="760" height="220"></canvas>
-</div>
-<p id="chart-meta" class="chart-meta">waiting for proxy/error metric points...</p>
-</section>
-</div>
-
-<div class="right">
-<section class="panel">
-<div class="panel-head">Crash Detail</div>
+<div class="panel-head">Latest Artifacts</div>
+<p class="hint">Single artifact table lands in A2 second commit. Phase A1 row layout is shown below as a temporary view.</p>
 <div class="rows">
-<div class="row"><div class="m">Latest valid triage</div><div>{{latest_valid_triage}}</div></div>
-<div class="row"><div class="m">Crash input</div><div>{{latest_valid_input}}</div></div>
-<div class="row"><div class="m">Crash kind</div><div>{{latest_valid_crash_kind}}</div></div>
-<div class="row"><div class="m">Sanitizer</div><div>{{latest_valid_sanitizer}}</div></div>
-<div class="row"><div class="m">Signal</div><div>{{latest_valid_signal}}</div></div>
-<div class="row"><div class="m">Normalized signature</div><div><pre>{{latest_valid_normalized_frame_hash}}</pre><span class="hint">basis={{latest_valid_signature_basis}}</span></div></div>
-<div class="row"><div class="m">Signature top1</div><div><pre>{{latest_valid_signature}}</pre></div></div>
-<div class="row"><div class="m">Crash summary</div><div><pre>{{latest_valid_crash_summary}}</pre></div></div>
-<div class="row"><div class="m">Summary path</div><div>{{latest_valid_summary_html}}</div></div>
-<div class="row"><div class="m">Report path</div><div>{{latest_valid_report_html}}</div></div>
-<div class="row"><div class="m">Coverage summary</div><div>{{latest_coverage_summary_html}}</div></div>
+<div class="row"><div class="m">Latest run</div><div>{{latest_run_html}}</div></div>
+<div class="row"><div class="m">Latest triage</div><div>{{latest_triage_html}}</div></div>
+<div class="row"><div class="m">Latest report</div><div>{{latest_report_html}}</div></div>
+<div class="row"><div class="m">Latest export</div><div>{{latest_export_html}} <span class="hint">summary={{latest_export_summary_html}}</span></div></div>
+<div class="row"><div class="m">Latest mutation manifest</div><div>{{latest_mutation_html}} <span class="hint">target={{latest_mutation_target}}</span></div></div>
+<div class="row"><div class="m">Latest coverage</div><div>{{latest_coverage_html}}</div></div>
 </div>
 </section>
+
+<section class="panel">
+<div class="panel-head">Mutated Corpus</div>
+<div class="rows">
+<div class="row"><div class="m">mutated_count</div><div>{{latest_mutation_count}}</div></div>
+<div class="row"><div class="m">target</div><div>{{latest_mutation_target}}</div></div>
+<div class="row"><div class="m">manifest</div><div>{{latest_mutation_html}}</div></div>
 </div>
-</div>
+<p class="hint">Source corpus, latest mutation time, and validation summary fields land in A2 third commit. Validation summary depends on the mutator writing <code>validation_status</code>; see future-backlog.</p>
+</section>
+
+<section class="panel">
+<div class="panel-head">Logs</div>
+<p class="hint">Bounded 200-line log tail lands in Phase A3. Existing run logs remain on disk under <code>data/runs/&lt;run-id&gt;/logs</code>.</p>
+</section>
+
+<section class="panel">
+<div class="panel-head">Suggested Commands</div>
+<p class="hint">Copyable run/triage/report/export/mutate/open-dashboard commands land in Phase A3. Stop, kill, and direct start commands are intentionally excluded.</p>
+</section>
+
 </section>
 
 <section class="tab-panel" data-panel="config" role="tabpanel" hidden>
@@ -121,7 +100,6 @@
 <div class="row"><div class="m">metrics</div><div>{{metrics_badge}}</div></div>
 <div class="row"><div class="m">latest run</div><div>{{latest_run_html}}</div></div>
 <div class="row"><div class="m">latest coverage</div><div>{{latest_coverage_html}}</div></div>
-<div class="row"><div class="m">UI feedback test</div><div class="control-actions"><button id="toast-success-btn" class="ctl-btn" type="button">Success Toast</button><button id="toast-error-btn" class="ctl-btn ctl-btn-stop" type="button">Error Toast</button><button id="open-modal-btn" class="ctl-btn" type="button">Open Modal</button></div></div>
 </div>
 </section>
 
@@ -271,14 +249,6 @@
 (() => {
   const tabs = Array.from(document.querySelectorAll(".tab-btn"));
   const panels = Array.from(document.querySelectorAll(".tab-panel"));
-  const controlBadge = document.getElementById("control-badge");
-  const controlStart = document.getElementById("control-start");
-  const controlStop = document.getElementById("control-stop");
-  const controlLog = document.getElementById("control-log");
-  const controlMsg = document.getElementById("control-msg");
-  const controlTimer = document.getElementById("control-timer");
-  const controlProgress = document.getElementById("control-progress");
-  const controlProgressText = document.getElementById("control-progress-text");
   const replayInput = document.getElementById("replay-input");
   const replayBadge = document.getElementById("replay-badge");
   const replayStart = document.getElementById("replay-start");
@@ -305,12 +275,7 @@
   const targetBuildDir = document.getElementById("target-build-dir");
   const targetBuildArtifact = document.getElementById("target-build-artifact");
   const targetBuildLog = document.getElementById("target-build-log");
-  const metricChart = document.getElementById("metric-chart");
-  const chartMeta = document.getElementById("chart-meta");
   const toastRoot = document.getElementById("toast-root");
-  const toastSuccessBtn = document.getElementById("toast-success-btn");
-  const toastErrorBtn = document.getElementById("toast-error-btn");
-  const openModalBtn = document.getElementById("open-modal-btn");
   const viewSignatureBtn = document.getElementById("view-signature-btn");
   const latestSignatureText = document.getElementById("latest-signature-text");
   const crashFilterInput = document.getElementById("crash-filter-input");
@@ -339,10 +304,6 @@
     btn.addEventListener("click", () => activate(btn.dataset.tab || "dashboard"));
   });
 
-  const setControlMessage = (text) => {
-    if (controlMsg) controlMsg.textContent = text;
-  };
-
   const setReplayMessage = (text) => {
     if (replayVerdict) replayVerdict.textContent = text;
   };
@@ -353,93 +314,6 @@
 
   const setTargetBuildMessage = (text) => {
     if (targetBuildMessage) targetBuildMessage.textContent = text;
-  };
-
-  const fmtHms = (sec) => {
-    const s = Math.max(0, Math.floor(sec));
-    const h = String(Math.floor(s / 3600)).padStart(2, "0");
-    const m = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
-    const ss = String(s % 60).padStart(2, "0");
-    return `${h}:${m}:${ss}`;
-  };
-
-  const metricSeries = [];
-  const metricMaxPoints = 30;
-  let lastControlStatus = null;
-
-  const safeNum = (v) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : 0;
-  };
-
-  const drawMetricChart = () => {
-    if (!metricChart || metricSeries.length < 2) return;
-    const ctx = metricChart.getContext("2d");
-    if (!ctx) return;
-
-    const w = metricChart.width;
-    const h = metricChart.height;
-    const pad = { l: 42, r: 12, t: 12, b: 24 };
-    const pw = w - pad.l - pad.r;
-    const ph = h - pad.t - pad.b;
-
-    const successfulRuns = metricSeries.map((p) => p.successfulRuns);
-    const crashes = metricSeries.map((p) => p.crashes);
-    const errors = metricSeries.map((p) => p.errors);
-    const all = successfulRuns.concat(crashes, errors);
-    const max = Math.max(...all, 1);
-
-    ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = "#f8fbff";
-    ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = "#d8e4ef";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(pad.l, pad.t, pw, ph);
-
-    const drawLine = (arr, color) => {
-      ctx.beginPath();
-      arr.forEach((v, i) => {
-        const x = pad.l + (i / (arr.length - 1)) * pw;
-        const y = pad.t + (1 - v / max) * ph;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    };
-
-    drawLine(successfulRuns, "#0b5563");
-    drawLine(crashes, "#9a3412");
-    drawLine(errors, "#7c3aed");
-
-    ctx.fillStyle = "#4b5563";
-    ctx.font = "11px ui-monospace, monospace";
-    ctx.fillText("0", 18, pad.t + ph);
-    ctx.fillText(String(max), 12, pad.t + 10);
-    ctx.fillText("successful_runs_proxy", pad.l + 6, pad.t + 14);
-    ctx.fillStyle = "#9a3412";
-    ctx.fillText("triage_crashes", pad.l + 156, pad.t + 14);
-    ctx.fillStyle = "#7c3aed";
-    ctx.fillText("error_rate_5m", pad.l + 260, pad.t + 14);
-  };
-
-  const fetchMetricPoint = async () => {
-    const res = await fetch("/dashboard.json");
-    if (!res.ok) throw new Error("dashboard json fetch failed");
-    const d = await res.json();
-    const p = {
-      ts: Date.now(),
-      successfulRuns: safeNum(d?.metrics?.successful_runs_per_hour_proxy),
-      crashes: safeNum(d?.metrics?.new_crashes_per_hour),
-      errors: safeNum(d?.metrics?.global_error_rate_5m),
-    };
-    metricSeries.push(p);
-    while (metricSeries.length > metricMaxPoints) metricSeries.shift();
-    drawMetricChart();
-    if (chartMeta) {
-      chartMeta.textContent = `points=${metricSeries.length} latest(successful_runs_proxy=${p.successfulRuns}, triage_crashes=${p.crashes}, error_rate_5m=${p.errors})`;
-    }
   };
 
   const showToast = (kind, message) => {
@@ -571,46 +445,6 @@
     if (targetBuildVersion && !running) targetBuildVersion.value = status.version || "";
   };
 
-  const renderControlStatus = (status, nowMs = Date.now()) => {
-    if (!controlBadge || !controlLog) return;
-    const running = Boolean(status.running);
-    controlBadge.textContent = running ? "running" : "stopped";
-    controlBadge.classList.remove("badge-neutral", "badge-ok", "badge-warn");
-    controlBadge.classList.add(running ? "badge-ok" : "badge-warn");
-    controlLog.textContent = status.log_file || "-";
-    if (controlStart) controlStart.disabled = running;
-    if (controlStop) controlStop.disabled = !running;
-
-    const startedAt = Number(status.started_at || 0);
-    const duration = Number(status.duration_seconds || 0);
-    const nowSec = Math.floor(nowMs / 1000);
-    const elapsed = startedAt > 0 ? Math.max(0, nowSec - startedAt) : 0;
-    const ratio = duration > 0 ? Math.min(elapsed / duration, 1) : 0;
-    if (controlTimer) {
-      controlTimer.textContent = running ? `${fmtHms(elapsed)} / ${fmtHms(duration)}` : "00:00:00";
-    }
-    if (controlProgress) {
-      controlProgress.style.width = `${Math.round(ratio * 100)}%`;
-    }
-    if (controlProgressText) {
-      controlProgressText.textContent = running ? `${Math.round(ratio * 100)}%` : "0%";
-    }
-  };
-
-  const tickControlStatus = () => {
-    if (!lastControlStatus) return;
-    renderControlStatus(lastControlStatus, Date.now());
-  };
-
-  const fetchStatus = async () => {
-    const res = await fetch("/control/status");
-    if (!res.ok) throw new Error("status fetch failed");
-    const data = await res.json();
-    lastControlStatus = data;
-    renderControlStatus(data, Date.now());
-    return data;
-  };
-
   const fetchReplayStatus = async () => {
     const res = await fetch("/replay/status");
     if (!res.ok) throw new Error("replay status fetch failed");
@@ -632,15 +466,6 @@
     if (!res.ok) throw new Error("target build status fetch failed");
     const data = await res.json();
     renderTargetBuildStatus(data);
-    return data;
-  };
-
-  const postAction = async (path) => {
-    const res = await fetch(path, { method: "POST" });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data.error || "request failed");
-    }
     return data;
   };
 
@@ -673,17 +498,6 @@
 
   const refreshStatus = async () => {
     try {
-      await fetchStatus();
-    } catch (e) {
-      showToast("error", "failed to refresh control status");
-      setControlMessage(String(e));
-    }
-    try {
-      await fetchMetricPoint();
-    } catch (_e) {
-      if (chartMeta) chartMeta.textContent = "metric trend fetch failed";
-    }
-    try {
       await fetchReplayStatus();
     } catch (_e) {
     }
@@ -711,34 +525,6 @@
     }
   };
 
-  if (controlStart) {
-    controlStart.addEventListener("click", async () => {
-      setControlMessage("starting...");
-      try {
-        await postAction("/control/start");
-        await fetchStatus();
-        setControlMessage("started");
-        showToast("success", "run loop started");
-      } catch (e) {
-        showToast("error", "start failed");
-        setControlMessage(String(e));
-      }
-    });
-  }
-  if (controlStop) {
-    controlStop.addEventListener("click", async () => {
-      setControlMessage("stopping...");
-      try {
-        await postAction("/control/stop");
-        await fetchStatus();
-        setControlMessage("stopped");
-        showToast("success", "run loop stopped");
-      } catch (e) {
-        showToast("error", "stop failed");
-        setControlMessage(String(e));
-      }
-    });
-  }
   if (replayStart && replayInput) {
     replayStart.addEventListener("click", async () => {
       const input = (replayInput.textContent || "").trim();
@@ -838,18 +624,6 @@
     });
   }
 
-  if (toastSuccessBtn) {
-    toastSuccessBtn.addEventListener("click", () => showToast("success", "manual success toast"));
-  }
-  if (toastErrorBtn) {
-    toastErrorBtn.addEventListener("click", () => showToast("error", "manual error toast"));
-  }
-  if (openModalBtn) {
-    openModalBtn.addEventListener("click", () => {
-      const text = `data_dir: {{config_data_dir}}\nseeds_dir: {{config_seeds_dir}}\ngenerated_at: {{generated_at}}`;
-      openModal("Config Snapshot", text);
-    });
-  }
   if (viewSignatureBtn && latestSignatureText) {
     viewSignatureBtn.addEventListener("click", () => {
       openModal("Latest Signature Top1", latestSignatureText.textContent || "none");
@@ -863,7 +637,6 @@
   bindListControls(".tab-panel[data-panel='reports'] .mini-list", reportFilterInput, reportSortBtn);
 
   refreshStatus();
-  setInterval(tickControlStatus, 1000);
   setInterval(refreshStatus, 5000);
 })();
 </script>

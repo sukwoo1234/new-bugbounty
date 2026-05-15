@@ -63,6 +63,20 @@ pub(crate) struct DashboardSnapshot {
     pub(crate) latest_mutation_batch_id: String,
     pub(crate) latest_mutation_manifest_path: String,
     pub(crate) latest_mutation_target: String,
+    pub(crate) latest_mutation_count: String,
+    pub(crate) latest_run_target: String,
+    pub(crate) latest_run_backend: String,
+    pub(crate) latest_run_total: String,
+    pub(crate) latest_run_success: String,
+    pub(crate) latest_run_failed: String,
+    pub(crate) latest_run_timeout: String,
+    pub(crate) triage_verdict_reproduced: usize,
+    pub(crate) triage_verdict_manual_review: usize,
+    pub(crate) triage_verdict_not_reproduced: usize,
+    pub(crate) triage_verdict_timeout: usize,
+    pub(crate) triage_verdict_infra_oom: usize,
+    pub(crate) triage_verdict_flaky: usize,
+    pub(crate) triage_verdict_other: usize,
 }
 
 struct ReproducedTriageView {
@@ -171,16 +185,43 @@ pub(crate) fn collect_dashboard_snapshot(
         };
 
     let latest_mutation = find_latest_mutation_manifest(&mutated_root, &legacy_mutated_root)?;
-    let (latest_mutation_batch_id, latest_mutation_manifest_path, latest_mutation_target) =
-        if let Some(view) = latest_mutation {
-            (view.batch_id, view.manifest_path, view.target)
-        } else {
-            (
-                "none".to_string(),
-                "none".to_string(),
-                "none".to_string(),
-            )
-        };
+    let (
+        latest_mutation_batch_id,
+        latest_mutation_manifest_path,
+        latest_mutation_target,
+        latest_mutation_count,
+    ) = if let Some(view) = latest_mutation {
+        (view.batch_id, view.manifest_path, view.target, view.count)
+    } else {
+        (
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+        )
+    };
+
+    let latest_run_view = read_run_status(&runs_root, &latest_run)?;
+    let (
+        latest_run_target,
+        latest_run_total,
+        latest_run_success,
+        latest_run_failed,
+        latest_run_timeout,
+    ) = if let Some(view) = latest_run_view {
+        (view.target, view.total, view.success, view.failed, view.timeout)
+    } else {
+        (
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+        )
+    };
+    let latest_run_backend = "none".to_string();
+
+    let triage_verdicts = count_triage_verdicts(&triage_root)?;
 
     let mut successful_runs_per_hour_proxy = "0".to_string();
     let mut new_crashes_per_hour = "0".to_string();
@@ -351,6 +392,20 @@ pub(crate) fn collect_dashboard_snapshot(
         latest_mutation_batch_id,
         latest_mutation_manifest_path,
         latest_mutation_target,
+        latest_mutation_count,
+        latest_run_target,
+        latest_run_backend,
+        latest_run_total,
+        latest_run_success,
+        latest_run_failed,
+        latest_run_timeout,
+        triage_verdict_reproduced: triage_verdicts.reproduced,
+        triage_verdict_manual_review: triage_verdicts.manual_review,
+        triage_verdict_not_reproduced: triage_verdicts.not_reproduced,
+        triage_verdict_timeout: triage_verdicts.timeout,
+        triage_verdict_infra_oom: triage_verdicts.infra_oom,
+        triage_verdict_flaky: triage_verdicts.flaky,
+        triage_verdict_other: triage_verdicts.other,
     })
 }
 
@@ -608,6 +663,7 @@ struct LatestMutationView {
     batch_id: String,
     manifest_path: String,
     target: String,
+    count: String,
 }
 
 fn find_latest_export(exports_root: &Path) -> Result<Option<LatestExportView>, String> {
@@ -726,10 +782,14 @@ fn consider_mutation_manifest(
     let target = extract_json_string_literal(&body, "target")
         .or(parent_target_hint)
         .unwrap_or_else(|| "unknown".to_string());
+    let count = extract_json_number_literal(&body, "generated")
+        .or_else(|| extract_json_number_literal(&body, "requested"))
+        .unwrap_or_else(|| "none".to_string());
     let view = LatestMutationView {
         batch_id: batch_name.to_string(),
         manifest_path: manifest_path.display().to_string(),
         target,
+        count,
     };
     match best {
         Some((best_mtime, _)) if mtime <= *best_mtime => {}
@@ -740,4 +800,90 @@ fn consider_mutation_manifest(
 
 fn entry_mtime(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+struct RunStatusView {
+    target: String,
+    total: String,
+    success: String,
+    failed: String,
+    timeout: String,
+}
+
+fn read_run_status(
+    runs_root: &Path,
+    run_dir_name: &str,
+) -> Result<Option<RunStatusView>, String> {
+    if run_dir_name == "none" {
+        return Ok(None);
+    }
+    let status_path = runs_root.join(run_dir_name).join("status.json");
+    if !status_path.is_file() {
+        return Ok(None);
+    }
+    let body = fs::read_to_string(&status_path)
+        .map_err(|e| format!("failed to read '{}': {e}", status_path.display()))?;
+    Ok(Some(RunStatusView {
+        target: extract_json_string_literal(&body, "target")
+            .unwrap_or_else(|| "none".to_string()),
+        total: extract_json_number_literal(&body, "total")
+            .unwrap_or_else(|| "none".to_string()),
+        success: extract_json_number_literal(&body, "success")
+            .unwrap_or_else(|| "none".to_string()),
+        failed: extract_json_number_literal(&body, "failed")
+            .unwrap_or_else(|| "none".to_string()),
+        timeout: extract_json_number_literal(&body, "timeout")
+            .unwrap_or_else(|| "none".to_string()),
+    }))
+}
+
+#[derive(Default)]
+struct TriageVerdictCounts {
+    reproduced: usize,
+    manual_review: usize,
+    not_reproduced: usize,
+    timeout: usize,
+    infra_oom: usize,
+    flaky: usize,
+    other: usize,
+}
+
+fn count_triage_verdicts(triage_root: &Path) -> Result<TriageVerdictCounts, String> {
+    let mut counts = TriageVerdictCounts::default();
+    if !triage_root.exists() {
+        return Ok(counts);
+    }
+    for entry in fs::read_dir(triage_root)
+        .map_err(|e| format!("failed to read '{}': {e}", triage_root.display()))?
+    {
+        let entry = entry
+            .map_err(|e| format!("failed to read triage verdict entry: {e}"))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("triage-") {
+            continue;
+        }
+        let summary_path = path.join("summary.json");
+        if !summary_path.is_file() {
+            continue;
+        }
+        let body = fs::read_to_string(&summary_path)
+            .map_err(|e| format!("failed to read '{}': {e}", summary_path.display()))?;
+        let verdict = extract_json_string_literal(&body, "verdict").unwrap_or_default();
+        match verdict.as_str() {
+            "reproduced" => counts.reproduced += 1,
+            "manual_review" => counts.manual_review += 1,
+            "not_reproduced" => counts.not_reproduced += 1,
+            "timeout" => counts.timeout += 1,
+            "infra_oom" => counts.infra_oom += 1,
+            "flaky" => counts.flaky += 1,
+            _ => counts.other += 1,
+        }
+    }
+    Ok(counts)
 }
