@@ -420,3 +420,10 @@ body{
 .chart-strip-cell{flex:1;min-width:4px}
 .chart-legend{display:flex;flex-wrap:wrap;gap:8px;font-size:10px;color:#6b7280;margin-top:6px;align-items:center}
 .chart-legend span{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:3px;vertical-align:middle}
+.logs-meta{font-size:11px;color:#4b5563;margin:0 0 6px;word-break:break-all}
+.log-body{font-family:ui-monospace,monospace;font-size:11px;background:#0f172a;color:#e2e8f0;padding:10px;border-radius:4px;max-height:360px;overflow:auto;white-space:pre;line-height:1.4;margin:0}
+.cmd-list{display:flex;flex-direction:column;gap:10px}
+.cmd-block{display:flex;flex-direction:column;gap:4px}
+.cmd-label{font-size:11px;font-weight:600;color:#4b5563}
+.cmd-code{font-family:ui-monospace,monospace;font-size:11px;background:#0f172a;color:#e2e8f0;padding:8px 10px;border-radius:4px;overflow-x:auto;margin:0;white-space:pre}
+.cmd-code code{background:transparent;padding:0}

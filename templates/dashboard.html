@@ -108,12 +108,14 @@
 
 <section class="panel">
 <div class="panel-head">Logs</div>
-<p class="hint">Bounded 200-line log tail lands in Phase A3. Existing run logs remain on disk under <code>data/runs/&lt;run-id&gt;/logs</code>.</p>
+<p class="logs-meta">{{logs_meta_html}}</p>
+{{logs_body_html}}
 </section>
 
 <section class="panel">
 <div class="panel-head">Suggested Commands</div>
-<p class="hint">Copyable run/triage/report/export/mutate/open-dashboard commands land in Phase A3. Stop, kill, and direct start commands are intentionally excluded.</p>
+<p class="hint">Copyable run/triage/report/export/mutate/open-dashboard. Stop, kill, and direct start are intentionally excluded from Phase A.</p>
+<div class="cmd-list">{{suggested_commands_html}}</div>
 </section>
 
 </section>

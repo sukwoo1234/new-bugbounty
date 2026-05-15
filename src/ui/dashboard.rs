@@ -1,7 +1,7 @@
 use crate::dashboard_charts::{
     CrashIntakePoint, RunResultPoint, ThroughputProxyPoint, VerdictBreakdownPoint,
 };
-use crate::dashboard_data::DashboardSnapshot;
+use crate::dashboard_data::{DashboardSnapshot, LOG_TAIL_LIMIT};
 use crate::json_utils::{html_escape, json_escape, url_encode};
 
 const DASHBOARD_HTML_TEMPLATE: &str = include_str!("../../templates/dashboard.html");
@@ -114,6 +114,14 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
     let throughput_proxy_chart = render_throughput_proxy_chart(&s.throughput_proxy_series);
     let crash_intake_chart = render_crash_intake_chart(&s.crash_intake_series);
     let verdict_breakdown_chart = render_verdict_breakdown_chart(&s.triage_verdict_breakdown);
+    let (logs_meta_html, logs_body_html) = render_logs_section(
+        &s.logs_source_path,
+        &s.logs_tail,
+        s.logs_total_lines,
+        LOG_TAIL_LIMIT,
+        &s.logs_error,
+    );
+    let suggested_commands_html = render_suggested_commands(s);
     let recent_triage_rows = render_recent_triage_rows(&s.recent_triage_ids);
     let recent_report_rows = render_recent_report_rows(&s.recent_report_ids);
     let recent_coverage_rows = render_recent_coverage_rows(&s.recent_coverage_ids);
@@ -243,6 +251,9 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
         .replace("{{throughput_proxy_chart}}", &throughput_proxy_chart)
         .replace("{{crash_intake_chart}}", &crash_intake_chart)
         .replace("{{verdict_breakdown_chart}}", &verdict_breakdown_chart)
+        .replace("{{logs_meta_html}}", &logs_meta_html)
+        .replace("{{logs_body_html}}", &logs_body_html)
+        .replace("{{suggested_commands_html}}", &suggested_commands_html)
         .replace(
             "{{successful_runs_per_hour_proxy}}",
             &html_escape(&s.successful_runs_per_hour_proxy),
@@ -482,6 +493,117 @@ fn render_crash_intake_chart(points: &[CrashIntakePoint]) -> String {
         .collect::<Vec<_>>()
         .join("");
     format!("<div class=\"chart-strip\">{cells}</div><div class=\"chart-legend\"><span class=\"chart-bar-success\"></span>reproduced <span class=\"chart-bar-warn\"></span>manual_review <span class=\"chart-bar-timeout\"></span>timeout/infra_oom <span class=\"chart-bar-failed\"></span>flaky <span class=\"chart-bar-neutral\"></span>not_reproduced/other</div>")
+}
+
+fn render_logs_section(
+    source_path: &str,
+    tail: &[String],
+    total: usize,
+    limit: usize,
+    error: &str,
+) -> (String, String) {
+    if source_path == "none" {
+        return (
+            "no log available".to_string(),
+            "<p class=\"chart-empty\">no log available</p>".to_string(),
+        );
+    }
+    if error != "none" {
+        return (
+            format!(
+                "source: {} <span class=\"hint\">read error: {}</span>",
+                html_escape(source_path),
+                html_escape(error)
+            ),
+            "<p class=\"chart-empty\">no log available</p>".to_string(),
+        );
+    }
+    let meta = if total > limit {
+        format!(
+            "source: {} <span class=\"hint\">showing last {} of {} total lines</span>",
+            html_escape(source_path),
+            tail.len(),
+            total
+        )
+    } else {
+        format!(
+            "source: {} <span class=\"hint\">showing all {} lines</span>",
+            html_escape(source_path),
+            total
+        )
+    };
+    let body = if tail.is_empty() {
+        "<pre class=\"log-body\">(empty)</pre>".to_string()
+    } else {
+        let escaped = tail
+            .iter()
+            .map(|l| html_escape(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("<pre class=\"log-body\">{escaped}</pre>")
+    };
+    (meta, body)
+}
+
+fn render_suggested_commands(s: &DashboardSnapshot) -> String {
+    let target = if s.latest_run_target != "none" {
+        s.latest_run_target.as_str()
+    } else {
+        "<target>"
+    };
+    let latest_run = if s.latest_run != "none" {
+        s.latest_run.as_str()
+    } else {
+        "<run-id>"
+    };
+    let latest_triage = if s.latest_triage != "none" {
+        s.latest_triage.as_str()
+    } else {
+        "<triage-id>"
+    };
+    let commands: [(&str, String); 6] = [
+        (
+            "Run",
+            format!(
+                "tool run --target {target} --backend local-harness --corpus-dir seeds/{target} --timeout-sec 30 --restart-limit 1"
+            ),
+        ),
+        (
+            "Triage",
+            format!("tool triage --run-dir data/runs/{latest_run}"),
+        ),
+        (
+            "Report",
+            format!(
+                "tool report --triage data/triage/{latest_triage}/summary.json --out data/reports/<name>"
+            ),
+        ),
+        (
+            "Export",
+            format!("tool export --run-dir data/runs/{latest_run} --out data/exports/<name>"),
+        ),
+        (
+            "Mutate",
+            format!(
+                "tool mutate --target {target} --input-dir seeds/{target} --out-dir data/corpus/mutated/{target}/<batch-id> --count 5 --seed 1"
+            ),
+        ),
+        (
+            "Open dashboard",
+            "tool dashboard --format html --out /tmp/dashboard.html".to_string(),
+        ),
+    ];
+    commands
+        .iter()
+        .map(|(label, cmd)| {
+            format!(
+                "<div class=\"cmd-block\"><div class=\"cmd-label\">{}</div><pre class=\"cmd-code\"><code>{}</code></pre></div>",
+                html_escape(label),
+                html_escape(cmd)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn render_verdict_breakdown_chart(points: &[VerdictBreakdownPoint]) -> String {

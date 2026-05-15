@@ -1,8 +1,12 @@
 use std::{
+    collections::VecDeque,
     fs,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+pub(crate) const LOG_TAIL_LIMIT: usize = 200;
 
 use crate::dashboard_charts::{
     build_crash_intake_series, build_run_result_series, build_throughput_proxy_series,
@@ -98,6 +102,10 @@ pub(crate) struct DashboardSnapshot {
     pub(crate) throughput_proxy_series: Vec<ThroughputProxyPoint>,
     pub(crate) crash_intake_series: Vec<CrashIntakePoint>,
     pub(crate) triage_verdict_breakdown: Vec<VerdictBreakdownPoint>,
+    pub(crate) logs_source_path: String,
+    pub(crate) logs_tail: Vec<String>,
+    pub(crate) logs_total_lines: usize,
+    pub(crate) logs_error: String,
 }
 
 struct ReproducedTriageView {
@@ -285,6 +293,12 @@ pub(crate) fn collect_dashboard_snapshot(
         collect_recent_triage_verdicts(&triage_root, CHART_SERIES_LIMIT)?;
     let crash_intake_series = build_crash_intake_series(&recent_triage_verdicts);
     let triage_verdict_breakdown = build_triage_verdict_breakdown(&triage_verdicts);
+
+    let logs_view = collect_latest_log_tail(&runs_root, &latest_run, LOG_TAIL_LIMIT);
+    let (logs_source_path, logs_tail, logs_total_lines, logs_error) = match logs_view {
+        Ok(view) => (view.source_path, view.tail, view.total_lines, view.error),
+        Err(message) => ("none".to_string(), Vec::new(), 0, message),
+    };
 
     let mut successful_runs_per_hour_proxy = "0".to_string();
     let mut new_crashes_per_hour = "0".to_string();
@@ -483,6 +497,10 @@ pub(crate) fn collect_dashboard_snapshot(
         throughput_proxy_series,
         crash_intake_series,
         triage_verdict_breakdown,
+        logs_source_path,
+        logs_tail,
+        logs_total_lines,
+        logs_error,
     })
 }
 
@@ -890,6 +908,135 @@ fn consider_mutation_manifest(
 
 fn entry_mtime(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+pub(crate) struct LatestLogTailView {
+    pub(crate) source_path: String,
+    pub(crate) tail: Vec<String>,
+    pub(crate) total_lines: usize,
+    pub(crate) error: String,
+}
+
+fn collect_latest_log_tail(
+    runs_root: &Path,
+    latest_run_name: &str,
+    tail_limit: usize,
+) -> Result<LatestLogTailView, String> {
+    if latest_run_name == "none" {
+        return Ok(LatestLogTailView {
+            source_path: "none".to_string(),
+            tail: Vec::new(),
+            total_lines: 0,
+            error: "none".to_string(),
+        });
+    }
+    let logs_dir = runs_root.join(latest_run_name).join("logs");
+    if !logs_dir.is_dir() {
+        return Ok(LatestLogTailView {
+            source_path: "none".to_string(),
+            tail: Vec::new(),
+            total_lines: 0,
+            error: "none".to_string(),
+        });
+    }
+    let selected = match select_most_recent_log(&logs_dir) {
+        Ok(opt) => opt,
+        Err(message) => {
+            return Ok(LatestLogTailView {
+                source_path: "none".to_string(),
+                tail: Vec::new(),
+                total_lines: 0,
+                error: message,
+            })
+        }
+    };
+    let Some(log_path) = selected else {
+        return Ok(LatestLogTailView {
+            source_path: "none".to_string(),
+            tail: Vec::new(),
+            total_lines: 0,
+            error: "none".to_string(),
+        });
+    };
+    let total_lines = match count_log_lines(&log_path) {
+        Ok(n) => n,
+        Err(message) => {
+            return Ok(LatestLogTailView {
+                source_path: log_path.display().to_string(),
+                tail: Vec::new(),
+                total_lines: 0,
+                error: message,
+            })
+        }
+    };
+    let tail = match read_log_tail(&log_path, tail_limit) {
+        Ok(rows) => rows,
+        Err(message) => {
+            return Ok(LatestLogTailView {
+                source_path: log_path.display().to_string(),
+                tail: Vec::new(),
+                total_lines,
+                error: message,
+            })
+        }
+    };
+    Ok(LatestLogTailView {
+        source_path: log_path.display().to_string(),
+        tail,
+        total_lines,
+        error: "none".to_string(),
+    })
+}
+
+fn select_most_recent_log(logs_dir: &Path) -> Result<Option<PathBuf>, String> {
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    for entry in fs::read_dir(logs_dir)
+        .map_err(|e| format!("failed to read '{}': {e}", logs_dir.display()))?
+    {
+        let entry = entry
+            .map_err(|e| format!("failed to read entry in '{}': {e}", logs_dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if !has_ext(&path, "log") {
+            continue;
+        }
+        let mtime = entry_mtime(&path).unwrap_or(SystemTime::UNIX_EPOCH);
+        match &best {
+            Some((best_mtime, _)) if mtime <= *best_mtime => {}
+            _ => best = Some((mtime, path)),
+        }
+    }
+    Ok(best.map(|(_, p)| p))
+}
+
+fn count_log_lines(path: &Path) -> Result<usize, String> {
+    let file = fs::File::open(path)
+        .map_err(|e| format!("failed to open '{}': {e}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut count = 0usize;
+    for line in reader.lines() {
+        line.map_err(|e| format!("failed to read line in '{}': {e}", path.display()))?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn read_log_tail(path: &Path, tail_limit: usize) -> Result<Vec<String>, String> {
+    let file = fs::File::open(path)
+        .map_err(|e| format!("failed to open '{}': {e}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut ring: VecDeque<String> = VecDeque::with_capacity(tail_limit);
+    for line in reader.lines() {
+        let line =
+            line.map_err(|e| format!("failed to read line in '{}': {e}", path.display()))?;
+        if ring.len() == tail_limit {
+            ring.pop_front();
+        }
+        ring.push_back(line);
+    }
+    Ok(ring.into_iter().collect())
 }
 
 fn system_time_to_unix_string(t: SystemTime) -> String {
