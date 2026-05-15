@@ -5,7 +5,7 @@ const DASHBOARD_HTML_TEMPLATE: &str = include_str!("../../templates/dashboard.ht
 
 pub(crate) fn render_dashboard_json(s: &DashboardSnapshot) -> String {
     format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"config\": {{\n    \"data_dir\": \"{}\",\n    \"seeds_dir\": \"{}\"\n  }},\n  \"snapshot\": {{\n    \"runs_count\": {},\n    \"triage_count\": {},\n    \"report_count\": {},\n    \"coverage_count\": {},\n    \"latest_run\": \"{}\",\n    \"latest_triage\": \"{}\",\n    \"latest_report\": \"{}\",\n    \"latest_coverage\": \"{}\"\n  }},\n  \"metrics\": {{\n    \"exists\": {},\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"{}\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {}\n  }},\n  \"seeds\": {{\n    \"onnx_count\": {},\n    \"gguf_count\": {},\n    \"safetensors_count\": {},\n    \"total_count\": {}\n  }},\n  \"crash\": {{\n    \"latest_valid_triage\": \"{}\",\n    \"input\": \"{}\",\n    \"signature_top1\": \"{}\",\n    \"crash_kind\": \"{}\",\n    \"sanitizer\": \"{}\",\n    \"signal\": \"{}\",\n    \"normalized_frame_hash\": \"{}\",\n    \"signature_basis\": \"{}\",\n    \"crash_summary\": \"{}\",\n    \"summary\": \"{}\",\n    \"report\": \"{}\",\n    \"manifest\": \"{}\",\n    \"bundle\": \"{}\",\n    \"suggested_severity\": \"{}\",\n    \"severity_confidence\": \"{}\",\n    \"suggested_cvss_vector\": \"{}\"\n  }},\n  \"coverage\": {{\n    \"latest\": \"{}\",\n    \"summary\": \"{}\"\n  }},\n  \"exports\": {{\n    \"latest_id\": \"{}\",\n    \"latest_path\": \"{}\",\n    \"latest_summary\": \"{}\"\n  }},\n  \"mutation\": {{\n    \"latest_batch_id\": \"{}\",\n    \"latest_manifest_path\": \"{}\",\n    \"latest_target\": \"{}\",\n    \"latest_count\": \"{}\"\n  }},\n  \"run_state\": {{\n    \"target\": \"{}\",\n    \"backend\": \"{}\",\n    \"total\": \"{}\",\n    \"success\": \"{}\",\n    \"failed\": \"{}\",\n    \"timeout\": \"{}\"\n  }},\n  \"triage_verdicts\": {{\n    \"reproduced\": {},\n    \"manual_review\": {},\n    \"not_reproduced\": {},\n    \"timeout\": {},\n    \"infra_oom\": {},\n    \"flaky\": {},\n    \"other\": {}\n  }}\n}}",
+        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"config\": {{\n    \"data_dir\": \"{}\",\n    \"seeds_dir\": \"{}\"\n  }},\n  \"snapshot\": {{\n    \"runs_count\": {},\n    \"triage_count\": {},\n    \"report_count\": {},\n    \"coverage_count\": {},\n    \"latest_run\": \"{}\",\n    \"latest_triage\": \"{}\",\n    \"latest_report\": \"{}\",\n    \"latest_coverage\": \"{}\"\n  }},\n  \"metrics\": {{\n    \"exists\": {},\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"{}\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {}\n  }},\n  \"seeds\": {{\n    \"onnx_count\": {},\n    \"gguf_count\": {},\n    \"safetensors_count\": {},\n    \"total_count\": {}\n  }},\n  \"crash\": {{\n    \"latest_valid_triage\": \"{}\",\n    \"input\": \"{}\",\n    \"signature_top1\": \"{}\",\n    \"crash_kind\": \"{}\",\n    \"sanitizer\": \"{}\",\n    \"signal\": \"{}\",\n    \"normalized_frame_hash\": \"{}\",\n    \"signature_basis\": \"{}\",\n    \"crash_summary\": \"{}\",\n    \"summary\": \"{}\",\n    \"report\": \"{}\",\n    \"manifest\": \"{}\",\n    \"bundle\": \"{}\",\n    \"suggested_severity\": \"{}\",\n    \"severity_confidence\": \"{}\",\n    \"suggested_cvss_vector\": \"{}\"\n  }},\n  \"coverage\": {{\n    \"latest\": \"{}\",\n    \"summary\": \"{}\"\n  }},\n  \"exports\": {{\n    \"latest_id\": \"{}\",\n    \"latest_path\": \"{}\",\n    \"latest_summary\": \"{}\",\n    \"latest_updated_at\": \"{}\"\n  }},\n  \"mutation\": {{\n    \"latest_batch_id\": \"{}\",\n    \"latest_manifest_path\": \"{}\",\n    \"latest_target\": \"{}\",\n    \"latest_count\": \"{}\",\n    \"latest_updated_at\": \"{}\"\n  }},\n  \"run_state\": {{\n    \"state\": \"{}\",\n    \"target\": \"{}\",\n    \"backend\": \"{}\",\n    \"total\": \"{}\",\n    \"success\": \"{}\",\n    \"failed\": \"{}\",\n    \"timeout\": \"{}\",\n    \"updated_at\": \"{}\"\n  }},\n  \"latest_triage\": {{\n    \"verdict\": \"{}\",\n    \"target\": \"{}\",\n    \"updated_at\": \"{}\"\n  }},\n  \"latest_report\": {{\n    \"updated_at\": \"{}\"\n  }},\n  \"triage_verdicts\": {{\n    \"reproduced\": {},\n    \"manual_review\": {},\n    \"not_reproduced\": {},\n    \"timeout\": {},\n    \"infra_oom\": {},\n    \"flaky\": {},\n    \"other\": {}\n  }}\n}}",
         s.generated_at,
         json_escape(&s.data_dir),
         json_escape(&s.seeds_dir),
@@ -52,16 +52,24 @@ pub(crate) fn render_dashboard_json(s: &DashboardSnapshot) -> String {
         json_escape(&s.latest_export_id),
         json_escape(&s.latest_export_path),
         json_escape(&s.latest_export_summary),
+        json_escape(&s.latest_export_updated_at),
         json_escape(&s.latest_mutation_batch_id),
         json_escape(&s.latest_mutation_manifest_path),
         json_escape(&s.latest_mutation_target),
         json_escape(&s.latest_mutation_count),
+        json_escape(&s.latest_mutation_updated_at),
+        json_escape(&s.run_state),
         json_escape(&s.latest_run_target),
         json_escape(&s.latest_run_backend),
         json_escape(&s.latest_run_total),
         json_escape(&s.latest_run_success),
         json_escape(&s.latest_run_failed),
         json_escape(&s.latest_run_timeout),
+        json_escape(&s.latest_run_updated_at),
+        json_escape(&s.latest_triage_verdict),
+        json_escape(&s.latest_triage_target),
+        json_escape(&s.latest_triage_updated_at),
+        json_escape(&s.latest_report_updated_at),
         s.triage_verdict_reproduced,
         s.triage_verdict_manual_review,
         s.triage_verdict_not_reproduced,
@@ -94,6 +102,9 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
         file_link(&s.latest_export_summary, &s.latest_export_summary);
     let latest_mutation_html =
         file_link(&s.latest_mutation_manifest_path, &s.latest_mutation_batch_id);
+    let latest_report_status = artifact_status_label(&s.latest_report);
+    let latest_export_status = artifact_status_label(&s.latest_export_id);
+    let latest_mutation_status = artifact_status_label(&s.latest_mutation_batch_id);
     let recent_triage_rows = render_recent_triage_rows(&s.recent_triage_ids);
     let recent_report_rows = render_recent_report_rows(&s.recent_report_ids);
     let recent_coverage_rows = render_recent_coverage_rows(&s.recent_coverage_ids);
@@ -179,6 +190,38 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
             "{{triage_verdict_other}}",
             &s.triage_verdict_other.to_string(),
         )
+        .replace("{{run_state}}", &html_escape(&s.run_state))
+        .replace(
+            "{{latest_triage_verdict}}",
+            &html_escape(&s.latest_triage_verdict),
+        )
+        .replace(
+            "{{latest_triage_target}}",
+            &html_escape(&s.latest_triage_target),
+        )
+        .replace(
+            "{{latest_run_updated_at}}",
+            &html_escape(&s.latest_run_updated_at),
+        )
+        .replace(
+            "{{latest_triage_updated_at}}",
+            &html_escape(&s.latest_triage_updated_at),
+        )
+        .replace(
+            "{{latest_report_updated_at}}",
+            &html_escape(&s.latest_report_updated_at),
+        )
+        .replace(
+            "{{latest_export_updated_at}}",
+            &html_escape(&s.latest_export_updated_at),
+        )
+        .replace(
+            "{{latest_mutation_updated_at}}",
+            &html_escape(&s.latest_mutation_updated_at),
+        )
+        .replace("{{latest_report_status}}", latest_report_status)
+        .replace("{{latest_export_status}}", latest_export_status)
+        .replace("{{latest_mutation_status}}", latest_mutation_status)
         .replace(
             "{{successful_runs_per_hour_proxy}}",
             &html_escape(&s.successful_runs_per_hour_proxy),
@@ -264,6 +307,14 @@ fn valid_crash_ratio_json_literal(s: &DashboardSnapshot) -> &str {
         &s.valid_crash_ratio
     } else {
         "null"
+    }
+}
+
+fn artifact_status_label(id_text: &str) -> &'static str {
+    if id_text == "none" {
+        "none"
+    } else {
+        "present"
     }
 }
 

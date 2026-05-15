@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::SystemTime,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::common::{artifact_contract, has_ext, now_unix, AppPaths};
@@ -77,6 +77,14 @@ pub(crate) struct DashboardSnapshot {
     pub(crate) triage_verdict_infra_oom: usize,
     pub(crate) triage_verdict_flaky: usize,
     pub(crate) triage_verdict_other: usize,
+    pub(crate) run_state: String,
+    pub(crate) latest_triage_verdict: String,
+    pub(crate) latest_triage_target: String,
+    pub(crate) latest_run_updated_at: String,
+    pub(crate) latest_triage_updated_at: String,
+    pub(crate) latest_report_updated_at: String,
+    pub(crate) latest_export_updated_at: String,
+    pub(crate) latest_mutation_updated_at: String,
 }
 
 struct ReproducedTriageView {
@@ -173,16 +181,21 @@ pub(crate) fn collect_dashboard_snapshot(
     };
 
     let latest_export = find_latest_export(&exports_root)?;
-    let (latest_export_id, latest_export_path, latest_export_summary) =
-        if let Some(view) = latest_export {
-            (view.id, view.path, view.summary)
-        } else {
-            (
-                "none".to_string(),
-                "none".to_string(),
-                "none".to_string(),
-            )
-        };
+    let (
+        latest_export_id,
+        latest_export_path,
+        latest_export_summary,
+        latest_export_updated_at,
+    ) = if let Some(view) = latest_export {
+        (view.id, view.path, view.summary, view.updated_at)
+    } else {
+        (
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+            "none".to_string(),
+        )
+    };
 
     let latest_mutation = find_latest_mutation_manifest(&mutated_root, &legacy_mutated_root)?;
     let (
@@ -190,10 +203,18 @@ pub(crate) fn collect_dashboard_snapshot(
         latest_mutation_manifest_path,
         latest_mutation_target,
         latest_mutation_count,
+        latest_mutation_updated_at,
     ) = if let Some(view) = latest_mutation {
-        (view.batch_id, view.manifest_path, view.target, view.count)
+        (
+            view.batch_id,
+            view.manifest_path,
+            view.target,
+            view.count,
+            view.updated_at,
+        )
     } else {
         (
+            "none".to_string(),
             "none".to_string(),
             "none".to_string(),
             "none".to_string(),
@@ -220,6 +241,21 @@ pub(crate) fn collect_dashboard_snapshot(
         )
     };
     let latest_run_backend = "none".to_string();
+    let run_state = if latest_run == "none" {
+        "no_run".to_string()
+    } else {
+        "finished".to_string()
+    };
+
+    let latest_triage_summary = read_latest_triage_summary(&triage_root, &latest_triage)?;
+    let (latest_triage_verdict, latest_triage_target) = match latest_triage_summary {
+        Some(view) => (view.verdict, view.target),
+        None => ("none".to_string(), "none".to_string()),
+    };
+
+    let latest_run_updated_at = dir_mtime_unix_string(&runs_root, &latest_run);
+    let latest_triage_updated_at = dir_mtime_unix_string(&triage_root, &latest_triage);
+    let latest_report_updated_at = dir_mtime_unix_string(&reports_root, &latest_report);
 
     let triage_verdicts = count_triage_verdicts(&triage_root)?;
 
@@ -406,6 +442,14 @@ pub(crate) fn collect_dashboard_snapshot(
         triage_verdict_infra_oom: triage_verdicts.infra_oom,
         triage_verdict_flaky: triage_verdicts.flaky,
         triage_verdict_other: triage_verdicts.other,
+        run_state,
+        latest_triage_verdict,
+        latest_triage_target,
+        latest_run_updated_at,
+        latest_triage_updated_at,
+        latest_report_updated_at,
+        latest_export_updated_at,
+        latest_mutation_updated_at,
     })
 }
 
@@ -657,6 +701,7 @@ struct LatestExportView {
     id: String,
     path: String,
     summary: String,
+    updated_at: String,
 }
 
 struct LatestMutationView {
@@ -664,6 +709,7 @@ struct LatestMutationView {
     manifest_path: String,
     target: String,
     count: String,
+    updated_at: String,
 }
 
 fn find_latest_export(exports_root: &Path) -> Result<Option<LatestExportView>, String> {
@@ -694,6 +740,7 @@ fn find_latest_export(exports_root: &Path) -> Result<Option<LatestExportView>, S
             id: name.to_string(),
             path: path.display().to_string(),
             summary,
+            updated_at: system_time_to_unix_string(mtime),
         };
         match &best {
             Some((best_mtime, _)) if mtime <= *best_mtime => {}
@@ -790,6 +837,7 @@ fn consider_mutation_manifest(
         manifest_path: manifest_path.display().to_string(),
         target,
         count,
+        updated_at: system_time_to_unix_string(mtime),
     };
     match best {
         Some((best_mtime, _)) if mtime <= *best_mtime => {}
@@ -800,6 +848,48 @@ fn consider_mutation_manifest(
 
 fn entry_mtime(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+fn system_time_to_unix_string(t: SystemTime) -> String {
+    t.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "none".to_string())
+}
+
+fn dir_mtime_unix_string(root: &Path, dir_name: &str) -> String {
+    if dir_name == "none" {
+        return "none".to_string();
+    }
+    let path = root.join(dir_name);
+    entry_mtime(&path)
+        .map(system_time_to_unix_string)
+        .unwrap_or_else(|| "none".to_string())
+}
+
+struct LatestTriageSummaryView {
+    verdict: String,
+    target: String,
+}
+
+fn read_latest_triage_summary(
+    triage_root: &Path,
+    triage_dir_name: &str,
+) -> Result<Option<LatestTriageSummaryView>, String> {
+    if triage_dir_name == "none" {
+        return Ok(None);
+    }
+    let summary_path = triage_root.join(triage_dir_name).join("summary.json");
+    if !summary_path.is_file() {
+        return Ok(None);
+    }
+    let body = fs::read_to_string(&summary_path)
+        .map_err(|e| format!("failed to read '{}': {e}", summary_path.display()))?;
+    Ok(Some(LatestTriageSummaryView {
+        verdict: extract_json_string_literal(&body, "verdict")
+            .unwrap_or_else(|| "none".to_string()),
+        target: extract_json_string_literal(&body, "target")
+            .unwrap_or_else(|| "none".to_string()),
+    }))
 }
 
 struct RunStatusView {

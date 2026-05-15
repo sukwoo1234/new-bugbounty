@@ -29,19 +29,18 @@
 <section class="panel">
 <div class="panel-head">Overview</div>
 <div class="grid">
-<div class="card"><div class="k">Runs</div><div class="v">{{runs_count}}</div></div>
-<div class="card"><div class="k">Triage</div><div class="v">{{triage_count}}</div></div>
-<div class="card"><div class="k">Reports</div><div class="v">{{report_count}}</div></div>
-<div class="card"><div class="k">Coverage Jobs</div><div class="v">{{coverage_count}}</div></div>
-<div class="card"><div class="k">Metrics</div><div class="v">{{metrics_badge}}</div></div>
+<div class="card"><div class="k">Run State</div><div class="v">{{run_state}}</div></div>
+<div class="card"><div class="k">Target</div><div class="v">{{latest_run_target}}</div></div>
+<div class="card"><div class="k">Backend</div><div class="v">{{latest_run_backend}}</div><div class="hint">status.json schema follow-up tracked in future-backlog</div></div>
+<div class="card"><div class="k">Success</div><div class="v">{{latest_run_success}}</div></div>
+<div class="card"><div class="k">Failed</div><div class="v">{{latest_run_failed}}</div></div>
+<div class="card"><div class="k">Timeout</div><div class="v">{{latest_run_timeout}}</div></div>
+<div class="card"><div class="k">Reproduced Crashes</div><div class="v">{{triage_verdict_reproduced}}</div></div>
+<div class="card"><div class="k">Manual Review</div><div class="v">{{triage_verdict_manual_review}}</div></div>
+<div class="card"><div class="k">Latest Report</div><div class="v">{{latest_report_html}}</div></div>
+<div class="card"><div class="k">Latest Export</div><div class="v">{{latest_export_html}}</div></div>
+<div class="card"><div class="k">Mutated Corpus</div><div class="v">{{latest_mutation_count}}</div></div>
 </div>
-<div class="rows">
-<div class="row"><div class="m">Latest run target</div><div>{{latest_run_target}}</div></div>
-<div class="row"><div class="m">Latest run backend</div><div>{{latest_run_backend}} <span class="hint">backend field is not written into status.json yet; see future-backlog</span></div></div>
-<div class="row"><div class="m">Latest run result</div><div>total={{latest_run_total}} | success={{latest_run_success}} | failed={{latest_run_failed}} | timeout={{latest_run_timeout}}</div></div>
-<div class="row"><div class="m">Triage verdicts</div><div>reproduced={{triage_verdict_reproduced}} | manual_review={{triage_verdict_manual_review}} | not_reproduced={{triage_verdict_not_reproduced}} | timeout={{triage_verdict_timeout}} | infra_oom={{triage_verdict_infra_oom}} | flaky={{triage_verdict_flaky}} | other={{triage_verdict_other}}</div></div>
-</div>
-<p class="hint">Overview card grid lands in A2 second commit.</p>
 </section>
 
 <section class="panel">
@@ -57,14 +56,19 @@
 
 <section class="panel">
 <div class="panel-head">Latest Artifacts</div>
-<p class="hint">Single artifact table lands in A2 second commit. Phase A1 row layout is shown below as a temporary view.</p>
-<div class="rows">
-<div class="row"><div class="m">Latest run</div><div>{{latest_run_html}}</div></div>
-<div class="row"><div class="m">Latest triage</div><div>{{latest_triage_html}}</div></div>
-<div class="row"><div class="m">Latest report</div><div>{{latest_report_html}}</div></div>
-<div class="row"><div class="m">Latest export</div><div>{{latest_export_html}} <span class="hint">summary={{latest_export_summary_html}}</span></div></div>
-<div class="row"><div class="m">Latest mutation manifest</div><div>{{latest_mutation_html}} <span class="hint">target={{latest_mutation_target}}</span></div></div>
-<div class="row"><div class="m">Latest coverage</div><div>{{latest_coverage_html}}</div></div>
+<div class="table-wrap">
+<table class="ops-table">
+<thead>
+<tr><th>Type</th><th>Status</th><th>Target / Backend</th><th>Updated</th><th>Path</th><th>Summary</th></tr>
+</thead>
+<tbody>
+<tr><td>Run</td><td>{{run_state}}</td><td>{{latest_run_target}} / {{latest_run_backend}}</td><td>{{latest_run_updated_at}}</td><td>{{latest_run_html}}</td><td>success={{latest_run_success}} | failed={{latest_run_failed}} | timeout={{latest_run_timeout}}</td></tr>
+<tr><td>Triage</td><td>{{latest_triage_verdict}}</td><td>{{latest_triage_target}} / none</td><td>{{latest_triage_updated_at}}</td><td>{{latest_triage_html}}</td><td>reproduced={{triage_verdict_reproduced}} | manual_review={{triage_verdict_manual_review}}</td></tr>
+<tr><td>Report</td><td>{{latest_report_status}}</td><td>none / none</td><td>{{latest_report_updated_at}}</td><td>{{latest_report_html}}</td><td>severity={{latest_suggested_severity}}</td></tr>
+<tr><td>Export</td><td>{{latest_export_status}}</td><td>none / none</td><td>{{latest_export_updated_at}}</td><td>{{latest_export_html}}</td><td>summary={{latest_export_summary_html}}</td></tr>
+<tr><td>Mutation manifest</td><td>{{latest_mutation_status}}</td><td>{{latest_mutation_target}} / -</td><td>{{latest_mutation_updated_at}}</td><td>{{latest_mutation_html}}</td><td>count={{latest_mutation_count}}</td></tr>
+</tbody>
+</table>
 </div>
 </section>
 
