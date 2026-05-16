@@ -395,7 +395,8 @@ fn consider_mutation_manifest(
     let count = extract_json_number_literal(&body, "generated")
         .or_else(|| extract_json_number_literal(&body, "requested"))
         .unwrap_or_else(|| "not_available".to_string());
-    let source_corpus = extract_json_string_literal(&body, "input_dir")
+    let source_corpus = extract_json_string_literal(&body, "source_path")
+        .or_else(|| extract_json_string_literal(&body, "input_dir"))
         .unwrap_or_else(|| "not_available".to_string());
     let validation_summary = extract_json_string_literal(&body, "validation_status")
         .or_else(|| extract_json_string_literal(&body, "validation_summary"))
