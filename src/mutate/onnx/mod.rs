@@ -10,6 +10,7 @@ use crate::{
 };
 
 pub(crate) mod attribute;
+pub(crate) mod byte_flip;
 pub(crate) mod dtype;
 pub(crate) mod graph_metadata;
 pub(crate) mod initializer_metadata;
@@ -44,14 +45,6 @@ struct MutationManifestEntry {
     seed: u64,
     input_size: usize,
     output_size: usize,
-}
-
-#[derive(Clone, Copy)]
-#[allow(dead_code)]
-struct ProtoField {
-    wire_type: u8,
-    value_start: usize,
-    value_end: usize,
 }
 
 pub(crate) struct DeterministicRng {
@@ -281,7 +274,15 @@ pub(crate) const DEFAULT_OPERATORS: &[&str] = &[
     graph_metadata::NAME,
 ];
 
-pub(crate) const KNOWN_OPERATORS: &[&str] = DEFAULT_OPERATORS;
+pub(crate) const KNOWN_OPERATORS: &[&str] = &[
+    shape::NAME,
+    dtype::NAME,
+    name::NAME,
+    attribute::NAME,
+    initializer_metadata::NAME,
+    graph_metadata::NAME,
+    byte_flip::NAME,
+];
 
 pub(crate) fn validate_operators(requested: &[String]) -> Result<Vec<&'static str>, String> {
     let mut resolved = Vec::with_capacity(requested.len());
@@ -318,6 +319,7 @@ fn dispatch(
         "attribute" => attribute::apply(bytes, rng),
         "initializer_metadata" => initializer_metadata::apply(bytes, rng),
         "graph_metadata" => graph_metadata::apply(bytes, rng),
+        "byte_flip" => byte_flip::apply(bytes, rng),
         _ => Err(OperatorError::NoApplicableField),
     }
 }
@@ -555,157 +557,6 @@ fn collect_onnx_inputs(input_dir: &Path) -> Result<Vec<PathBuf>, String> {
     }
     inputs.sort();
     Ok(inputs)
-}
-
-#[allow(dead_code)]
-fn mutate_onnx_wire(bytes: &[u8], rng: &mut DeterministicRng) -> (Vec<u8>, &'static str) {
-    let mut out = bytes.to_vec();
-    let fields = scan_proto_fields(bytes);
-
-    let length_fields = fields
-        .iter()
-        .copied()
-        .filter(|f| f.wire_type == 2 && f.value_end > f.value_start)
-        .collect::<Vec<_>>();
-    if !length_fields.is_empty() {
-        let field = length_fields[rng.index(length_fields.len())];
-        mutate_payload_byte(&mut out, field.value_start, field.value_end, rng);
-        return (out, "onnx_length_delimited_payload_flip");
-    }
-
-    let varint_fields = fields
-        .iter()
-        .copied()
-        .filter(|f| f.wire_type == 0 && f.value_end > f.value_start)
-        .collect::<Vec<_>>();
-    if !varint_fields.is_empty() {
-        let field = varint_fields[rng.index(varint_fields.len())];
-        mutate_payload_byte(&mut out, field.value_start, field.value_end, rng);
-        return (out, "onnx_varint_payload_flip");
-    }
-
-    mutate_payload_byte(&mut out, 0, bytes.len(), rng);
-    (out, "byte_flip_fallback")
-}
-
-#[allow(dead_code)]
-fn scan_proto_fields(bytes: &[u8]) -> Vec<ProtoField> {
-    let mut fields = Vec::new();
-    let mut cursor = 0usize;
-    while cursor < bytes.len() && fields.len() < 256 {
-        let Some((tag, after_tag)) = read_varint(bytes, cursor) else {
-            break;
-        };
-        if tag == 0 {
-            break;
-        }
-
-        let wire_type = (tag & 0x7) as u8;
-        let field_number = tag >> 3;
-        if field_number == 0 {
-            break;
-        }
-
-        match wire_type {
-            0 => {
-                let value_start = after_tag;
-                let Some((_, value_end)) = read_varint(bytes, value_start) else {
-                    break;
-                };
-                fields.push(ProtoField {
-                    wire_type,
-                    value_start,
-                    value_end,
-                });
-                cursor = value_end;
-            }
-            1 => {
-                let value_start = after_tag;
-                let Some(value_end) = value_start.checked_add(8) else {
-                    break;
-                };
-                if value_end > bytes.len() {
-                    break;
-                }
-                fields.push(ProtoField {
-                    wire_type,
-                    value_start,
-                    value_end,
-                });
-                cursor = value_end;
-            }
-            2 => {
-                let Some((len, value_start)) = read_varint(bytes, after_tag) else {
-                    break;
-                };
-                let Ok(len) = usize::try_from(len) else {
-                    break;
-                };
-                let Some(value_end) = value_start.checked_add(len) else {
-                    break;
-                };
-                if value_end > bytes.len() {
-                    break;
-                }
-                fields.push(ProtoField {
-                    wire_type,
-                    value_start,
-                    value_end,
-                });
-                cursor = value_end;
-            }
-            5 => {
-                let value_start = after_tag;
-                let Some(value_end) = value_start.checked_add(4) else {
-                    break;
-                };
-                if value_end > bytes.len() {
-                    break;
-                }
-                fields.push(ProtoField {
-                    wire_type,
-                    value_start,
-                    value_end,
-                });
-                cursor = value_end;
-            }
-            _ => break,
-        }
-    }
-    fields
-}
-
-#[allow(dead_code)]
-fn read_varint(bytes: &[u8], start: usize) -> Option<(u64, usize)> {
-    let mut value = 0u64;
-    let mut shift = 0u32;
-    let mut cursor = start;
-    while cursor < bytes.len() && shift < 64 {
-        let byte = bytes[cursor];
-        value |= ((byte & 0x7f) as u64) << shift;
-        cursor += 1;
-        if byte & 0x80 == 0 {
-            return Some((value, cursor));
-        }
-        shift += 7;
-    }
-    None
-}
-
-#[allow(dead_code)]
-fn mutate_payload_byte(out: &mut [u8], start: usize, end: usize, rng: &mut DeterministicRng) {
-    if out.is_empty() {
-        return;
-    }
-    let end = end.min(out.len());
-    let start = start.min(end.saturating_sub(1));
-    let span = end.saturating_sub(start).max(1);
-    let idx = start + rng.index(span);
-    let mask = 1u8 << (rng.index(8) as u32);
-    out[idx] ^= mask;
-    if out[idx] == 0 && mask != 0 {
-        out[idx] = mask;
-    }
 }
 
 fn write_output(out: &Path, bytes: &[u8]) -> Result<(), String> {
