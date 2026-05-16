@@ -42,6 +42,7 @@ struct MutationManifestEntry {
 }
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 struct ProtoField {
     wire_type: u8,
     value_start: usize,
@@ -78,7 +79,9 @@ impl DeterministicRng {
 
 pub(crate) struct MutationOutput {
     pub(crate) bytes: Vec<u8>,
+    #[allow(dead_code)]
     pub(crate) operator_params: Vec<(&'static str, String)>,
+    #[allow(dead_code)]
     pub(crate) parse_preserving: &'static str,
 }
 
@@ -266,6 +269,64 @@ fn read_varint_in(bytes: &[u8], start: usize, end: usize) -> Option<(u64, usize)
     None
 }
 
+pub(crate) const DEFAULT_OPERATORS: &[&str] = &[
+    shape::NAME,
+    dtype::NAME,
+    name::NAME,
+    attribute::NAME,
+    initializer_metadata::NAME,
+    graph_metadata::NAME,
+];
+
+pub(crate) const KNOWN_OPERATORS: &[&str] = DEFAULT_OPERATORS;
+
+pub(crate) fn validate_operators(requested: &[String]) -> Result<Vec<&'static str>, String> {
+    let mut resolved = Vec::with_capacity(requested.len());
+    for name in requested {
+        let matched = KNOWN_OPERATORS
+            .iter()
+            .copied()
+            .find(|known| *known == name.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "unknown operator '{}'; known operators: {}",
+                    name,
+                    KNOWN_OPERATORS.join(", ")
+                )
+            })?;
+        resolved.push(matched);
+    }
+    Ok(resolved)
+}
+
+fn select_operator(set: &[&'static str], rng: &mut DeterministicRng) -> &'static str {
+    set[rng.index(set.len())]
+}
+
+fn dispatch(
+    operator: &'static str,
+    bytes: &[u8],
+    rng: &mut DeterministicRng,
+) -> Result<MutationOutput, OperatorError> {
+    match operator {
+        "shape" => shape::apply(bytes, rng),
+        "dtype" => dtype::apply(bytes, rng),
+        "name" => name::apply(bytes, rng),
+        "attribute" => attribute::apply(bytes, rng),
+        "initializer_metadata" => initializer_metadata::apply(bytes, rng),
+        "graph_metadata" => graph_metadata::apply(bytes, rng),
+        _ => Err(OperatorError::NoApplicableField),
+    }
+}
+
+fn operator_set<'a>(operators: &'a [&'static str]) -> &'a [&'static str] {
+    if operators.is_empty() {
+        DEFAULT_OPERATORS
+    } else {
+        operators
+    }
+}
+
 pub(crate) fn run(
     target: &TargetKind,
     input: Option<&Path>,
@@ -274,11 +335,14 @@ pub(crate) fn run(
     out_dir: Option<&Path>,
     count: usize,
     seed: u64,
+    operators: &[&'static str],
 ) -> Result<(), String> {
     match (input, out, input_dir, out_dir) {
-        (Some(input), Some(out), None, None) => run_single_mutation(target, input, out, seed),
+        (Some(input), Some(out), None, None) => {
+            run_single_mutation(target, input, out, seed, operators)
+        }
         (None, None, Some(input_dir), Some(out_dir)) => {
-            run_batch_mutation(target, input_dir, out_dir, count, seed)
+            run_batch_mutation(target, input_dir, out_dir, count, seed, operators)
         }
         _ => Err(
             "choose exactly one mode: --input <file> --out <file> or --input-dir <dir> --out-dir <dir>"
@@ -292,6 +356,7 @@ fn run_single_mutation(
     input: &Path,
     out: &Path,
     seed: u64,
+    operators: &[&'static str],
 ) -> Result<(), String> {
     if !input.exists() || !input.is_file() {
         return Err(format!("input is invalid: {}", input.display()));
@@ -304,13 +369,16 @@ fn run_single_mutation(
     }
 
     let mut rng = DeterministicRng::new(seed);
-    let (mutated, strategy) = mutate_onnx_wire(&bytes, &mut rng);
-    write_output(out, &mutated)?;
+    let set = operator_set(operators);
+    let chosen = select_operator(set, &mut rng);
+    let result = dispatch(chosen, &bytes, &mut rng)
+        .map_err(|e| format!("operator '{}' failed: {:?}", chosen, e))?;
+    write_output(out, &result.bytes)?;
 
     let report = MutationReport {
-        strategy,
+        strategy: chosen,
         input_size: bytes.len(),
-        output_size: mutated.len(),
+        output_size: result.bytes.len(),
     };
     print_mutation_report(target, input, out, seed, &report);
     Ok(())
@@ -322,6 +390,7 @@ fn run_batch_mutation(
     out_dir: &Path,
     count: usize,
     seed: u64,
+    operators: &[&'static str],
 ) -> Result<(), String> {
     if count == 0 {
         return Err("count must be >= 1".to_string());
@@ -340,6 +409,7 @@ fn run_batch_mutation(
     fs::create_dir_all(out_dir)
         .map_err(|e| format!("failed to create out_dir '{}': {e}", out_dir.display()))?;
 
+    let set = operator_set(operators);
     let mut entries = Vec::new();
     for idx in 0..count {
         let input = &inputs[idx % inputs.len()];
@@ -351,17 +421,21 @@ fn run_batch_mutation(
 
         let mut rng = DeterministicRng::new(seed.wrapping_add(idx as u64));
         let mutation_seed = seed.wrapping_add(idx as u64);
-        let (mutated, strategy) = mutate_onnx_wire(&bytes, &mut rng);
-        let output_size = mutated.len();
+        let chosen = select_operator(set, &mut rng);
+        let result = match dispatch(chosen, &bytes, &mut rng) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let output_size = result.bytes.len();
         let out = out_dir.join(format!("mut-onnx-{:06}.onnx", idx + 1));
-        fs::write(&out, mutated)
+        fs::write(&out, &result.bytes)
             .map_err(|e| format!("failed to write output '{}': {e}", out.display()))?;
         let output_sha256 = sha256_file(&out).unwrap_or_else(|_| "unavailable".to_string());
         entries.push(MutationManifestEntry {
             index: idx + 1,
             source_seed: input.display().to_string(),
             output_path: out.display().to_string(),
-            strategy,
+            strategy: chosen,
             mutation_seed,
             input_size: bytes.len(),
             output_size,
@@ -402,6 +476,7 @@ fn collect_onnx_inputs(input_dir: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(inputs)
 }
 
+#[allow(dead_code)]
 fn mutate_onnx_wire(bytes: &[u8], rng: &mut DeterministicRng) -> (Vec<u8>, &'static str) {
     let mut out = bytes.to_vec();
     let fields = scan_proto_fields(bytes);
@@ -432,6 +507,7 @@ fn mutate_onnx_wire(bytes: &[u8], rng: &mut DeterministicRng) -> (Vec<u8>, &'sta
     (out, "byte_flip_fallback")
 }
 
+#[allow(dead_code)]
 fn scan_proto_fields(bytes: &[u8]) -> Vec<ProtoField> {
     let mut fields = Vec::new();
     let mut cursor = 0usize;
@@ -518,6 +594,7 @@ fn scan_proto_fields(bytes: &[u8]) -> Vec<ProtoField> {
     fields
 }
 
+#[allow(dead_code)]
 fn read_varint(bytes: &[u8], start: usize) -> Option<(u64, usize)> {
     let mut value = 0u64;
     let mut shift = 0u32;
@@ -534,6 +611,7 @@ fn read_varint(bytes: &[u8], start: usize) -> Option<(u64, usize)> {
     None
 }
 
+#[allow(dead_code)]
 fn mutate_payload_byte(out: &mut [u8], start: usize, end: usize, rng: &mut DeterministicRng) {
     if out.is_empty() {
         return;

@@ -293,6 +293,10 @@ struct MutateArgs {
     /// Deterministic mutation seed
     #[arg(long, default_value_t = 1)]
     seed: u64,
+
+    /// Operator to apply (repeatable). Empty = default operator set.
+    #[arg(long)]
+    operator: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -477,6 +481,7 @@ fn main() -> ExitCode {
                 args.out_dir.as_deref(),
                 args.count,
                 args.seed,
+                &args.operator,
             ) {
                 eprintln!("[{E_CONFIG_PREPARE}] mutate error: {err}");
                 return ExitCode::from(2);

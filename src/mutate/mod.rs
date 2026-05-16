@@ -12,6 +12,7 @@ pub(crate) fn run_mutate_pipeline(
     out_dir: Option<&Path>,
     count: usize,
     seed: u64,
+    operators: &[String],
 ) -> Result<(), String> {
     if !matches!(target, TargetKind::Onnx) {
         return Err(format!(
@@ -19,5 +20,6 @@ pub(crate) fn run_mutate_pipeline(
             target_label(target)
         ));
     }
-    onnx::run(target, input, out, input_dir, out_dir, count, seed)
+    let resolved = onnx::validate_operators(operators)?;
+    onnx::run(target, input, out, input_dir, out_dir, count, seed, &resolved)
 }
