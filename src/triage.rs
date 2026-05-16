@@ -692,3 +692,74 @@ fn exit_signal(status: &ExitStatus) -> Option<i32> {
 fn exit_signal(_status: &ExitStatus) -> Option<i32> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::json_utils::{extract_json_number_literal, extract_json_string_literal};
+
+    // Backward-compatibility fixture: an old schema_version="1.1" triage summary
+    // without a `deep_triage` nested object. Deep triage T2+ commits must keep
+    // consumers tolerant of this shape (silent ignore of absent deep_triage).
+    const SCHEMA_1_1_SAMPLE_SUMMARY: &str = r#"{
+  "schema_version": "1.1",
+  "triage_id": "1700000000000",
+  "target": "onnx",
+  "input": "data/runs/run-x/inputs/sample.onnx",
+  "repro_retries": 3,
+  "timeout_sec": 60,
+  "clean_count": 0,
+  "crashed_count": 3,
+  "timeout_count": 0,
+  "infra_oom_count": 0,
+  "signature_consistent": true,
+  "signature_basis": "normalized_frame_hash",
+  "normalized_frame_hash": "abc123def456",
+  "crash_kind": "heap-buffer-overflow",
+  "sanitizer": "asan",
+  "signal": "SIGSEGV",
+  "crash_summary": "AddressSanitizer: heap-buffer-overflow",
+  "verdict": "reproduced",
+  "attempts": []
+}
+"#;
+
+    #[test]
+    fn schema_1_1_summary_top_level_fields_readable() {
+        assert_eq!(
+            extract_json_string_literal(SCHEMA_1_1_SAMPLE_SUMMARY, "schema_version").as_deref(),
+            Some("1.1")
+        );
+        assert_eq!(
+            extract_json_string_literal(SCHEMA_1_1_SAMPLE_SUMMARY, "verdict").as_deref(),
+            Some("reproduced")
+        );
+        assert_eq!(
+            extract_json_string_literal(SCHEMA_1_1_SAMPLE_SUMMARY, "target").as_deref(),
+            Some("onnx")
+        );
+        assert_eq!(
+            extract_json_string_literal(SCHEMA_1_1_SAMPLE_SUMMARY, "normalized_frame_hash")
+                .as_deref(),
+            Some("abc123def456")
+        );
+        assert_eq!(
+            extract_json_string_literal(SCHEMA_1_1_SAMPLE_SUMMARY, "crash_kind").as_deref(),
+            Some("heap-buffer-overflow")
+        );
+        assert_eq!(
+            extract_json_number_literal(SCHEMA_1_1_SAMPLE_SUMMARY, "repro_retries").as_deref(),
+            Some("3")
+        );
+    }
+
+    #[test]
+    fn schema_1_1_summary_has_no_deep_triage_object() {
+        // Deep triage T1 audit policy: old schema_version="1.1" summaries
+        // never carry a `deep_triage` nested object. Readers must tolerate
+        // its absence (silent ignore, no panic, Option=None).
+        assert!(
+            extract_json_string_literal(SCHEMA_1_1_SAMPLE_SUMMARY, "deep_triage").is_none(),
+            "old 1.1 summary must not contain deep_triage"
+        );
+    }
+}
