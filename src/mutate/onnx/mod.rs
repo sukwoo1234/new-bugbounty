@@ -69,7 +69,7 @@ impl DeterministicRng {
     }
 }
 
-pub(crate) fn run_mutate_pipeline(
+pub(crate) fn run(
     target: &TargetKind,
     input: Option<&Path>,
     out: Option<&Path>,
@@ -78,13 +78,6 @@ pub(crate) fn run_mutate_pipeline(
     count: usize,
     seed: u64,
 ) -> Result<(), String> {
-    if !matches!(target, TargetKind::Onnx) {
-        return Err(format!(
-            "mutate currently supports only target=onnx; got {}",
-            target_label(target)
-        ));
-    }
-
     match (input, out, input_dir, out_dir) {
         (Some(input), Some(out), None, None) => run_single_mutation(target, input, out, seed),
         (None, None, Some(input_dir), Some(out_dir)) => {
