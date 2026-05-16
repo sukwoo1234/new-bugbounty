@@ -16,13 +16,13 @@ pub(crate) fn apply(
     rng: &mut DeterministicRng,
 ) -> Result<MutationOutput, OperatorError> {
     let mut candidates: Vec<Candidate> = Vec::new();
-    for f in find_fields(bytes, &[(7, 2), (1, 2), (5, 2), (4, 0)]) {
+    for f in find_fields(bytes, &[(7, 2), (1, 2), (5, 2), (3, 0)]) {
         candidates.push(Candidate::Varint(f));
     }
-    for f in find_fields(bytes, &[(7, 2), (1, 2), (5, 2), (5, 5)]) {
+    for f in find_fields(bytes, &[(7, 2), (1, 2), (5, 2), (2, 5)]) {
         candidates.push(Candidate::Fixed32(f));
     }
-    for f in find_fields(bytes, &[(7, 2), (1, 2), (5, 2), (6, 2)]) {
+    for f in find_fields(bytes, &[(7, 2), (1, 2), (5, 2), (4, 2)]) {
         if f.value_end > f.value_start {
             candidates.push(Candidate::LengthDelimited(f));
         }
@@ -70,7 +70,7 @@ mod tests {
 
     fn fixture_with_attribute() -> Vec<u8> {
         let mut attr = Vec::new();
-        attr.extend(encode_varint_field(4, 123));
+        attr.extend(encode_varint_field(3, 123));
         let node = encode_length_delimited(5, &attr);
         let graph = encode_length_delimited(1, &node);
         encode_length_delimited(7, &graph)
@@ -84,7 +84,7 @@ mod tests {
         assert_eq!(result.parse_preserving, "yes");
         assert_ne!(result.bytes, bytes);
         assert_eq!(result.bytes.len(), bytes.len());
-        let after = find_fields(&result.bytes, &[(7, 2), (1, 2), (5, 2), (4, 0)]);
+        let after = find_fields(&result.bytes, &[(7, 2), (1, 2), (5, 2), (3, 0)]);
         assert!(!after.is_empty());
     }
 
