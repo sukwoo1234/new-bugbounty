@@ -122,3 +122,55 @@ fn is_older_than(path: &Path, now: SystemTime, age_secs: u64) -> Result<bool, St
         .as_secs();
     Ok(elapsed > age_secs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::{now_unix_millis, AppPaths};
+
+    fn unique_tmp_data_dir(label: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("c1_{}_{}", label, now_unix_millis()));
+        fs::create_dir_all(&p).expect("create tmp data dir");
+        p
+    }
+
+    // Corpus Lifecycle C1 audit fixture: `data/corpus/mutated/` must never
+    // be scanned by `apply_retention_policy`. The function iterates only
+    // [("runs", "run-"), ("triage", "triage-"), ("reports", "report-")].
+    // This is the load-bearing invariant for step 6 (1-week fuzzing safety).
+    #[test]
+    fn retention_does_not_touch_corpus_mutated() {
+        let data = unique_tmp_data_dir("retention_audit");
+        let seeds = data.join("seeds");
+        fs::create_dir_all(&seeds).expect("create seeds dir");
+
+        let corpus_file = data
+            .join("corpus")
+            .join("mutated")
+            .join("onnx")
+            .join("batch-x")
+            .join("file.txt");
+        fs::create_dir_all(corpus_file.parent().unwrap()).expect("create corpus dir");
+        fs::write(&corpus_file, b"audit fixture").expect("write corpus fixture");
+
+        let paths = AppPaths {
+            data_dir: data.clone(),
+            seeds_dir: seeds,
+        };
+
+        let stats = apply_retention_policy(&paths, 0)
+            .expect("apply_retention_policy should succeed even with cutoff 0");
+
+        assert_eq!(
+            stats.deleted_dirs, 0,
+            "no runs/triage/reports present, nothing to delete"
+        );
+        assert!(
+            corpus_file.exists(),
+            "data/corpus/mutated/ must not be in retention scope (C1 audit contract)"
+        );
+
+        let _ = fs::remove_dir_all(&data);
+    }
+}
