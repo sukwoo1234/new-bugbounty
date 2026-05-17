@@ -5,7 +5,7 @@ mod safetensors;
 
 use std::path::Path;
 
-use crate::target::{target_label, TargetKind};
+use crate::target::TargetKind;
 
 pub(crate) fn run_mutate_pipeline(
     target: &TargetKind,
@@ -26,9 +26,9 @@ pub(crate) fn run_mutate_pipeline(
             let resolved = gguf::validate_operators(operators)?;
             gguf::run(target, input, out, input_dir, out_dir, count, seed, &resolved)
         }
-        TargetKind::Safetensors => Err(format!(
-            "mutate does not yet support target={}",
-            target_label(target)
-        )),
+        TargetKind::Safetensors => {
+            let resolved = safetensors::validate_operators(operators)?;
+            safetensors::run(target, input, out, input_dir, out_dir, count, seed, &resolved)
+        }
     }
 }

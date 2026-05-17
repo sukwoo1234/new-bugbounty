@@ -1,6 +1,14 @@
-#![allow(dead_code)]
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use crate::mutate::common::DeterministicRng;
+use crate::mutate::common::{
+    operator_set, print_batch_mutation_report, print_mutation_report, select_operator,
+    single_manifest_path, write_mutation_manifest, write_output, BatchMutationReport,
+    DeterministicRng, MutationManifestEntry, MutationOutput, MutationReport, OperatorError,
+};
+use crate::{common::sha256_file, target::TargetKind};
 
 pub(crate) mod byte_flip;
 pub(crate) mod header_length;
@@ -15,8 +23,283 @@ pub(crate) const HEADER_LEN_BYTES: usize = 8;
 pub(crate) const NATURAL_ALIGNMENT_SMALL: u64 = 8;
 pub(crate) const NATURAL_ALIGNMENT_LARGE: u64 = 64;
 
-pub(crate) const DEFAULT_OPERATORS: &[&str] = &[];
-pub(crate) const KNOWN_OPERATORS: &[&str] = &[];
+pub(crate) const DEFAULT_OPERATORS: &[&str] = &[
+    header_length::NAME,
+    metadata_value::NAME,
+    metadata_key::NAME,
+    tensor_name::NAME,
+    tensor_dtype::NAME,
+    tensor_shape::NAME,
+    tensor_data_offsets::NAME,
+];
+
+pub(crate) const KNOWN_OPERATORS: &[&str] = &[
+    header_length::NAME,
+    metadata_value::NAME,
+    metadata_key::NAME,
+    tensor_name::NAME,
+    tensor_dtype::NAME,
+    tensor_shape::NAME,
+    tensor_data_offsets::NAME,
+    byte_flip::NAME,
+];
+
+pub(crate) fn validate_operators(requested: &[String]) -> Result<Vec<&'static str>, String> {
+    let mut resolved = Vec::with_capacity(requested.len());
+    for name in requested {
+        let matched = KNOWN_OPERATORS
+            .iter()
+            .copied()
+            .find(|known| *known == name.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "unknown operator '{}'; known operators: {}",
+                    name,
+                    KNOWN_OPERATORS.join(", ")
+                )
+            })?;
+        resolved.push(matched);
+    }
+    Ok(resolved)
+}
+
+fn dispatch(
+    operator: &'static str,
+    bytes: &[u8],
+    rng: &mut DeterministicRng,
+) -> Result<MutationOutput, OperatorError> {
+    match operator {
+        "header_length" => header_length::apply(bytes, rng),
+        "metadata_value" => metadata_value::apply(bytes, rng),
+        "metadata_key" => metadata_key::apply(bytes, rng),
+        "tensor_name" => tensor_name::apply(bytes, rng),
+        "tensor_dtype" => tensor_dtype::apply(bytes, rng),
+        "tensor_shape" => tensor_shape::apply(bytes, rng),
+        "tensor_data_offsets" => tensor_data_offsets::apply(bytes, rng),
+        "byte_flip" => byte_flip::apply(bytes, rng),
+        _ => Err(OperatorError::NoApplicableField),
+    }
+}
+
+pub(crate) fn run(
+    target: &TargetKind,
+    input: Option<&Path>,
+    out: Option<&Path>,
+    input_dir: Option<&Path>,
+    out_dir: Option<&Path>,
+    count: usize,
+    seed: u64,
+    operators: &[&'static str],
+) -> Result<(), String> {
+    match (input, out, input_dir, out_dir) {
+        (Some(input), Some(out), None, None) => {
+            run_single_mutation(target, input, out, seed, operators)
+        }
+        (None, None, Some(input_dir), Some(out_dir)) => {
+            run_batch_mutation(target, input_dir, out_dir, count, seed, operators)
+        }
+        _ => Err(
+            "choose exactly one mode: --input <file> --out <file> or --input-dir <dir> --out-dir <dir>"
+                .to_string(),
+        ),
+    }
+}
+
+fn run_single_mutation(
+    target: &TargetKind,
+    input: &Path,
+    out: &Path,
+    seed: u64,
+    operators: &[&'static str],
+) -> Result<(), String> {
+    if !input.exists() || !input.is_file() {
+        return Err(format!("input is invalid: {}", input.display()));
+    }
+
+    let bytes =
+        fs::read(input).map_err(|e| format!("failed to read input '{}': {e}", input.display()))?;
+    if bytes.is_empty() {
+        return Err("input is empty".to_string());
+    }
+
+    let mut rng = DeterministicRng::new(seed);
+    let set = operator_set(operators, DEFAULT_OPERATORS);
+    let chosen = select_operator(set, &mut rng);
+    let result = dispatch(chosen, &bytes, &mut rng)
+        .map_err(|e| format!("operator '{}' failed: {:?}", chosen, e))?;
+    write_output(out, &result.bytes)?;
+
+    let output_size = result.bytes.len();
+    let source_hash = sha256_file(input).unwrap_or_else(|_| "not_available".to_string());
+    let output_hash = sha256_file(out).unwrap_or_else(|_| "not_available".to_string());
+    let entry = MutationManifestEntry {
+        index: 1,
+        source_seed: input.display().to_string(),
+        source_hash,
+        output_path: out.display().to_string(),
+        output_hash,
+        operator: chosen,
+        operator_params: result.operator_params,
+        mutation_level: 1,
+        parse_preserving: result.parse_preserving,
+        validation_status: "skipped",
+        seed,
+        input_size: bytes.len(),
+        output_size,
+    };
+
+    let manifest_path_buf = single_manifest_path(out);
+    let batch_id = out
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("single")
+        .to_string();
+    let out_dir_str = out
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    write_mutation_manifest(
+        &manifest_path_buf,
+        target,
+        "single",
+        &input.display().to_string(),
+        &format!("seed:{}", input.display()),
+        &out_dir_str,
+        &batch_id,
+        1,
+        seed,
+        operators,
+        "tool/mutate/safetensors",
+        &[entry],
+    )?;
+
+    let report = MutationReport {
+        strategy: chosen,
+        input_size: bytes.len(),
+        output_size,
+    };
+    print_mutation_report(target, input, out, seed, &report);
+    println!("manifest: {}", manifest_path_buf.display());
+    Ok(())
+}
+
+fn run_batch_mutation(
+    target: &TargetKind,
+    input_dir: &Path,
+    out_dir: &Path,
+    count: usize,
+    seed: u64,
+    operators: &[&'static str],
+) -> Result<(), String> {
+    if count == 0 {
+        return Err("count must be >= 1".to_string());
+    }
+    if !input_dir.exists() || !input_dir.is_dir() {
+        return Err(format!("input_dir is invalid: {}", input_dir.display()));
+    }
+
+    let inputs = collect_safetensors_inputs(input_dir)?;
+    if inputs.is_empty() {
+        return Err(format!(
+            "no .safetensors input files found in {}",
+            input_dir.display()
+        ));
+    }
+    fs::create_dir_all(out_dir)
+        .map_err(|e| format!("failed to create out_dir '{}': {e}", out_dir.display()))?;
+
+    let set = operator_set(operators, DEFAULT_OPERATORS);
+    let mut entries = Vec::new();
+    for idx in 0..count {
+        let input = &inputs[idx % inputs.len()];
+        let bytes = fs::read(input)
+            .map_err(|e| format!("failed to read input '{}': {e}", input.display()))?;
+        if bytes.is_empty() {
+            continue;
+        }
+
+        let mut rng = DeterministicRng::new(seed.wrapping_add(idx as u64));
+        let entry_seed = seed.wrapping_add(idx as u64);
+        let chosen = select_operator(set, &mut rng);
+        let result = match dispatch(chosen, &bytes, &mut rng) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let output_size = result.bytes.len();
+        let out = out_dir.join(format!("mut-safetensors-{:06}.safetensors", idx + 1));
+        fs::write(&out, &result.bytes)
+            .map_err(|e| format!("failed to write output '{}': {e}", out.display()))?;
+        let output_hash = sha256_file(&out).unwrap_or_else(|_| "not_available".to_string());
+        let source_hash = sha256_file(input).unwrap_or_else(|_| "not_available".to_string());
+        entries.push(MutationManifestEntry {
+            index: idx + 1,
+            source_seed: input.display().to_string(),
+            source_hash,
+            output_path: out.display().to_string(),
+            output_hash,
+            operator: chosen,
+            operator_params: result.operator_params,
+            mutation_level: 1,
+            parse_preserving: result.parse_preserving,
+            validation_status: "skipped",
+            seed: entry_seed,
+            input_size: bytes.len(),
+            output_size,
+        });
+    }
+
+    let batch_id = out_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("not_available")
+        .to_string();
+    let manifest_path_buf = out_dir.join("manifest.json");
+    write_mutation_manifest(
+        &manifest_path_buf,
+        target,
+        "batch",
+        &input_dir.display().to_string(),
+        &format!("seed_corpus:{}", input_dir.display()),
+        &out_dir.display().to_string(),
+        &batch_id,
+        count,
+        seed,
+        operators,
+        "tool/mutate/safetensors",
+        &entries,
+    )?;
+
+    let report = BatchMutationReport {
+        generated: entries.len(),
+        requested: count,
+        input_count: inputs.len(),
+        out_dir: out_dir.display().to_string(),
+        manifest_path: manifest_path_buf.display().to_string(),
+    };
+    print_batch_mutation_report(target, input_dir, seed, &report);
+    Ok(())
+}
+
+fn collect_safetensors_inputs(input_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut inputs = Vec::new();
+    for entry in fs::read_dir(input_dir)
+        .map_err(|e| format!("failed to read input_dir '{}': {e}", input_dir.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read input_dir entry: {e}"))?;
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("safetensors"))
+                .unwrap_or(false)
+        {
+            inputs.push(path);
+        }
+    }
+    inputs.sort();
+    Ok(inputs)
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ParseError {
@@ -64,6 +347,7 @@ impl std::fmt::Display for ParseError {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct StringSpan {
     pub(crate) outer_start: usize,
     pub(crate) outer_end: usize,
@@ -90,6 +374,7 @@ impl NumberSpan {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct ArraySpan {
     pub(crate) open: usize,
     pub(crate) close: usize,
@@ -116,6 +401,7 @@ pub(crate) struct MetadataSection {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct SafetensorsLayout {
     pub(crate) header_len: u64,
     pub(crate) json_start: usize,
@@ -533,16 +819,6 @@ pub(crate) fn write_u64_le(out: &mut [u8], offset: usize, value: u64) {
     out[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
-pub(crate) fn natural_alignment_of(offset: u64) -> u64 {
-    if offset == 0 || offset % NATURAL_ALIGNMENT_LARGE == 0 {
-        NATURAL_ALIGNMENT_LARGE
-    } else if offset % NATURAL_ALIGNMENT_SMALL == 0 {
-        NATURAL_ALIGNMENT_SMALL
-    } else {
-        1
-    }
-}
-
 pub(crate) fn digit_count_u64(value: u64) -> usize {
     let mut n = value;
     if n == 0 {
@@ -554,4 +830,226 @@ pub(crate) fn digit_count_u64(value: u64) -> usize {
         n /= 10;
     }
     c
+}
+
+#[cfg(test)]
+pub(crate) mod test_fixtures {
+    pub(crate) fn build_minimal_safetensors() -> Vec<u8> {
+        let header =
+            br#"{"tensor_a":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]}}"#.to_vec();
+        let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(&header);
+        bytes.extend_from_slice(&[0u8; 24]);
+        bytes
+    }
+
+    pub(crate) fn build_safetensors_with_metadata() -> Vec<u8> {
+        let header =
+            br#"{"__metadata__":{"format":"pt"},"t":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#.to_vec();
+        let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(&header);
+        bytes.extend_from_slice(&[0u8; 4]);
+        bytes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_fixtures::{build_minimal_safetensors, build_safetensors_with_metadata};
+    use super::*;
+
+    #[test]
+    fn parse_minimal_safetensors_succeeds() {
+        let bytes = build_minimal_safetensors();
+        let layout = parse_safetensors(&bytes).expect("parse minimal");
+        assert_eq!(layout.header_len, 64);
+        assert_eq!(layout.tensors.len(), 1);
+        let t = &layout.tensors[0];
+        assert_eq!(&bytes[t.name.inner_start..t.name.inner_end], b"tensor_a");
+        assert_eq!(&bytes[t.dtype.inner_start..t.dtype.inner_end], b"F32");
+        assert_eq!(t.shape.elements.len(), 2);
+        assert_eq!(t.data_offsets.elements.len(), 2);
+    }
+
+    #[test]
+    fn parse_rejects_too_small() {
+        assert!(matches!(
+            parse_safetensors(&[0u8; 4]),
+            Err(ParseError::TooSmall)
+        ));
+    }
+
+    #[test]
+    fn parse_rejects_zero_header_len() {
+        assert!(matches!(
+            parse_safetensors(&[0u8; 16]),
+            Err(ParseError::HeaderLenZero)
+        ));
+    }
+
+    #[test]
+    fn parse_rejects_header_out_of_range() {
+        let mut bytes = 999u64.to_le_bytes().to_vec();
+        bytes.extend_from_slice(b"{}");
+        assert!(matches!(
+            parse_safetensors(&bytes),
+            Err(ParseError::HeaderOutOfRange)
+        ));
+    }
+
+    #[test]
+    fn parse_extracts_metadata_section() {
+        let bytes = build_safetensors_with_metadata();
+        let layout = parse_safetensors(&bytes).expect("parse with metadata");
+        let m = layout.metadata.as_ref().expect("metadata section");
+        assert_eq!(m.kvs.len(), 1);
+        assert_eq!(
+            &bytes[m.kvs[0].key.inner_start..m.kvs[0].key.inner_end],
+            b"format"
+        );
+        assert_eq!(
+            &bytes[m.kvs[0].value.inner_start..m.kvs[0].value.inner_end],
+            b"pt"
+        );
+        assert_eq!(layout.tensors.len(), 1);
+    }
+
+    #[test]
+    fn validate_operators_accepts_known() {
+        let req = vec!["metadata_value".to_string(), "byte_flip".to_string()];
+        let resolved = validate_operators(&req).expect("known operators accepted");
+        assert_eq!(resolved, vec!["metadata_value", "byte_flip"]);
+    }
+
+    #[test]
+    fn validate_operators_rejects_unknown() {
+        let req = vec!["nonexistent".to_string()];
+        assert!(validate_operators(&req).is_err());
+    }
+
+    #[test]
+    fn default_operators_excludes_opt_in() {
+        assert!(!DEFAULT_OPERATORS.contains(&byte_flip::NAME));
+        assert!(KNOWN_OPERATORS.contains(&byte_flip::NAME));
+        assert_eq!(DEFAULT_OPERATORS.len(), 7);
+        assert_eq!(KNOWN_OPERATORS.len(), 8);
+    }
+
+    #[test]
+    fn header_length_mutates_u64() {
+        let bytes = build_minimal_safetensors();
+        let mut rng = DeterministicRng::new(1);
+        let r = header_length::apply(&bytes, &mut rng).expect("apply");
+        assert_ne!(r.bytes[0..8], bytes[0..8]);
+        let old_v = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+        let new_v = u64::from_le_bytes(r.bytes[0..8].try_into().unwrap());
+        assert!(new_v == old_v + 1 || new_v == old_v.saturating_sub(1));
+        assert_eq!(r.parse_preserving, "no");
+    }
+
+    #[test]
+    fn metadata_value_preserves_length() {
+        let bytes = build_safetensors_with_metadata();
+        let mut rng = DeterministicRng::new(2);
+        let r = metadata_value::apply(&bytes, &mut rng).expect("apply");
+        assert_ne!(r.bytes, bytes);
+        assert_eq!(r.bytes.len(), bytes.len());
+        assert_eq!(r.parse_preserving, "yes");
+    }
+
+    #[test]
+    fn metadata_key_preserves_length() {
+        let bytes = build_safetensors_with_metadata();
+        let mut rng = DeterministicRng::new(3);
+        let r = metadata_key::apply(&bytes, &mut rng).expect("apply");
+        assert_ne!(r.bytes, bytes);
+        assert_eq!(r.bytes.len(), bytes.len());
+        assert_eq!(r.parse_preserving, "yes");
+    }
+
+    #[test]
+    fn metadata_operators_no_applicable_without_metadata() {
+        let bytes = build_minimal_safetensors();
+        let mut rng = DeterministicRng::new(5);
+        assert!(matches!(
+            metadata_value::apply(&bytes, &mut rng),
+            Err(OperatorError::NoApplicableField)
+        ));
+        let mut rng = DeterministicRng::new(7);
+        assert!(matches!(
+            metadata_key::apply(&bytes, &mut rng),
+            Err(OperatorError::NoApplicableField)
+        ));
+    }
+
+    #[test]
+    fn tensor_name_preserves_length() {
+        let bytes = build_minimal_safetensors();
+        let mut rng = DeterministicRng::new(11);
+        let r = tensor_name::apply(&bytes, &mut rng).expect("apply");
+        assert_ne!(r.bytes, bytes);
+        assert_eq!(r.bytes.len(), bytes.len());
+        assert_eq!(r.parse_preserving, "yes");
+    }
+
+    #[test]
+    fn tensor_dtype_swaps_in_same_length_group() {
+        let bytes = build_minimal_safetensors();
+        let mut rng = DeterministicRng::new(13);
+        let r = tensor_dtype::apply(&bytes, &mut rng).expect("apply");
+        assert_ne!(r.bytes, bytes);
+        assert_eq!(r.bytes.len(), bytes.len());
+        let layout = parse_safetensors(&r.bytes).expect("parse after");
+        let dtype = &r.bytes[layout.tensors[0].dtype.inner_start..layout.tensors[0].dtype.inner_end];
+        assert_eq!(dtype.len(), 3);
+        assert_ne!(dtype, b"F32");
+        assert_eq!(r.parse_preserving, "no");
+    }
+
+    #[test]
+    fn tensor_shape_preserves_digit_count() {
+        let bytes = build_minimal_safetensors();
+        let mut rng = DeterministicRng::new(17);
+        let r = tensor_shape::apply(&bytes, &mut rng).expect("apply");
+        assert_ne!(r.bytes, bytes);
+        assert_eq!(r.bytes.len(), bytes.len());
+        assert_eq!(r.parse_preserving, "no");
+    }
+
+    #[test]
+    fn tensor_data_offsets_preserves_alignment() {
+        let bytes = build_minimal_safetensors();
+        let mut rng = DeterministicRng::new(19);
+        let r = tensor_data_offsets::apply(&bytes, &mut rng).expect("apply");
+        assert_ne!(r.bytes, bytes);
+        assert_eq!(r.bytes.len(), bytes.len());
+        let layout = parse_safetensors(&r.bytes).expect("parse after");
+        let elements = &layout.tensors[0].data_offsets.elements;
+        let start: u64 = std::str::from_utf8(&r.bytes[elements[0].start..elements[0].end])
+            .unwrap()
+            .parse()
+            .unwrap();
+        let end: u64 = std::str::from_utf8(&r.bytes[elements[1].start..elements[1].end])
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(start < end);
+        assert_eq!(start % NATURAL_ALIGNMENT_SMALL, 0);
+        assert_eq!(end % NATURAL_ALIGNMENT_SMALL, 0);
+        assert_eq!(r.parse_preserving, "no");
+    }
+
+    #[test]
+    fn byte_flip_targets_header_region() {
+        let bytes = build_minimal_safetensors();
+        let mut rng = DeterministicRng::new(23);
+        let r = byte_flip::apply(&bytes, &mut rng).expect("apply");
+        assert_ne!(r.bytes, bytes);
+        let layout = parse_safetensors(&bytes).expect("parse");
+        let diff_idx = (0..bytes.len())
+            .find(|&i| bytes[i] != r.bytes[i])
+            .expect("difference exists");
+        assert!(diff_idx < layout.header_end);
+        assert_eq!(r.parse_preserving, "no");
+    }
 }
