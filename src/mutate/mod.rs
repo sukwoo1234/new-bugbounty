@@ -1,4 +1,5 @@
 pub(crate) mod common;
+mod gguf;
 mod onnx;
 
 use std::path::Path;
