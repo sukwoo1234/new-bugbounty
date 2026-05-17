@@ -2,8 +2,10 @@
 
 use crate::mutate::common::DeterministicRng;
 
+pub(crate) mod byte_flip;
 pub(crate) mod header_counts;
 pub(crate) mod metadata_key;
+pub(crate) mod metadata_type;
 pub(crate) mod metadata_value;
 pub(crate) mod tensor_dtype;
 pub(crate) mod tensor_name;
