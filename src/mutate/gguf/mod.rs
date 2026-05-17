@@ -5,6 +5,10 @@ use crate::mutate::common::DeterministicRng;
 pub(crate) mod header_counts;
 pub(crate) mod metadata_key;
 pub(crate) mod metadata_value;
+pub(crate) mod tensor_dtype;
+pub(crate) mod tensor_name;
+pub(crate) mod tensor_offset;
+pub(crate) mod tensor_shape;
 
 pub(crate) const MAGIC: &[u8; 4] = b"GGUF";
 pub(crate) const SUPPORTED_VERSION: u32 = 3;
