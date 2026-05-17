@@ -1,6 +1,7 @@
 pub(crate) mod common;
 mod gguf;
 mod onnx;
+mod safetensors;
 
 use std::path::Path;
 
