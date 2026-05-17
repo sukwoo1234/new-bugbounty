@@ -1,5 +1,11 @@
 #![allow(dead_code)]
 
+use crate::mutate::common::DeterministicRng;
+
+pub(crate) mod header_counts;
+pub(crate) mod metadata_key;
+pub(crate) mod metadata_value;
+
 pub(crate) const MAGIC: &[u8; 4] = b"GGUF";
 pub(crate) const SUPPORTED_VERSION: u32 = 3;
 pub(crate) const DEFAULT_ALIGNMENT: u64 = 32;
@@ -338,6 +344,20 @@ pub(crate) fn write_u32(out: &mut [u8], offset: usize, value: u32) {
 pub(crate) fn write_u64(out: &mut [u8], offset: usize, value: u64) {
     let bytes = value.to_le_bytes();
     out[offset..offset + 8].copy_from_slice(&bytes);
+}
+
+pub(crate) fn pick_different_ascii_byte(rng: &mut DeterministicRng, current: u8) -> u8 {
+    let range = (0x7eu8 - 0x21u8 + 1) as usize;
+    loop {
+        let candidate = 0x21u8 + (rng.index(range) as u8);
+        if candidate != current {
+            return candidate;
+        }
+    }
+}
+
+pub(crate) fn truncate_param_str(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
 }
 
 pub(crate) fn align_up(value: usize, alignment: usize) -> usize {
