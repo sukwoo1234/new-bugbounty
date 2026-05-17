@@ -5,6 +5,10 @@ use crate::mutate::common::DeterministicRng;
 pub(crate) mod header_length;
 pub(crate) mod metadata_key;
 pub(crate) mod metadata_value;
+pub(crate) mod tensor_data_offsets;
+pub(crate) mod tensor_dtype;
+pub(crate) mod tensor_name;
+pub(crate) mod tensor_shape;
 
 pub(crate) const HEADER_LEN_BYTES: usize = 8;
 pub(crate) const NATURAL_ALIGNMENT_SMALL: u64 = 8;
