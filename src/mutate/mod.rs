@@ -16,12 +16,18 @@ pub(crate) fn run_mutate_pipeline(
     seed: u64,
     operators: &[String],
 ) -> Result<(), String> {
-    if !matches!(target, TargetKind::Onnx) {
-        return Err(format!(
-            "mutate currently supports only target=onnx; got {}",
+    match target {
+        TargetKind::Onnx => {
+            let resolved = onnx::validate_operators(operators)?;
+            onnx::run(target, input, out, input_dir, out_dir, count, seed, &resolved)
+        }
+        TargetKind::Gguf => {
+            let resolved = gguf::validate_operators(operators)?;
+            gguf::run(target, input, out, input_dir, out_dir, count, seed, &resolved)
+        }
+        TargetKind::Safetensors => Err(format!(
+            "mutate does not yet support target={}",
             target_label(target)
-        ));
+        )),
     }
-    let resolved = onnx::validate_operators(operators)?;
-    onnx::run(target, input, out, input_dir, out_dir, count, seed, &resolved)
 }
