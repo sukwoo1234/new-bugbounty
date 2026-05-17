@@ -2,6 +2,7 @@
 
 use crate::mutate::common::DeterministicRng;
 
+pub(crate) mod byte_flip;
 pub(crate) mod header_length;
 pub(crate) mod metadata_key;
 pub(crate) mod metadata_value;
