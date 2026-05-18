@@ -170,3 +170,55 @@ fn calculate_valid_crash_ratio_from_triage(triage_root: &Path) -> Result<TriageC
 
     Ok(ratio)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::{now_unix_millis, AppPaths};
+    use std::path::PathBuf;
+
+    fn unique_tmp_data_dir(label: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("v1_{}_{}", label, now_unix_millis()));
+        fs::create_dir_all(&p).expect("create tmp data dir");
+        p
+    }
+
+    // Coverage V1 audit fixture: metrics snapshot JSON must emit the
+    // throughput field under its `_proxy` name and must not emit real
+    // coverage fields (`line_coverage`, `function_coverage`,
+    // `edge_coverage`) without instrumentation. This locks in plan
+    // §Metric Naming Rules and plan §Pass Criteria so a silent rename
+    // from `_proxy` to real-coverage naming would break the build.
+    #[test]
+    fn metrics_snapshot_emits_successful_runs_per_hour_proxy_label() {
+        let data = unique_tmp_data_dir("metrics_proxy_label");
+        let seeds = data.join("seeds");
+        fs::create_dir_all(&seeds).expect("create seeds dir");
+
+        let events_path = data.join("metrics").join("events.jsonl");
+        fs::create_dir_all(events_path.parent().unwrap()).expect("create metrics dir");
+        fs::write(&events_path, b"").expect("write empty events log");
+
+        let paths = AppPaths {
+            data_dir: data.clone(),
+            seeds_dir: seeds,
+        };
+
+        let snapshot = build_metrics_snapshot(&paths, &events_path, 1_700_000_000)
+            .expect("build_metrics_snapshot should succeed with empty events");
+
+        assert!(
+            snapshot.contains("\"successful_runs_per_hour_proxy\":"),
+            "Coverage V1 audit: metrics snapshot must emit `successful_runs_per_hour_proxy` (throughput proxy). Snapshot was: {snapshot}"
+        );
+        assert!(
+            !snapshot.contains("\"line_coverage\"")
+                && !snapshot.contains("\"function_coverage\"")
+                && !snapshot.contains("\"edge_coverage\""),
+            "Coverage V1 audit: metrics snapshot must NOT emit real-coverage fields without instrumentation. Snapshot was: {snapshot}"
+        );
+
+        let _ = fs::remove_dir_all(&data);
+    }
+}
