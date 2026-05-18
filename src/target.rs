@@ -45,12 +45,30 @@ pub(crate) struct HarnessReport {
     pub(crate) parser_step: String,
     pub(crate) core_path_step: String,
     pub(crate) library_step: String,
+    pub(crate) library_outcome: &'static str,
     pub(crate) external_step: String,
 }
 
 pub(crate) struct LibraryConnectResult {
     pub(crate) step: String,
-    pub(crate) connected: bool,
+    pub(crate) outcome: LibraryConnectOutcome,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum LibraryConnectOutcome {
+    SessionOk,
+    Invoked,
+    Unavailable,
+}
+
+impl LibraryConnectOutcome {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            LibraryConnectOutcome::SessionOk => "session_ok",
+            LibraryConnectOutcome::Invoked => "invoked",
+            LibraryConnectOutcome::Unavailable => "unavailable",
+        }
+    }
 }
 
 pub(crate) struct TargetAdapter {
@@ -229,7 +247,7 @@ pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), Strin
     let strict_connect = std::env::var("TOOL_REQUIRE_LIBRARY_CONNECT")
         .map(|v| v == "1")
         .unwrap_or(false);
-    if strict_connect && !library_connect.connected {
+    if strict_connect && matches!(library_connect.outcome, LibraryConnectOutcome::Unavailable) {
         return Err(format!(
             "library connect required but unavailable: {}",
             library_connect.step
@@ -243,6 +261,7 @@ pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), Strin
         parser_step,
         core_path_step,
         library_step: library_connect.step,
+        library_outcome: library_connect.outcome.as_str(),
         external_step,
     };
     print_harness_report(&report);
@@ -256,6 +275,7 @@ fn print_harness_report(report: &HarnessReport) {
     println!("parser_step: {}", report.parser_step);
     println!("core_path_step: {}", report.core_path_step);
     println!("library_step: {}", report.library_step);
+    println!("library_outcome: {}", report.library_outcome);
     println!("external_step: {}", report.external_step);
 }
 
@@ -418,7 +438,7 @@ fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
                         "llama.cpp parser connected ({cmd}: {})",
                         first_line(&stdout)
                     ),
-                    connected: true,
+                    outcome: LibraryConnectOutcome::SessionOk,
                 };
             }
             Ok(output) => {
@@ -432,14 +452,14 @@ fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
                         "llama.cpp parser invoked (non-zero exit: {})",
                         first_line(&stderr)
                     ),
-                    connected: true,
+                    outcome: LibraryConnectOutcome::Invoked,
                 };
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => {
                 return LibraryConnectResult {
                     step: format!("llama.cpp parser error ({e})"),
-                    connected: false,
+                    outcome: LibraryConnectOutcome::Unavailable,
                 }
             }
         }
@@ -447,7 +467,7 @@ fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
 
     LibraryConnectResult {
         step: "llama.cpp parser unavailable (llama-cli not installed)".to_string(),
-        connected: false,
+        outcome: LibraryConnectOutcome::Unavailable,
     }
 }
 
@@ -476,7 +496,7 @@ except Exception as e:
             let stdout = String::from_utf8_lossy(&output.stdout);
             LibraryConnectResult {
                 step: format!("onnxruntime connected ({})", first_line(&stdout)),
-                connected: true,
+                outcome: LibraryConnectOutcome::SessionOk,
             }
         }
         Ok(output) => {
@@ -484,22 +504,22 @@ except Exception as e:
             if output.status.code() == Some(3) {
                 LibraryConnectResult {
                     step: format!("onnxruntime unavailable ({})", first_line(&stdout)),
-                    connected: false,
+                    outcome: LibraryConnectOutcome::Unavailable,
                 }
             } else {
                 LibraryConnectResult {
                     step: format!("onnxruntime loader invoked ({})", first_line(&stdout)),
-                    connected: true,
+                    outcome: LibraryConnectOutcome::Invoked,
                 }
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => LibraryConnectResult {
             step: format!("onnxruntime unavailable ({python_bin} not installed)"),
-            connected: false,
+            outcome: LibraryConnectOutcome::Unavailable,
         },
         Err(e) => LibraryConnectResult {
             step: format!("onnxruntime probe error ({e})"),
-            connected: false,
+            outcome: LibraryConnectOutcome::Unavailable,
         },
     }
 }
@@ -530,7 +550,7 @@ except Exception as e:
             let stdout = String::from_utf8_lossy(&output.stdout);
             LibraryConnectResult {
                 step: format!("safetensors connected ({})", first_line(&stdout)),
-                connected: true,
+                outcome: LibraryConnectOutcome::SessionOk,
             }
         }
         Ok(output) => {
@@ -538,22 +558,22 @@ except Exception as e:
             if output.status.code() == Some(3) {
                 LibraryConnectResult {
                     step: format!("safetensors unavailable ({})", first_line(&stdout)),
-                    connected: false,
+                    outcome: LibraryConnectOutcome::Unavailable,
                 }
             } else {
                 LibraryConnectResult {
                     step: format!("safetensors loader invoked ({})", first_line(&stdout)),
-                    connected: true,
+                    outcome: LibraryConnectOutcome::Invoked,
                 }
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => LibraryConnectResult {
             step: format!("safetensors unavailable ({python_bin} not installed)"),
-            connected: false,
+            outcome: LibraryConnectOutcome::Unavailable,
         },
         Err(e) => LibraryConnectResult {
             step: format!("safetensors probe error ({e})"),
-            connected: false,
+            outcome: LibraryConnectOutcome::Unavailable,
         },
     }
 }

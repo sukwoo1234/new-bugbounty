@@ -232,6 +232,7 @@ pub(crate) fn run_triage_pipeline(
             total: attempts.len() as u64,
             errors: (crashed_count + timeout_count) as u64,
             successful_runs_proxy: 0,
+            library_session_ok: 0,
             new_crashes: new_crashes as u64,
             valid_crashes: valid_crashes as u64,
             total_crashes: new_crashes as u64,

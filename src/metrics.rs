@@ -9,6 +9,7 @@ pub(crate) struct MetricEvent {
     pub(crate) total: u64,
     pub(crate) errors: u64,
     pub(crate) successful_runs_proxy: u64,
+    pub(crate) library_session_ok: u64,
     pub(crate) new_crashes: u64,
     pub(crate) valid_crashes: u64,
     pub(crate) total_crashes: u64,
@@ -31,12 +32,13 @@ pub(crate) fn record_metrics_event(app_paths: &AppPaths, event: MetricEvent) -> 
         .map_err(|e| format!("failed to open '{}': {e}", events_path.display()))?;
 
     let line = format!(
-        "{{\"ts\":{},\"kind\":\"{}\",\"total\":{},\"errors\":{},\"successful_runs_proxy\":{},\"new_crashes\":{},\"valid_crashes\":{},\"total_crashes\":{}}}\n",
+        "{{\"ts\":{},\"kind\":\"{}\",\"total\":{},\"errors\":{},\"successful_runs_proxy\":{},\"library_session_ok\":{},\"new_crashes\":{},\"valid_crashes\":{},\"total_crashes\":{}}}\n",
         event.ts,
         event.kind,
         event.total,
         event.errors,
         event.successful_runs_proxy,
+        event.library_session_ok,
         event.new_crashes,
         event.valid_crashes,
         event.total_crashes
@@ -69,6 +71,8 @@ fn build_metrics_snapshot(
         .map_err(|e| format!("failed to read '{}': {e}", events_path.display()))?;
     let mut successful_runs_proxy_1h = 0u64;
     let mut new_crashes_1h = 0u64;
+    let mut total_1h = 0u64;
+    let mut library_session_ok_1h = 0u64;
     let mut total_5m = 0u64;
     let mut errors_5m = 0u64;
 
@@ -79,16 +83,32 @@ fn build_metrics_snapshot(
         let successful_runs_proxy = extract_json_u64_field(line, "successful_runs_proxy")
             .or_else(|| extract_json_u64_field(line, "new_paths"))
             .unwrap_or(0);
+        let library_session_ok =
+            extract_json_u64_field(line, "library_session_ok").unwrap_or(0);
         let new_crashes = extract_json_u64_field(line, "new_crashes").unwrap_or(0);
         if now_ts.saturating_sub(ts) <= 3600 {
             successful_runs_proxy_1h += successful_runs_proxy;
             new_crashes_1h += new_crashes;
+            total_1h += total;
+            library_session_ok_1h += library_session_ok;
         }
         if now_ts.saturating_sub(ts) <= 300 {
             total_5m += total;
             errors_5m += errors;
         }
     }
+
+    let (lib_rate_literal, lib_rate_status) = if total_1h == 0 {
+        ("null".to_string(), "not_available")
+    } else {
+        (
+            format!(
+                "{:.4}",
+                library_session_ok_1h as f64 / total_1h as f64
+            ),
+            "available",
+        )
+    };
 
     let triage_ratio = calculate_valid_crash_ratio_from_triage(&app_paths.data_dir.join("triage"))?;
     let (valid_ratio_literal, valid_ratio_status) = if triage_ratio.total_crashes == 0 {
@@ -109,9 +129,11 @@ fn build_metrics_snapshot(
     };
 
     Ok(format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"metrics\": {{\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"triage_summary_scan\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {:.4}\n  }}\n}}\n",
+        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"metrics\": {{\n    \"successful_runs_per_hour_proxy\": {},\n    \"library_connect_rate_proxy\": {},\n    \"library_connect_rate_proxy_status\": \"{}\",\n    \"library_connect_rate_proxy_source\": \"session_ok_over_total_1h\",\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"triage_summary_scan\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {:.4}\n  }}\n}}\n",
         now_ts,
         successful_runs_proxy_1h,
+        lib_rate_literal,
+        lib_rate_status,
         new_crashes_1h,
         valid_ratio_literal,
         valid_ratio_status,
@@ -217,6 +239,49 @@ mod tests {
                 && !snapshot.contains("\"function_coverage\"")
                 && !snapshot.contains("\"edge_coverage\""),
             "Coverage V1 audit: metrics snapshot must NOT emit real-coverage fields without instrumentation. Snapshot was: {snapshot}"
+        );
+
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    // library_connect_rate_proxy = session_ok / total over 1h rolling window.
+    // Paper §3 fuzzer-depth differentiator (proxies how often mutations
+    // reach the parser library beyond format precheck). Emitted with
+    // `_proxy` suffix per plan §Metric Naming because there is no
+    // coverage instrumentation — only probe outcome counting.
+    #[test]
+    fn metrics_snapshot_emits_library_connect_rate_proxy_with_session_ok_ratio() {
+        let data = unique_tmp_data_dir("metrics_lib_connect_proxy");
+        let seeds = data.join("seeds");
+        fs::create_dir_all(&seeds).expect("create seeds dir");
+        let events_path = data.join("metrics").join("events.jsonl");
+        fs::create_dir_all(events_path.parent().unwrap()).expect("create metrics dir");
+
+        let event_line = format!(
+            "{{\"ts\":{},\"kind\":\"run\",\"total\":10,\"errors\":4,\"successful_runs_proxy\":6,\"library_session_ok\":3,\"new_crashes\":0,\"valid_crashes\":0,\"total_crashes\":0}}\n",
+            1_700_000_000u64
+        );
+        fs::write(&events_path, event_line).expect("write event");
+
+        let paths = AppPaths {
+            data_dir: data.clone(),
+            seeds_dir: seeds,
+        };
+        let snapshot = build_metrics_snapshot(&paths, &events_path, 1_700_000_000)
+            .expect("build_metrics_snapshot should succeed");
+
+        assert!(
+            snapshot.contains("\"library_connect_rate_proxy\":"),
+            "library_connect_rate_proxy must be emitted (paper §3 differentiator). Snapshot was: {snapshot}"
+        );
+        assert!(
+            snapshot.contains("\"library_connect_rate_proxy_status\": \"available\"")
+                || snapshot.contains("\"library_connect_rate_proxy_status\":\"available\""),
+            "library_connect_rate_proxy_status must be 'available' when 1h total > 0. Snapshot was: {snapshot}"
+        );
+        assert!(
+            snapshot.contains("0.3000"),
+            "library_connect_rate_proxy must be 0.3000 (3 session_ok / 10 total). Snapshot was: {snapshot}"
         );
 
         let _ = fs::remove_dir_all(&data);

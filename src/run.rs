@@ -46,6 +46,7 @@ struct RunStats {
     failed: usize,
     timeout: usize,
     retries: usize,
+    library_session_ok: usize,
 }
 
 struct RunStatusCounts {
@@ -178,7 +179,7 @@ pub(crate) fn run_fuzz_pipeline(
                     break;
                 };
 
-                let (result, retries_used) = run_job_with_retry(
+                let (result, retries_used, is_session_ok) = run_job_with_retry(
                     &job,
                     &target,
                     timeout_sec,
@@ -191,6 +192,9 @@ pub(crate) fn run_fuzz_pipeline(
                     .lock()
                     .map_err(|_| "stats lock poisoned".to_string())?;
                 s.retries += retries_used;
+                if is_session_ok {
+                    s.library_session_ok += 1;
+                }
                 match result {
                     HarnessExecResult::Success(_) => s.success += 1,
                     HarnessExecResult::Failed(_) => s.failed += 1,
@@ -243,6 +247,7 @@ pub(crate) fn run_fuzz_pipeline(
             total: s.total as u64,
             errors: (s.failed + s.timeout) as u64,
             successful_runs_proxy: s.success as u64,
+            library_session_ok: s.library_session_ok as u64,
             new_crashes: 0,
             valid_crashes: 0,
             total_crashes: 0,
@@ -366,6 +371,7 @@ fn run_engine_backend(
             total: workers as u64,
             errors: (failed + timeout) as u64,
             successful_runs_proxy: success as u64,
+            library_session_ok: 0,
             new_crashes: 0,
             valid_crashes: 0,
             total_crashes: 0,
@@ -528,16 +534,19 @@ fn run_job_with_retry(
     restart_limit: u32,
     timeout_available: bool,
     logs_dir: &Path,
-) -> Result<(HarnessExecResult, usize), String> {
+) -> Result<(HarnessExecResult, usize, bool), String> {
     let attempts = restart_limit + 1;
     let mut last = HarnessExecResult::Failed("not executed".to_string());
+    let mut last_session_ok = false;
     let mut retries_used = 0usize;
 
     for attempt in 1..=attempts {
-        let result = execute_harness_subprocess(job, target, timeout_sec, timeout_available)?;
+        let (result, is_session_ok) =
+            execute_harness_subprocess(job, target, timeout_sec, timeout_available)?;
+        last_session_ok = is_session_ok;
         write_job_log(logs_dir, job, attempt, &result)?;
         match result {
-            HarnessExecResult::Success(_) => return Ok((result, retries_used)),
+            HarnessExecResult::Success(_) => return Ok((result, retries_used, is_session_ok)),
             other => last = other,
         }
         if attempt < attempts {
@@ -545,7 +554,7 @@ fn run_job_with_retry(
         }
     }
 
-    Ok((last, retries_used))
+    Ok((last, retries_used, last_session_ok))
 }
 
 pub(crate) fn execute_harness_subprocess(
@@ -553,7 +562,7 @@ pub(crate) fn execute_harness_subprocess(
     target: &TargetKind,
     timeout_sec: u64,
     timeout_available: bool,
-) -> Result<HarnessExecResult, String> {
+) -> Result<(HarnessExecResult, bool), String> {
     let exe = std::env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
     let target_name = target_label(target).to_string();
     let input = job.input.display().to_string();
@@ -582,6 +591,9 @@ pub(crate) fn execute_harness_subprocess(
         .map_err(|e| format!("failed to execute harness subprocess: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let is_session_ok = stdout
+        .lines()
+        .any(|l| l.trim() == "library_outcome: session_ok");
     let summary = format!(
         "stdout: {}\nstderr: {}",
         first_line(&stdout),
@@ -589,12 +601,12 @@ pub(crate) fn execute_harness_subprocess(
     );
 
     if timeout_available && out.status.code() == Some(124) {
-        return Ok(HarnessExecResult::Timeout(summary));
+        return Ok((HarnessExecResult::Timeout(summary), is_session_ok));
     }
     if out.status.success() {
-        return Ok(HarnessExecResult::Success(summary));
+        return Ok((HarnessExecResult::Success(summary), is_session_ok));
     }
-    Ok(HarnessExecResult::Failed(summary))
+    Ok((HarnessExecResult::Failed(summary), is_session_ok))
 }
 
 pub(crate) fn write_job_log(

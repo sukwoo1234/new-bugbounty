@@ -63,7 +63,8 @@ pub(crate) fn run_coverage_job(
             id: i,
             input: input.clone(),
         };
-        let result = execute_harness_subprocess(&job, target, timeout_sec, timeout_available)?;
+        let (result, _is_session_ok) =
+            execute_harness_subprocess(&job, target, timeout_sec, timeout_available)?;
         write_job_log(&logs_dir, &job, 1, &result)?;
         match result {
             HarnessExecResult::Success(_) => success += 1,
