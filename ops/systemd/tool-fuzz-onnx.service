@@ -1,0 +1,47 @@
+[Unit]
+Description=ONNX local-harness fuzzing (퍼징컴 1-week template)
+After=network.target
+
+[Service]
+Type=simple
+# 퍼징컴 운영 계정으로 조정 필요 (dev 머신과 동일하면 그대로).
+User=ssw
+Group=ssw
+WorkingDirectory=/home/ssw/bugbounty
+
+# Single-pass on seed corpus. 1주 연속 fuzzing은 wrapper script 권장
+# (mutate batch -> run -> mutate batch -> run ...). 결정 사항:
+# - workers 12 시작 (Day 1 RAM > 85% 또는 swap > 0 시 8로 낮춤; systemctl edit override 권장)
+# - backend local-harness (engine baseline은 dev 머신에서 별도 실행)
+# - timeout 30s, restart-limit 1 per job
+# - corpus-dir 기본값 seeds/onnx (mutated 진입 시 data/corpus/mutated/onnx/<batch>로 교체)
+ExecStart=/home/ssw/bugbounty/target/release/tool run \
+    --target onnx \
+    --backend local-harness \
+    --workers 12 \
+    --timeout-sec 30 \
+    --restart-limit 1 \
+    --corpus-dir seeds/onnx
+
+# V1.5: library_connect probe Unavailable 즉시 Err로 시작 단계 환경 결함 검출.
+Environment=TOOL_REQUIRE_LIBRARY_CONNECT=1
+
+# BLAS thread pool 폭주 방지 (workers x BLAS threads 곱셈으로 CPU 과점유 차단).
+# run.rs::execute_harness_subprocess가 subprocess env에도 동일 설정.
+Environment=OMP_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+
+# library_connect probe (python onnxruntime/safetensors) stdout buffering 방지.
+Environment=PYTHONUNBUFFERED=1
+
+# exit 0 (정상 종료, --max-jobs 소진 등)은 재시작 안 함. crash/timeout만 재시작.
+Restart=on-failure
+RestartSec=10
+
+LimitNOFILE=8192
+TimeoutStopSec=30
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
