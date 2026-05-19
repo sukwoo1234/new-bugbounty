@@ -9,19 +9,14 @@ User=ssw
 Group=ssw
 WorkingDirectory=/home/ssw/bugbounty
 
-# Single-pass on seed corpus. 1주 연속 fuzzing은 wrapper script 권장
-# (mutate batch -> run -> mutate batch -> run ...). 결정 사항:
-# - workers 12 시작 (Day 1 RAM > 85% 또는 swap > 0 시 8로 낮춤; systemctl edit override 권장)
-# - backend local-harness (engine baseline은 dev 머신에서 별도 실행)
-# - timeout 30s, restart-limit 1 per job
-# - corpus-dir 기본값 seeds/onnx (mutated 진입 시 data/corpus/mutated/onnx/<batch>로 교체)
-ExecStart=/home/ssw/bugbounty/target/release/tool run \
-    --target onnx \
-    --backend local-harness \
-    --workers 12 \
-    --timeout-sec 30 \
-    --restart-limit 1 \
-    --corpus-dir seeds/onnx
+# Continuous fuzzing via wrapper (mutate batch -> run -> sleep -> repeat).
+# 기본 매개변수 (wrapper 안에 정의, systemctl edit으로 ENV override):
+# - WORKERS=12 (Day 1 RAM > 85% 또는 swap > 0 시 8로 낮춤)
+# - BACKEND=local-harness (engine baseline은 dev 머신에서 별도 실행)
+# - TIMEOUT_SEC=30, RESTART_LIMIT=1, MUTATE_COUNT=50, ITERATION_SLEEP_SEC=2
+# - MAX_BATCHES_KEEP=2000 (1주차 후반 ~25% cleanup, 2주차 본격 회전)
+# - SEED_DIR=seeds/onnx (mutated batch는 wrapper가 매 iter 생성)
+ExecStart=/home/ssw/bugbounty/ops/scripts/fuzz-loop.sh
 
 # V1.5: library_connect probe Unavailable 즉시 Err로 시작 단계 환경 결함 검출.
 Environment=TOOL_REQUIRE_LIBRARY_CONNECT=1
@@ -35,12 +30,14 @@ Environment=OPENBLAS_NUM_THREADS=1
 # library_connect probe (python onnxruntime/safetensors) stdout buffering 방지.
 Environment=PYTHONUNBUFFERED=1
 
-# exit 0 (정상 종료, --max-jobs 소진 등)은 재시작 안 함. crash/timeout만 재시작.
+# wrapper는 SIGTERM 외엔 거의 종료 안 함. 비정상 exit(crash/oom)만 재시작.
 Restart=on-failure
 RestartSec=10
 
 LimitNOFILE=8192
-TimeoutStopSec=30
+# wrapper graceful stop: SIGTERM 받으면 현재 run 완료 후 종료.
+# workers 12 × TIMEOUT_SEC 30s + cleanup 여유 = 90s 마진.
+TimeoutStopSec=90
 KillMode=mixed
 
 [Install]
