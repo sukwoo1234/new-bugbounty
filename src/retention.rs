@@ -96,7 +96,16 @@ fn collect_log_files_recursive(root: &Path, out: &mut Vec<PathBuf>) -> Result<()
         let entry =
             entry.map_err(|e| format!("failed to read entry in '{}': {e}", root.display()))?;
         let path = entry.path();
-        if path.is_dir() {
+        // C1 contract: skip symlinked subtrees so HDD-mounted
+        // corpus/mutated (and any other symlink) is not walked into.
+        // `entry.file_type()` uses lstat and does not follow.
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("failed to stat entry '{}': {e}", path.display()))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             collect_log_files_recursive(&path, out)?;
             continue;
         }
@@ -172,5 +181,75 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&data);
+    }
+
+    // 6단계(퍼징컴 1주 fuzzing) audit: SSD 250GB 한계로
+    // `data/corpus/mutated/`는 HDD 1TB symlink. log compression
+    // scope(`data/` 전체 재귀 walk)에 mutated가 끼면 C1 contract 위반.
+    // collect_log_files_recursive는 entry.file_type().is_symlink()로
+    // symlinked dir을 skip해서 HDD-mounted mutated 보호.
+    //
+    // 본 fixture는 mutated symlink target 안에 `.log` 파일(mtime
+    // UNIX_EPOCH로 충분히 옛날)을 두고 retention 호출 후
+    // `compressed_logs + skipped_log_compress == 0`인지 확인한다.
+    // > 0 이면 symlink follow가 다시 일어났다 = C1 leak 회귀.
+    #[cfg(unix)]
+    #[test]
+    fn retention_does_not_traverse_corpus_mutated_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let data = unique_tmp_data_dir("retention_symlink_audit");
+        let seeds = data.join("seeds");
+        fs::create_dir_all(&seeds).expect("create seeds dir");
+
+        let hdd_target = unique_tmp_data_dir("hdd_mutated_target");
+        let hdd_corpus_file = hdd_target.join("onnx").join("batch-x").join("file.bin");
+        fs::create_dir_all(hdd_corpus_file.parent().unwrap()).expect("create hdd corpus dir");
+        fs::write(&hdd_corpus_file, b"mutated input on hdd").expect("write corpus file");
+        let hdd_log_file = hdd_target.join("stray.log");
+        fs::write(&hdd_log_file, b"stray log on hdd").expect("write stray log");
+        // log mtime을 명시적으로 옛날로 설정. 그래야 `is_older_than(cutoff
+        // 0)`이 elapsed > 0를 통과해 실제 compression 경로가 노출된다.
+        // mtime 조작 없이는 fresh file이라 mtime check에서 걸러져 audit
+        // 동작을 검증하지 못한다.
+        let log_handle = fs::OpenOptions::new()
+            .write(true)
+            .open(&hdd_log_file)
+            .expect("open log for mtime");
+        log_handle
+            .set_modified(SystemTime::UNIX_EPOCH)
+            .expect("set old mtime on log");
+        drop(log_handle);
+
+        fs::create_dir_all(data.join("corpus")).expect("create corpus parent");
+        symlink(&hdd_target, data.join("corpus").join("mutated"))
+            .expect("create mutated symlink");
+
+        let paths = AppPaths {
+            data_dir: data.clone(),
+            seeds_dir: seeds,
+        };
+
+        let stats = apply_retention_policy(&paths, 0)
+            .expect("apply_retention_policy should succeed even with cutoff 0");
+
+        assert!(
+            hdd_corpus_file.exists(),
+            "HDD-symlinked mutated corpus file must survive (C1 + symlink contract)"
+        );
+        assert!(
+            hdd_log_file.exists(),
+            "HDD-symlinked .log file under mutated must survive (no symlink traversal into C1 scope)"
+        );
+        assert_eq!(
+            stats.compressed_logs + stats.skipped_log_compress,
+            0,
+            "collect_log_files must NOT traverse corpus/mutated symlink (found {} compressed + {} skipped)",
+            stats.compressed_logs,
+            stats.skipped_log_compress
+        );
+
+        let _ = fs::remove_dir_all(&data);
+        let _ = fs::remove_dir_all(&hdd_target);
     }
 }
