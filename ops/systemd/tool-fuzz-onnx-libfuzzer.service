@@ -1,0 +1,45 @@
+[Unit]
+Description=ONNX libfuzzer fuzzing (퍼징컴 1-week template)
+After=network.target
+
+[Service]
+Type=simple
+# 퍼징컴 운영 계정으로 조정 필요 (dev 머신과 동일하면 그대로).
+User=ssw
+Group=ssw
+WorkingDirectory=/home/ssw/bugbounty
+
+# Continuous libfuzzer fuzzing via wrapper (run -> sleep -> repeat).
+# 기본 매개변수 (wrapper 안에 정의, systemctl edit으로 ENV override):
+# - WORKERS=12 (Day 1 RAM > 85% 또는 swap > 0 시 8로 낮춤)
+# - BACKEND=libfuzzer
+# - TIMEOUT_SEC=30, RESTART_LIMIT=1, ITERATION_SLEEP_SEC=2
+# - LIBFUZZER_MAX_TOTAL_TIME=30 (per `tool run` 내부 libfuzzer 실행 시간)
+# - CORPUS_DIR=seeds/onnx (libfuzzer가 corpus 내부 변형 관리, mutate 단계 없음)
+ExecStart=/home/ssw/bugbounty/ops/scripts/fuzz-loop-libfuzzer.sh
+
+# V1.5: library_connect probe Unavailable 즉시 Err로 시작 단계 환경 결함 검출.
+# 참고: libfuzzer backend는 onnx_library_connect를 호출하지 않을 수 있음.
+# `tool run --backend libfuzzer` 의 실제 동작 확인 필요 (6h 검증 시 status.json 확인).
+Environment=TOOL_REQUIRE_LIBRARY_CONNECT=1
+
+# BLAS thread pool 폭주 방지 (workers x BLAS threads 곱셈으로 CPU 과점유 차단).
+Environment=OMP_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+
+# library_connect probe (python onnxruntime/safetensors) stdout buffering 방지.
+Environment=PYTHONUNBUFFERED=1
+
+# wrapper는 SIGTERM 외엔 거의 종료 안 함. 비정상 exit(crash/oom)만 재시작.
+Restart=on-failure
+RestartSec=10
+
+LimitNOFILE=8192
+# wrapper graceful stop: SIGTERM 받으면 현재 run 완료 후 종료.
+# libfuzzer per-invocation = LIBFUZZER_MAX_TOTAL_TIME + cleanup 여유 = 60s 마진.
+TimeoutStopSec=90
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
