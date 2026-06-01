@@ -1,0 +1,51 @@
+[Unit]
+Description=ONNX AFL++ fuzzing (퍼징컴 1-week template, Arm C)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+# 퍼징컴 운영 계정으로 조정 필요 (dev 머신과 동일하면 그대로).
+# 이 계정은 반드시 `docker` 그룹 소속이어야 함 (afl-out root 소유 방지 + docker.sock 접근).
+User=ssw
+Group=ssw
+WorkingDirectory=/home/ssw/bugbounty
+
+# Continuous AFL++ fuzzing via wrapper (run -> sleep -> repeat).
+# AFL++는 hardened Docker(aflplusplus/aflplusplus) -n dumb 모드로 `tool harness`를 구동 (black-box).
+# 기본 매개변수 (wrapper 안에 정의, systemctl edit으로 ENV override):
+# - WORKERS=2 (컨테이너당 --cpus 2 / --memory 4g → 16GB 박스에서 안전. Day 1 RAM > 85% / swap > 0 시 1로 낮춤)
+# - BACKEND=aflpp
+# - TIMEOUT_SEC=30, RESTART_LIMIT=1, ITERATION_SLEEP_SEC=2
+# - AFLPP_CONTAINER_TOOL=target/debug/tool (in-container 타깃; release만 빌드 시 target/release/tool)
+# - CORPUS_DIR=seeds/onnx (AFL++가 -i 시드로 사용; queue는 run-<id>/afl-out 안에서 자체 관리)
+ExecStart=/home/ssw/bugbounty/ops/scripts/fuzz-loop-aflpp.sh
+
+# 시작 전 1회: docker + aflplusplus 이미지 + onnxruntime(.venv) 사전 검증 (실패 시 부팅 차단).
+ExecStartPre=/usr/bin/docker run --rm aflplusplus/aflplusplus afl-fuzz -h
+
+# 참고: aflpp backend는 onnx_library_connect probe를 호출하지 않을 수 있음 (Arm B와 동일).
+# library_connect_rate는 설계상 Arm A 전용 지표 — Arm C는 inputs/crash/duration/edge(fuzzer_stats)로 평가.
+# 6h 검증 시 status.json / afl-out/default/fuzzer_stats 로 실제 동작 확인.
+Environment=TOOL_REQUIRE_LIBRARY_CONNECT=1
+
+# BLAS thread pool 폭주 방지 (workers x BLAS threads 곱셈으로 CPU 과점유 차단).
+Environment=OMP_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+
+# onnxruntime probe stdout buffering 방지.
+Environment=PYTHONUNBUFFERED=1
+
+# wrapper는 SIGTERM 외엔 거의 종료 안 함. 비정상 exit(crash/oom)만 재시작.
+Restart=on-failure
+RestartSec=10
+
+LimitNOFILE=8192
+# wrapper graceful stop: SIGTERM 받으면 현재 run 완료 후 종료.
+# Docker 컨테이너 정리(stop)가 libfuzzer보다 느릴 수 있어 마진 확대.
+TimeoutStopSec=120
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
