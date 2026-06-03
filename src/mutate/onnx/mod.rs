@@ -21,6 +21,7 @@ pub(crate) mod attribute;
 pub(crate) mod byte_flip;
 pub(crate) mod dtype;
 pub(crate) mod graph_metadata;
+pub(crate) mod havoc;
 pub(crate) mod initializer_metadata;
 pub(crate) mod name;
 pub(crate) mod shape;
@@ -203,6 +204,7 @@ pub(crate) const KNOWN_OPERATORS: &[&str] = &[
     initializer_metadata::NAME,
     graph_metadata::NAME,
     byte_flip::NAME,
+    havoc::NAME,
 ];
 
 pub(crate) fn validate_operators(requested: &[String]) -> Result<Vec<&'static str>, String> {
@@ -237,6 +239,7 @@ fn dispatch(
         "initializer_metadata" => initializer_metadata::apply(bytes, rng),
         "graph_metadata" => graph_metadata::apply(bytes, rng),
         "byte_flip" => byte_flip::apply(bytes, rng),
+        "havoc" => havoc::apply(bytes, rng),
         _ => Err(OperatorError::NoApplicableField),
     }
 }
