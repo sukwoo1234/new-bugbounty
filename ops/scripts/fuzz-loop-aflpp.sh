@@ -10,18 +10,19 @@
 #   - TOOL_AFLPP_CMD env var must be set; this wrapper exports the hardened template (matches
 #     scripts/run_long.sh aflpp leg + docs/specs.md §Docker hardening). run.rs substitutes the
 #     {docker_*}/{workdir_abs}/{corpus_dir_abs}/{run_dir_abs}/{container_*} placeholders at run time.
-#   - WORKERS defaults to 2 (NOT 12): each container reserves --cpus 2 + --memory 4g, so on the
-#     퍼징컴 (i7-10700 8C/16T, 16GB) 2 workers ≈ 4 vCPU / 8GB. Day-1 RAM > 85% or swap > 0 → lower to 1.
+#   - WORKERS defaults to 1 (NOT 12): each container reserves --cpus 2 + --memory 4g, so this is
+#     the safe default for WSL 8GB-class 퍼징컴 runs. Override only after memory/swap monitoring.
 #
-# Loop: run (workers 2, each container -V 5) -> sleep 2s -> next.
+# Loop: run (workers 1 by default, each container -V 5) -> archive metadata -> clean old AFL++ run dirs -> sleep 2s -> next.
 # Graceful stop: SIGTERM finishes current run, then exits.
+# Cleanup: keep newest AFLPP_MAX_RUN_DIRS_KEEP AFL++ run dirs, archive status/stats/crash metadata before deleting old dirs.
 # Smoke: FUZZ_LOOP_MAX_ITERATIONS=N exits after N iterations (test only).
 #
 # Prerequisites on 퍼징컴:
 #   - docker.io installed; service user in the `docker` group (so afl-out is not root-owned;
 #     {docker_user_flag} also enforces uid:gid). Verify: `docker run --rm aflplusplus/aflplusplus afl-fuzz -h`.
-#   - target/release/tool built (orchestrator) AND the in-container tool built (default target/debug/tool;
-#     override with AFLPP_CONTAINER_TOOL). i.e. on 퍼징컴: `cargo build --release && cargo build`.
+#   - target/release/tool built (orchestrator and in-container target). Override with
+#     AFLPP_CONTAINER_TOOL only if intentionally validating a different binary.
 #   - .venv with onnxruntime present under the workdir (mounted /work:ro) — Docker runs with
 #     --network none, so onnxruntime cannot be pip-installed at runtime; it must already be present.
 
@@ -30,16 +31,19 @@ set -uo pipefail
 PROJECT_ROOT="${PROJECT_ROOT:-/home/ssw/bugbounty}"
 TARGET="${TARGET:-onnx}"
 BACKEND="${BACKEND:-aflpp}"
-WORKERS="${WORKERS:-2}"
+WORKERS="${WORKERS:-1}"
 TIMEOUT_SEC="${TIMEOUT_SEC:-30}"
 RESTART_LIMIT="${RESTART_LIMIT:-1}"
 CORPUS_DIR="${CORPUS_DIR:-${PROJECT_ROOT}/seeds/${TARGET}}"
 ITERATION_SLEEP_SEC="${ITERATION_SLEEP_SEC:-2}"
 MAX_ITERATIONS="${FUZZ_LOOP_MAX_ITERATIONS:-0}"
+RUNS_ROOT="${RUNS_ROOT:-${PROJECT_ROOT}/data/runs}"
+AFLPP_MAX_RUN_DIRS_KEEP="${AFLPP_MAX_RUN_DIRS_KEEP:-20}"
+AFLPP_RUN_SUMMARY_ROOT="${AFLPP_RUN_SUMMARY_ROOT:-${PROJECT_ROOT}/data/experiments/aflpp-arm-c-retention}"
+AFLPP_ARCHIVE_MAX_CRASH_FILES="${AFLPP_ARCHIVE_MAX_CRASH_FILES:-200}"
 
-# In-container target binary path (relative to {container_workdir}=/work). The 1h/6h aflpp
-# validation used target/debug/tool; override to target/release/tool if only release is built.
-AFLPP_CONTAINER_TOOL="${AFLPP_CONTAINER_TOOL:-target/debug/tool}"
+# In-container target binary path (relative to {container_workdir}=/work).
+AFLPP_CONTAINER_TOOL="${AFLPP_CONTAINER_TOOL:-target/release/tool}"
 
 TOOL_BIN="${PROJECT_ROOT}/target/release/tool"
 
@@ -48,9 +52,149 @@ log() {
 }
 
 cd "${PROJECT_ROOT}"
+mkdir -p "${AFLPP_RUN_SUMMARY_ROOT}"
 
 stop_requested=0
 trap 'stop_requested=1; log "SIGTERM received, will exit after current iteration"' TERM INT
+
+copy_run_metadata_file() {
+    local run_dir="$1"
+    local summary_dir="$2"
+    local source_path="$3"
+    local rel_path
+    local dest_path
+
+    rel_path="${source_path#${run_dir}/}"
+    dest_path="${summary_dir}/${rel_path}"
+    mkdir -p "$(dirname "${dest_path}")"
+    cp -p "${source_path}" "${dest_path}" 2>/dev/null || true
+}
+
+archive_run_dir_metadata() {
+    local run_dir="$1"
+    local run_name
+    local summary_dir
+    local source_size
+
+    [ -d "${run_dir}" ] || return 0
+
+    run_name="$(basename "${run_dir}")"
+    summary_dir="${AFLPP_RUN_SUMMARY_ROOT}/${run_name}"
+    mkdir -p "${summary_dir}"
+
+    source_size="$(du -sh "${run_dir}" 2>/dev/null | awk '{print $1}')"
+    {
+        echo "archived_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "source_run_dir=${run_dir}"
+        echo "source_size=${source_size:-unknown}"
+        echo "retention_policy=keep_newest_${AFLPP_MAX_RUN_DIRS_KEEP}_aflpp_run_dirs"
+    } > "${summary_dir}/retention.txt"
+
+    if [ -f "${run_dir}/status.json" ]; then
+        cp -p "${run_dir}/status.json" "${summary_dir}/status.json" 2>/dev/null || true
+    fi
+
+    if [ -f "${run_dir}/.fuzz-loop-aflpp" ]; then
+        cp -p "${run_dir}/.fuzz-loop-aflpp" "${summary_dir}/fuzz-loop-aflpp.marker" 2>/dev/null || true
+    fi
+
+    if [ -d "${run_dir}/logs" ]; then
+        find "${run_dir}/logs" -type f -size -10M -print 2>/dev/null \
+            | while IFS= read -r path; do
+                copy_run_metadata_file "${run_dir}" "${summary_dir}" "${path}"
+            done
+    fi
+
+    if [ -d "${run_dir}/afl-out" ]; then
+        find "${run_dir}/afl-out" -maxdepth 2 -type f \( -name fuzzer_stats -o -name plot_data -o -name cmdline \) -size -10M -print 2>/dev/null \
+            | while IFS= read -r path; do
+                copy_run_metadata_file "${run_dir}" "${summary_dir}" "${path}"
+            done
+
+        for evidence_dir in "${run_dir}"/afl-out/*/crashes "${run_dir}"/afl-out/*/hangs; do
+            [ -d "${evidence_dir}" ] || continue
+            find "${evidence_dir}" -maxdepth 1 -type f -size -10M -print 2>/dev/null \
+                | sort \
+                | head -n "${AFLPP_ARCHIVE_MAX_CRASH_FILES}" \
+                | while IFS= read -r path; do
+                    copy_run_metadata_file "${run_dir}" "${summary_dir}" "${path}"
+                done
+        done
+    fi
+}
+
+is_aflpp_run_dir() {
+    local run_dir="$1"
+
+    [ -f "${run_dir}/.fuzz-loop-aflpp" ] || [ -d "${run_dir}/afl-out" ]
+}
+
+cleanup_old_aflpp_runs() {
+    local list_file
+    local run_count
+    local excess
+
+    case "${AFLPP_MAX_RUN_DIRS_KEEP}" in
+        ''|*[!0-9]*)
+            log "invalid AFLPP_MAX_RUN_DIRS_KEEP=${AFLPP_MAX_RUN_DIRS_KEEP}, skipping cleanup"
+            return 0
+            ;;
+    esac
+
+    [ -d "${RUNS_ROOT}" ] || return 0
+
+    list_file="$(mktemp)"
+    find "${RUNS_ROOT}" -maxdepth 1 -type d -name 'run-*' -printf '%T@ %p\n' 2>/dev/null \
+        | sort -n \
+        | while IFS= read -r line; do
+            run_dir="${line#* }"
+            if is_aflpp_run_dir "${run_dir}"; then
+                echo "${line}"
+            fi
+        done > "${list_file}"
+
+    run_count="$(wc -l < "${list_file}" | tr -d ' ')"
+    if [ "${run_count}" -le "${AFLPP_MAX_RUN_DIRS_KEEP}" ]; then
+        rm -f "${list_file}"
+        return 0
+    fi
+
+    excess=$((run_count - AFLPP_MAX_RUN_DIRS_KEEP))
+    head -n "${excess}" "${list_file}" \
+        | while IFS= read -r line; do
+            old_run="${line#* }"
+            archive_run_dir_metadata "${old_run}"
+            rm -rf "${old_run:?}"
+        done
+    rm -f "${list_file}"
+    log "cleaned ${excess} old AFL++ run dirs (kept newest ${AFLPP_MAX_RUN_DIRS_KEEP}; metadata in ${AFLPP_RUN_SUMMARY_ROOT})"
+}
+
+mark_latest_aflpp_run() {
+    local run_dir="$1"
+    local iter="$2"
+    local exit_code="$3"
+    local run_abs
+
+    [ -n "${run_dir}" ] || return 0
+    case "${run_dir}" in
+        /*) run_abs="${run_dir}" ;;
+        ./*) run_abs="${PROJECT_ROOT}/${run_dir#./}" ;;
+        *) run_abs="${PROJECT_ROOT}/${run_dir}" ;;
+    esac
+    [ -d "${run_abs}" ] || return 0
+
+    {
+        echo "created_by=fuzz-loop-aflpp"
+        echo "marked_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "iter=${iter}"
+        echo "exit_code=${exit_code}"
+        echo "target=${TARGET}"
+        echo "backend=${BACKEND}"
+        echo "container_tool=${AFLPP_CONTAINER_TOOL}"
+        echo "corpus_dir=${CORPUS_DIR}"
+    } > "${run_abs}/.fuzz-loop-aflpp"
+}
 
 # AFL++ docker invocation contract (hardened; matches scripts/run_long.sh aflpp leg and
 # docs/specs.md §Docker hardening). Placeholders are substituted by `tool run --backend aflpp`:
@@ -63,6 +207,8 @@ export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flag
 iter=0
 log "starting aflpp loop (target=${TARGET}, workers=${WORKERS}, container_tool=${AFLPP_CONTAINER_TOOL}, corpus=${CORPUS_DIR})"
 log "TOOL_AFLPP_CMD=${TOOL_AFLPP_CMD}"
+log "retention: keep newest ${AFLPP_MAX_RUN_DIRS_KEEP} AFL++ run dirs; metadata root=${AFLPP_RUN_SUMMARY_ROOT}"
+cleanup_old_aflpp_runs
 
 while :; do
     if [ "${stop_requested}" = "1" ]; then
@@ -73,14 +219,21 @@ while :; do
     iter=$((iter + 1))
     log "iter=${iter} starting"
 
-    if ! "${TOOL_BIN}" run \
+    run_log="$(mktemp)"
+    "${TOOL_BIN}" run \
         --target "${TARGET}" \
         --backend "${BACKEND}" \
         --workers "${WORKERS}" \
         --timeout-sec "${TIMEOUT_SEC}" \
         --restart-limit "${RESTART_LIMIT}" \
-        --corpus-dir "${CORPUS_DIR}"
-    then
+        --corpus-dir "${CORPUS_DIR}" 2>&1 | tee "${run_log}"
+    run_exit=${PIPESTATUS[0]}
+    run_dir="$(awk -F': ' '/^run_dir: / {print $2; exit}' "${run_log}")"
+    rm -f "${run_log}"
+    mark_latest_aflpp_run "${run_dir}" "${iter}" "${run_exit}"
+    cleanup_old_aflpp_runs
+
+    if [ "${run_exit}" -ne 0 ]; then
         log "iter=${iter} run failed, continuing to next iteration"
     fi
 
