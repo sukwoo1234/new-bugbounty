@@ -28,7 +28,22 @@
 
 set -uo pipefail
 
-PROJECT_ROOT="${PROJECT_ROOT:-/home/ssw/bugbounty}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+DEFAULT_PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
+
+canonical_path() {
+    local path="$1"
+
+    if command -v realpath >/dev/null 2>&1; then
+        realpath -m "${path}"
+    elif command -v readlink >/dev/null 2>&1; then
+        readlink -f "${path}" 2>/dev/null || printf '%s\n' "${path}"
+    else
+        printf '%s\n' "${path}"
+    fi
+}
+
+PROJECT_ROOT="${PROJECT_ROOT:-${DEFAULT_PROJECT_ROOT}}"
 TARGET="${TARGET:-onnx}"
 BACKEND="${BACKEND:-aflpp}"
 WORKERS="${WORKERS:-1}"
@@ -37,9 +52,9 @@ RESTART_LIMIT="${RESTART_LIMIT:-1}"
 CORPUS_DIR="${CORPUS_DIR:-${PROJECT_ROOT}/seeds/${TARGET}}"
 ITERATION_SLEEP_SEC="${ITERATION_SLEEP_SEC:-2}"
 MAX_ITERATIONS="${FUZZ_LOOP_MAX_ITERATIONS:-0}"
-RUNS_ROOT="${RUNS_ROOT:-${PROJECT_ROOT}/data/runs}"
+RUNS_ROOT="${RUNS_ROOT:-$(canonical_path "${PROJECT_ROOT}/data/runs")}"
 AFLPP_MAX_RUN_DIRS_KEEP="${AFLPP_MAX_RUN_DIRS_KEEP:-20}"
-AFLPP_RUN_SUMMARY_ROOT="${AFLPP_RUN_SUMMARY_ROOT:-${PROJECT_ROOT}/data/experiments/aflpp-arm-c-retention}"
+AFLPP_RUN_SUMMARY_ROOT="${AFLPP_RUN_SUMMARY_ROOT:-$(canonical_path "${PROJECT_ROOT}/data/experiments/aflpp-arm-c-retention")}"
 AFLPP_ARCHIVE_MAX_CRASH_FILES="${AFLPP_ARCHIVE_MAX_CRASH_FILES:-200}"
 
 # In-container target binary path (relative to {container_workdir}=/work).
@@ -51,8 +66,14 @@ log() {
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] fuzz-loop-aflpp: $*"
 }
 
-cd "${PROJECT_ROOT}"
-mkdir -p "${AFLPP_RUN_SUMMARY_ROOT}"
+cd "${PROJECT_ROOT}" || {
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] fuzz-loop-aflpp: PROJECT_ROOT is invalid: ${PROJECT_ROOT}" >&2
+    exit 2
+}
+mkdir -p "${AFLPP_RUN_SUMMARY_ROOT}" || {
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] fuzz-loop-aflpp: failed to create AFLPP_RUN_SUMMARY_ROOT=${AFLPP_RUN_SUMMARY_ROOT}" >&2
+    exit 2
+}
 
 stop_requested=0
 trap 'stop_requested=1; log "SIGTERM received, will exit after current iteration"' TERM INT
