@@ -1382,3 +1382,52 @@ fn record_manual_review(
     println!("[manual_review] queued: {}", review_path.display());
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::extract_triage_crash_fields;
+
+    #[test]
+    fn triage_crash_fields_read_top_level_values_with_deep_triage_present() {
+        let summary = r#"{
+  "schema_version": "1.1",
+  "triage_id": "1700000000001",
+  "target": "onnx",
+  "input": "data/runs/run-x/inputs/sample.onnx",
+  "repro_retries": 3,
+  "timeout_sec": 60,
+  "clean_count": 0,
+  "crashed_count": 3,
+  "timeout_count": 0,
+  "infra_oom_count": 0,
+  "signature_consistent": true,
+  "signature_basis": "normalized_frame_hash",
+  "normalized_frame_hash": "abc123def456",
+  "crash_kind": "heap-buffer-overflow",
+  "sanitizer": "asan",
+  "signal": "SIGSEGV",
+  "crash_summary": "AddressSanitizer: heap-buffer-overflow",
+  "verdict": "reproduced",
+  "attempts": [],
+  "deep_triage": {
+    "version": "1.0",
+    "status": "completed",
+    "grouping_confidence": "high",
+    "grouping_reason": "all crashed attempts share normalized_frame_hash, sanitizer, and crash_kind"
+  }
+}
+"#;
+
+        let fields = extract_triage_crash_fields(summary);
+
+        assert_eq!(fields.crash_kind, "heap-buffer-overflow");
+        assert_eq!(fields.sanitizer, "asan");
+        assert_eq!(fields.signal, "SIGSEGV");
+        assert_eq!(fields.normalized_frame_hash, "abc123def456");
+        assert_eq!(fields.signature_basis, "normalized_frame_hash");
+        assert_eq!(
+            fields.crash_summary,
+            "AddressSanitizer: heap-buffer-overflow"
+        );
+    }
+}

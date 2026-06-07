@@ -423,3 +423,80 @@ pub(crate) fn system_time_to_unix_string(t: SystemTime) -> String {
         .map(|d| d.as_secs().to_string())
         .unwrap_or_else(|_| "not_available".to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::find_latest_reproduced_triage;
+
+    #[test]
+    fn reproduced_triage_reader_ignores_nested_deep_triage() {
+        let triage_root = unique_temp_dir("deep-triage-dashboard-consumer");
+        let triage_dir = triage_root.join("triage-1700000000001");
+        std::fs::create_dir_all(&triage_dir).expect("create triage fixture dir");
+        std::fs::write(
+            triage_dir.join("summary.json"),
+            r#"{
+  "schema_version": "1.1",
+  "triage_id": "1700000000001",
+  "target": "onnx",
+  "input": "data/runs/run-x/inputs/sample.onnx",
+  "repro_retries": 3,
+  "timeout_sec": 60,
+  "clean_count": 0,
+  "crashed_count": 3,
+  "timeout_count": 0,
+  "infra_oom_count": 0,
+  "signature_consistent": true,
+  "signature_basis": "normalized_frame_hash",
+  "normalized_frame_hash": "abc123def456",
+  "crash_kind": "heap-buffer-overflow",
+  "sanitizer": "asan",
+  "signal": "SIGSEGV",
+  "crash_summary": "AddressSanitizer: heap-buffer-overflow",
+  "verdict": "reproduced",
+  "attempts": [
+    {"attempt": 1, "result": "crashed", "signature_top3": ["frame-one", "frame-two"]}
+  ],
+  "deep_triage": {
+    "version": "1.0",
+    "status": "completed",
+    "grouping_confidence": "high",
+    "grouping_reason": "all crashed attempts share normalized_frame_hash, sanitizer, and crash_kind"
+  }
+}
+"#,
+        )
+        .expect("write triage fixture summary");
+
+        let latest = find_latest_reproduced_triage(&triage_root)
+            .expect("read reproduced triage")
+            .expect("reproduced triage fixture exists");
+
+        assert_eq!(latest.triage_id, "1700000000001");
+        assert_eq!(latest.input, "data/runs/run-x/inputs/sample.onnx");
+        assert_eq!(latest.signature_top1, "frame-one");
+        assert_eq!(latest.crash_kind, "heap-buffer-overflow");
+        assert_eq!(latest.sanitizer, "asan");
+        assert_eq!(latest.signal, "SIGSEGV");
+        assert_eq!(latest.normalized_frame_hash, "abc123def456");
+        assert_eq!(latest.signature_basis, "normalized_frame_hash");
+        assert_eq!(
+            latest.crash_summary,
+            "AddressSanitizer: heap-buffer-overflow"
+        );
+
+        let _ = std::fs::remove_dir_all(&triage_root);
+    }
+
+    fn unique_temp_dir(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("tool-{name}-{}-{nanos}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        path
+    }
+}
