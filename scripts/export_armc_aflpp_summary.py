@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import csv
+import hashlib
 import json
 import os
 import subprocess
@@ -252,6 +253,28 @@ def write_tsv(path: Path, records: list[RunRecord]) -> None:
             )
 
 
+def sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as input_file:
+        for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def write_file_index(out_dir: Path, relative_paths: list[str]) -> Path:
+    index_path = out_dir / "file-index.tsv"
+    with index_path.open("w", encoding="utf-8", newline="") as output:
+        writer = csv.writer(output, delimiter="\t")
+        writer.writerow(["relative_path", "size_bytes", "sha256"])
+        for relative_path in relative_paths:
+            artifact_path = out_dir / relative_path
+            if not artifact_path.is_file():
+                continue
+            metadata = artifact_path.stat()
+            writer.writerow([relative_path, metadata.st_size, sha256_file(artifact_path)])
+    return index_path
+
+
 def write_journal(args: argparse.Namespace, out_dir: Path) -> str:
     if not args.include_journal:
         return ""
@@ -324,6 +347,7 @@ def main() -> int:
         "saved_hangs_sum": sum_stat(records, "saved_hangs"),
         "crash_file_count": total_crash_files,
         "hang_file_count": total_hang_files,
+        "file_index": "file-index.tsv",
     }
     journal_path = write_journal(args, out_dir)
     if journal_path:
@@ -385,12 +409,23 @@ def main() -> int:
 """
     (out_dir / "summary.md").write_text(summary, encoding="utf-8")
     (out_dir / "notes.md").write_text(f"- note: {notes}\n", encoding="utf-8")
+    file_index_path = write_file_index(
+        out_dir,
+        [
+            "manifest.json",
+            "summary.md",
+            "run-index.tsv",
+            "notes.md",
+            "journal.txt",
+        ],
+    )
 
     print("[export-armc-aflpp] done")
     print(f"out_dir: {out_dir}")
     print(f"records: {len(records)}")
     print(f"success/failed/timeout: {manifest['success']}/{manifest['failed']}/{manifest['timeout']}")
     print(f"run_index: {out_dir / 'run-index.tsv'}")
+    print(f"file_index: {file_index_path}")
     print(f"summary: {out_dir / 'summary.md'}")
     return 0
 
