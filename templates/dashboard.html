@@ -1,265 +1,406 @@
 <!doctype html>
-<html lang="en">
+<html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Dashboard Snapshot</title>
+<title>FuzzGate 실험 현황</title>
 <link rel="stylesheet" href="/assets/dashboard.css">
 </head>
 <body>
-<div class="wrap">
-<div class="hero">
-<h1>Read-only Dashboard</h1>
-<p class="sub">generated_at={{generated_at}}</p>
+<div class="app-shell">
+<header class="topbar">
+<div class="brand">
+<div>
+<h1>FuzzGate <span>실험 현황</span></h1>
 </div>
+</div>
+<div class="topbar-status">
+<span class="status-pill status-{{dashboard_status_class}}">● 상태: {{run_state}}</span>
+<span class="meta-pill">대상 {{latest_run_target}} · 방식 {{latest_run_backend}}</span>
+</div>
+</header>
 
 <nav class="tabs" role="tablist" aria-label="Dashboard sections">
-<button class="tab-btn is-active" type="button" data-tab="dashboard" role="tab" aria-selected="true">Dashboard</button>
-<button class="tab-btn" type="button" data-tab="config" role="tab" aria-selected="false">Config</button>
-<button class="tab-btn" type="button" data-tab="seeds" role="tab" aria-selected="false">Seeds</button>
-<button class="tab-btn" type="button" data-tab="crashes" role="tab" aria-selected="false">Crashes</button>
-<button class="tab-btn" type="button" data-tab="reports" role="tab" aria-selected="false">Reports</button>
-<button class="tab-btn" type="button" data-tab="coverage" role="tab" aria-selected="false">Coverage</button>
-<button class="tab-btn" type="button" data-tab="triage" role="tab" aria-selected="false">Triage</button>
+<button class="tab-btn is-active" type="button" data-tab="dashboard" role="tab" aria-selected="true">대시보드</button>
+<button class="tab-btn" type="button" data-tab="config" role="tab" aria-selected="false">설정</button>
+<button class="tab-btn" type="button" data-tab="seeds" role="tab" aria-selected="false">입력 파일 <span class="tab-badge">{{seeds_total_count}}</span></button>
+<button class="tab-btn" type="button" data-tab="crashes" role="tab" aria-selected="false">크래시 <span class="tab-badge">{{triage_verdict_reproduced}}</span></button>
+<button class="tab-btn" type="button" data-tab="reports" role="tab" aria-selected="false">리포트 <span class="tab-badge">{{report_count}}</span></button>
+<button class="tab-btn" type="button" data-tab="coverage" role="tab" aria-selected="false">커버리지 <span class="tab-badge">{{coverage_count}}</span></button>
+<button class="tab-btn" type="button" data-tab="triage" role="tab" aria-selected="false">판정 <span class="tab-badge">{{triage_count}}</span></button>
 </nav>
 
 <div class="tab-panels">
 <section class="tab-panel is-active" data-panel="dashboard" role="tabpanel">
 
-<section class="panel">
-<div class="panel-head">Overview</div>
-<div class="grid">
-<div class="card"><div class="k">Run State</div><div class="v">{{run_state}}</div></div>
-<div class="card"><div class="k">Target</div><div class="v">{{latest_run_target}}</div></div>
-<div class="card"><div class="k">Backend</div><div class="v">{{latest_run_backend}}</div><div class="hint">status.json schema follow-up tracked in future-backlog</div></div>
-<div class="card"><div class="k">Success</div><div class="v">{{latest_run_success}}</div></div>
-<div class="card"><div class="k">Failed</div><div class="v">{{latest_run_failed}}</div></div>
-<div class="card"><div class="k">Timeout</div><div class="v">{{latest_run_timeout}}</div></div>
-<div class="card"><div class="k">Reproduced Crashes</div><div class="v">{{triage_verdict_reproduced}}</div></div>
-<div class="card"><div class="k">Manual Review</div><div class="v">{{triage_verdict_manual_review}}</div></div>
-<div class="card"><div class="k">Latest Report</div><div class="v">{{latest_report_html}}</div></div>
-<div class="card"><div class="k">Latest Export</div><div class="v">{{latest_export_html}}</div></div>
-<div class="card"><div class="k">Mutated Corpus</div><div class="v">{{latest_mutation_count}}</div></div>
+<section class="intro-panel">
+<div>
+<h2>AI 모델 파일 퍼징 실험을 한눈에 보는 화면입니다.</h2>
+<p>모델 파일을 자동으로 변형해 로더가 안전하게 처리하는지 확인하고, 검사 진행량·오류·문제 후보를 요약합니다.</p>
+</div>
+<div class="intro-badges">
+<span>검사 현황</span>
+<span>오류 추적</span>
+<span>결과 요약</span>
 </div>
 </section>
 
+<section class="status-summary status-{{dashboard_status_class}}">
+<div class="status-summary-mark"></div>
+<div>
+<h3>{{dashboard_status_title}}</h3>
+<p>{{dashboard_status_body}}</p>
+</div>
+</section>
+
+<section class="stat-grid">
+<div class="stat-card stat-primary"><div class="k">검사 진행 상태</div><div class="v">{{run_state}}</div><div class="stat-sub">최근 검사 결과 기준</div></div>
+<div class="stat-card stat-info"><div class="k">검사 대상</div><div class="v">{{latest_run_target}}</div><div class="stat-sub">실행 방식: {{latest_run_backend}}</div></div>
+<div class="stat-card stat-success"><div class="k">정상 처리</div><div class="v">{{latest_run_success}}</div><div class="stat-sub">문제 없이 처리된 입력</div></div>
+<div class="stat-card stat-danger"><div class="k">실패</div><div class="v">{{latest_run_failed}}</div><div class="stat-sub">실행 중 실패한 입력</div></div>
+<div class="stat-card stat-warning"><div class="k">시간 초과</div><div class="v">{{latest_run_timeout}}</div><div class="stat-sub">너무 오래 걸린 입력</div></div>
+<div class="stat-card stat-dark"><div class="k">문제 후보</div><div class="v">{{triage_verdict_reproduced}}</div><div class="stat-sub">재현된 크래시 후보</div></div>
+</section>
+
+<section class="dashboard-layout">
+<div class="dashboard-main">
+
 <section class="panel">
-<div class="panel-head">Operational Charts</div>
-<p class="hint"><code>_proxy</code> metric names never claim true coverage. Charts use the most recent 30 records as a fixed window.</p>
-<div class="chart-grid">
-<div class="chart-block">
-<div class="chart-title">Run Result Trend</div>
-<p class="chart-hint">Recent 30 runs, success/failed/timeout from <code>data/runs/&lt;run-id&gt;/status.json</code>.</p>
+<div class="panel-head"><span>실험 진행 상황</span><span class="panel-note">새로고침하면 최신 상태를 다시 읽습니다</span></div>
+<div class="health-grid">
+<div class="health-item health-{{latest_run_freshness_class}}">
+<div class="health-label">검사 생존 신호</div>
+<div class="health-value">{{latest_run_freshness}}</div>
+<div class="health-note">{{latest_run_freshness_note}}</div>
+</div>
+<div class="health-item health-{{latest_run_error_class}}">
+<div class="health-label">오류율</div>
+<div class="health-value">{{latest_run_error_rate}}</div>
+<div class="health-note">{{latest_run_error_note}}</div>
+</div>
+<div class="health-item">
+<div class="health-label">문제 후보</div>
+<div class="health-value">{{triage_verdict_reproduced}}개 재현</div>
+<div class="health-note">{{triage_verdict_manual_review}}개는 수동 확인 필요</div>
+</div>
+<div class="health-item">
+<div class="health-label">최근 커버리지 결과</div>
+<div class="health-value">{{latest_coverage_html}}</div>
+<div class="health-note">분석 결과 {{coverage_count}}개</div>
+</div>
+</div>
+<div class="health-charts">
+<div class="health-chart">
+<div class="chart-title">최근 검사 안정성</div>
+<p class="chart-explain">각 실행에서 실패·시간 초과가 얼마나 섞였는지 봅니다. 오른쪽 값이 낮을수록 안정적입니다.</p>
 {{run_result_chart}}
 </div>
-<div class="chart-block">
-<div class="chart-title">Throughput Proxy</div>
-<p class="chart-hint">successful_runs_per_hour_proxy — recent 30 runs, success-count proxy. Time-window definition deferred to future-backlog "Chart time window definition".</p>
+<div class="health-chart">
+<div class="chart-title">최근 정상 처리 수</div>
+<p class="chart-explain">최근 실행별 정상 처리 개수입니다. 실제 퍼징 속도나 커버리지 증가는 아닙니다.</p>
 {{throughput_proxy_chart}}
 </div>
-<div class="chart-block">
-<div class="chart-title">Crash Intake Trend</div>
-<p class="chart-hint">new_crashes_per_hour — recent 30 triage verdicts plotted in order, time-window definition deferred to future-backlog "Chart time window definition".</p>
-{{crash_intake_chart}}
-</div>
-<div class="chart-block">
-<div class="chart-title">Triage Verdict Breakdown</div>
-<p class="chart-hint">All-time triage verdict distribution across <code>data/triage</code>.</p>
-{{verdict_breakdown_chart}}
-</div>
-</div>
-<div class="rows">
-<div class="row"><div class="m">successful_runs_per_hour_proxy</div><div>{{successful_runs_per_hour_proxy}} <span class="hint">success-count throughput proxy, not true coverage</span></div></div>
-<div class="row"><div class="m">new_crashes_per_hour</div><div>{{new_crashes_per_hour}} <span class="hint">triage crash-observed inputs</span></div></div>
-<div class="row"><div class="m">valid_crash_ratio</div><div>{{valid_crash_ratio}} <span class="hint">source={{valid_crash_ratio_source}}, valid={{valid_crashes}}, total={{total_crashes}}, summaries={{triage_summary_count}}</span></div></div>
-<div class="row"><div class="m">global_error_rate_5m</div><div>{{global_error_rate_5m}} <span class="hint">recent errors / total events</span></div></div>
 </div>
 </section>
 
 <section class="panel">
-<div class="panel-head">Latest Artifacts</div>
+<div class="panel-head"><span>최근 결과 요약</span><span class="panel-note">원본 파일은 아래 세부 정보에 숨겨져 있습니다</span></div>
+<div class="summary-grid">
+<div class="summary-card">
+<div class="summary-kind">최근 검사</div>
+<div class="summary-link">{{latest_run_html}}</div>
+<div class="summary-meta">상태: {{run_state}}</div>
+<div class="summary-text">정상 {{latest_run_success}}개, 실패 {{latest_run_failed}}개, 시간 초과 {{latest_run_timeout}}개</div>
+</div>
+<div class="summary-card">
+<div class="summary-kind">문제 후보 확인</div>
+<div class="summary-link">{{latest_triage_html}}</div>
+<div class="summary-meta">판정: {{latest_triage_verdict}}</div>
+<div class="summary-text">재현 {{triage_verdict_reproduced}}개, 수동 확인 {{triage_verdict_manual_review}}개</div>
+</div>
+<div class="summary-card">
+<div class="summary-kind">최근 리포트</div>
+<div class="summary-link">{{latest_report_html}}</div>
+<div class="summary-meta">상태: {{latest_report_status}}</div>
+<div class="summary-text">심각도 후보: {{latest_suggested_severity}}</div>
+</div>
+<div class="summary-card">
+<div class="summary-kind">실험 결과 묶음</div>
+<div class="summary-link">{{latest_export_html}}</div>
+<div class="summary-meta">상태: {{latest_export_status}}</div>
+<div class="summary-text">{{latest_export_summary_html}}</div>
+</div>
+</div>
+</section>
+
+<details class="raw-details">
+<summary>개발자 세부 정보</summary>
 <div class="table-wrap">
 <table class="ops-table">
 <thead>
-<tr><th>Type</th><th>Status</th><th>Target / Backend</th><th>Updated</th><th>Path</th><th>Summary</th></tr>
+<tr><th>종류</th><th>상태</th><th>대상 / 방식</th><th>갱신</th><th>원본 파일</th><th>요약</th></tr>
 </thead>
 <tbody>
-<tr><td>Run</td><td>{{run_state}}</td><td>{{latest_run_target}} / {{latest_run_backend}}</td><td>{{latest_run_updated_at}}</td><td>{{latest_run_html}}</td><td>success={{latest_run_success}} | failed={{latest_run_failed}} | timeout={{latest_run_timeout}}</td></tr>
-<tr><td>Triage</td><td>{{latest_triage_verdict}}</td><td>{{latest_triage_target}} / none</td><td>{{latest_triage_updated_at}}</td><td>{{latest_triage_html}}</td><td>reproduced={{triage_verdict_reproduced}} | manual_review={{triage_verdict_manual_review}}</td></tr>
-<tr><td>Report</td><td>{{latest_report_status}}</td><td>none / none</td><td>{{latest_report_updated_at}}</td><td>{{latest_report_html}}</td><td>severity={{latest_suggested_severity}}</td></tr>
-<tr><td>Export</td><td>{{latest_export_status}}</td><td>none / none</td><td>{{latest_export_updated_at}}</td><td>{{latest_export_html}}</td><td>summary={{latest_export_summary_html}}</td></tr>
-<tr><td>Mutation manifest</td><td>{{latest_mutation_status}}</td><td>{{latest_mutation_target}} / -</td><td>{{latest_mutation_updated_at}}</td><td>{{latest_mutation_html}}</td><td>count={{latest_mutation_count}}</td></tr>
+<tr><td>검사</td><td>{{run_state}}</td><td>{{latest_run_target}} / {{latest_run_backend}}</td><td>{{latest_run_updated_at}}</td><td>{{latest_run_html}}</td><td>success={{latest_run_success}} | failed={{latest_run_failed}} | timeout={{latest_run_timeout}}</td></tr>
+<tr><td>문제 후보 확인</td><td>{{latest_triage_verdict}}</td><td>{{latest_triage_target}} / none</td><td>{{latest_triage_updated_at}}</td><td>{{latest_triage_html}}</td><td>reproduced={{triage_verdict_reproduced}} | manual_review={{triage_verdict_manual_review}}</td></tr>
+<tr><td>리포트</td><td>{{latest_report_status}}</td><td>none / none</td><td>{{latest_report_updated_at}}</td><td>{{latest_report_html}}</td><td>severity={{latest_suggested_severity}}</td></tr>
+<tr><td>결과 묶음</td><td>{{latest_export_status}}</td><td>none / none</td><td>{{latest_export_updated_at}}</td><td>{{latest_export_html}}</td><td>summary={{latest_export_summary_html}}</td></tr>
+<tr><td>입력 변형</td><td>{{latest_mutation_status}}</td><td>{{latest_mutation_target}} / -</td><td>{{latest_mutation_updated_at}}</td><td>{{latest_mutation_html}}</td><td>count={{latest_mutation_count}}</td></tr>
 </tbody>
 </table>
 </div>
-</section>
+</details>
+</div>
 
-<section class="panel">
-<div class="panel-head">Mutated Corpus</div>
+<aside class="dashboard-side">
+<section class="panel status-panel">
+<div class="panel-head"><span>현재 검사 요약</span></div>
 <div class="rows">
-<div class="row"><div class="m">mutated_count</div><div>{{latest_mutation_count}}</div></div>
-<div class="row"><div class="m">target</div><div>{{latest_mutation_target}}</div></div>
-<div class="row"><div class="m">source corpus</div><div>{{latest_mutation_source_corpus}}</div></div>
-<div class="row"><div class="m">manifest</div><div>{{latest_mutation_html}}</div></div>
-<div class="row"><div class="m">latest mutation time</div><div>{{latest_mutation_updated_at}}</div></div>
-<div class="row"><div class="m">validation summary</div><div>{{latest_mutation_validation_summary}} <span class="hint">mutator must write <code>validation_status</code>; see future-backlog "Mutated Corpus validation dependency note"</span></div></div>
+<div class="row"><div class="m">전체 입력</div><div>{{latest_run_total}}</div></div>
+<div class="row"><div class="m">정상 처리</div><div>{{latest_run_success}}</div></div>
+<div class="row"><div class="m">실패</div><div>{{latest_run_failed}}</div></div>
+<div class="row"><div class="m">시간 초과</div><div>{{latest_run_timeout}}</div></div>
+<div class="row"><div class="m">마지막 갱신</div><div>{{latest_run_updated_at}}</div></div>
 </div>
 </section>
 
 <section class="panel">
-<div class="panel-head">Logs</div>
-<p class="logs-meta">{{logs_meta_html}}</p>
-{{logs_body_html}}
+<div class="panel-head"><span>입력 파일 모음</span></div>
+<div class="rows">
+<div class="row"><div class="m">ONNX 기본 입력</div><div>{{seeds_onnx_count}}</div></div>
+<div class="row"><div class="m">GGUF 기본 입력</div><div>{{seeds_gguf_count}}</div></div>
+<div class="row"><div class="m">SafeTensors 기본 입력</div><div>{{seeds_safetensors_count}}</div></div>
+<div class="row"><div class="m">변형된 입력</div><div>{{latest_mutation_count}}</div></div>
+</div>
 </section>
 
 <section class="panel">
-<div class="panel-head">Suggested Commands</div>
-<p class="hint">Copyable run/triage/report/export/mutate/open-dashboard. Stop, kill, and direct start are intentionally excluded from Phase A.</p>
-<div class="cmd-list">{{suggested_commands_html}}</div>
+<div class="panel-head"><span>최근 입력 변형</span></div>
+<div class="rows">
+<div class="row"><div class="m">대상</div><div>{{latest_mutation_target}}</div></div>
+<div class="row"><div class="m">생성한 입력</div><div>{{latest_mutation_count}}</div></div>
+<div class="row"><div class="m">상태</div><div>{{latest_mutation_status}}</div></div>
+<div class="row"><div class="m">갱신 시각</div><div>{{latest_mutation_updated_at}}</div></div>
+</div>
+</section>
+
+<section class="panel">
+<div class="panel-head"><span>최근 로그</span></div>
+<p class="logs-meta">자세한 실행 로그는 필요할 때만 펼쳐서 확인합니다.</p>
+<details class="log-details">
+<summary>로그 보기</summary>
+{{logs_body_html}}
+</details>
+</section>
+</aside>
 </section>
 
 </section>
 
 <section class="tab-panel" data-panel="config" role="tabpanel" hidden>
 <section class="panel">
-<div class="panel-head">Config (Read-only)</div>
+<div class="panel-head"><span>실행 환경</span><span class="panel-note">읽기 전용 · 현재 대시보드가 읽는 위치입니다</span></div>
 <div class="rows">
-<div class="row"><div class="m">data_dir</div><div>{{config_data_dir}}</div></div>
-<div class="row"><div class="m">seeds_dir</div><div>{{config_seeds_dir}}</div></div>
-<div class="row"><div class="m">generated_at</div><div>{{generated_at}}</div></div>
-<div class="row"><div class="m">metrics</div><div>{{metrics_badge}}</div></div>
-<div class="row"><div class="m">latest run</div><div>{{latest_run_html}}</div></div>
-<div class="row"><div class="m">latest coverage</div><div>{{latest_coverage_html}}</div></div>
+<div class="row"><div class="m">결과 데이터 위치</div><div>{{config_data_dir}}</div></div>
+<div class="row"><div class="m">입력 파일 위치</div><div>{{config_seeds_dir}}</div></div>
+<div class="row"><div class="m">최근 갱신</div><div>{{generated_at}}</div></div>
+<div class="row"><div class="m">지표 수집 상태</div><div>{{metrics_badge}}</div></div>
+<div class="row"><div class="m">최근 검사 결과</div><div>{{latest_run_html}}</div></div>
+<div class="row"><div class="m">최근 커버리지 결과</div><div>{{latest_coverage_html}}</div></div>
 </div>
 </section>
 
 <section class="panel">
-<div class="panel-head">Target Prepare</div>
+<div class="panel-head"><span>대상 준비</span><span class="panel-note">고급 작업 · 공식 릴리스를 받아 해시와 메타데이터를 기록합니다</span></div>
+<p class="hint">일반 모니터링에는 필요 없습니다. 새 대상 버전을 준비할 때만 실행하세요.</p>
 <div class="rows">
-<div class="row"><div class="m">Status</div><div><span id="target-badge" class="badge badge-neutral">idle</span></div></div>
-<div class="row"><div class="m">Target</div><div><select id="target-kind" class="form-control"><option value="onnx">onnx</option><option value="gguf">gguf</option><option value="safetensors">safetensors</option></select></div></div>
-<div class="row"><div class="m">Version</div><div><input id="target-version" class="form-control" type="text" placeholder="default preset version"></div></div>
-<div class="row"><div class="m">Source URL</div><div><input id="target-source-url" class="form-control" type="text" placeholder="optional official release URL"></div></div>
-<div class="row"><div class="m">Actions</div><div class="control-actions"><button id="target-prepare-start" class="ctl-btn" type="button">Prepare Target</button><button id="target-prepare-stop" class="ctl-btn ctl-btn-stop" type="button">Stop</button></div></div>
-<div class="row"><div class="m">Message</div><div id="target-message" class="mono-text">ready</div></div>
+<div class="row"><div class="m">상태</div><div><span id="target-badge" class="badge badge-neutral">대기 중</span></div></div>
+<div class="row"><div class="m">대상 종류</div><div><select id="target-kind" class="form-control"><option value="onnx">onnx</option><option value="gguf">gguf</option><option value="safetensors">safetensors</option></select></div></div>
+<div class="row"><div class="m">버전</div><div><input id="target-version" class="form-control" type="text" placeholder="비우면 기본 버전을 사용"></div></div>
+<div class="row"><div class="m">공식 다운로드 URL</div><div><input id="target-source-url" class="form-control" type="text" placeholder="선택 사항 · 공식 릴리스 URL"></div></div>
+<div class="row"><div class="m">동작</div><div class="control-actions"><button id="target-prepare-start" class="ctl-btn" type="button">대상 준비 시작</button><button id="target-prepare-stop" class="ctl-btn ctl-btn-stop" type="button">중지</button></div></div>
+<div class="row"><div class="m">메시지</div><div id="target-message" class="mono-text">준비됨</div></div>
 <div class="row"><div class="m">SHA256</div><div id="target-sha256" class="mono-text">-</div></div>
-<div class="row"><div class="m">Meta</div><div id="target-meta" class="mono-text">-</div></div>
-<div class="row"><div class="m">Downloaded file</div><div id="target-file" class="mono-text">-</div></div>
-<div class="row"><div class="m">Log</div><div id="target-log" class="mono-text">-</div></div>
+<div class="row"><div class="m">메타데이터</div><div id="target-meta" class="mono-text">-</div></div>
+<div class="row"><div class="m">다운로드 파일</div><div id="target-file" class="mono-text">-</div></div>
+<div class="row"><div class="m">로그</div><div id="target-log" class="mono-text">-</div></div>
 </div>
 </section>
 
 <section class="panel">
-<div class="panel-head">Target Build</div>
+<div class="panel-head"><span>대상 빌드</span><span class="panel-note">고급 작업 · 준비된 소스/릴리스를 실험용 바이너리로 빌드합니다</span></div>
+<p class="hint">빌드는 시간이 걸릴 수 있습니다. 퍼징 실행 중에는 자원 충돌 여부를 먼저 확인하세요.</p>
 <div class="rows">
-<div class="row"><div class="m">Status</div><div><span id="target-build-badge" class="badge badge-neutral">idle</span></div></div>
-<div class="row"><div class="m">Target</div><div><select id="target-build-kind" class="form-control"><option value="gguf">gguf</option><option value="onnx">onnx</option><option value="safetensors">safetensors</option></select></div></div>
-<div class="row"><div class="m">Version</div><div><input id="target-build-version" class="form-control" type="text" placeholder="latest prepared version if empty"></div></div>
-<div class="row"><div class="m">Actions</div><div class="control-actions"><button id="target-build-start" class="ctl-btn" type="button">Build Target</button><button id="target-build-stop" class="ctl-btn ctl-btn-stop" type="button">Stop</button></div></div>
-<div class="row"><div class="m">Message</div><div id="target-build-message" class="mono-text">ready</div></div>
-<div class="row"><div class="m">Build dir</div><div id="target-build-dir" class="mono-text">-</div></div>
-<div class="row"><div class="m">Artifact</div><div id="target-build-artifact" class="mono-text">-</div></div>
-<div class="row"><div class="m">Log</div><div id="target-build-log" class="mono-text">-</div></div>
+<div class="row"><div class="m">상태</div><div><span id="target-build-badge" class="badge badge-neutral">대기 중</span></div></div>
+<div class="row"><div class="m">대상 종류</div><div><select id="target-build-kind" class="form-control"><option value="gguf">gguf</option><option value="onnx">onnx</option><option value="safetensors">safetensors</option></select></div></div>
+<div class="row"><div class="m">버전</div><div><input id="target-build-version" class="form-control" type="text" placeholder="비우면 최근 준비된 버전을 사용"></div></div>
+<div class="row"><div class="m">동작</div><div class="control-actions"><button id="target-build-start" class="ctl-btn" type="button">빌드 시작</button><button id="target-build-stop" class="ctl-btn ctl-btn-stop" type="button">중지</button></div></div>
+<div class="row"><div class="m">메시지</div><div id="target-build-message" class="mono-text">준비됨</div></div>
+<div class="row"><div class="m">빌드 위치</div><div id="target-build-dir" class="mono-text">-</div></div>
+<div class="row"><div class="m">생성 파일</div><div id="target-build-artifact" class="mono-text">-</div></div>
+<div class="row"><div class="m">로그</div><div id="target-build-log" class="mono-text">-</div></div>
 </div>
 </section>
 </section>
 
 <section class="tab-panel" data-panel="seeds" role="tabpanel" hidden>
 <section class="panel">
-<div class="panel-head">Seeds (Read-only)</div>
+<div class="panel-head"><span>입력 파일 모음</span><span class="panel-note">읽기 전용 · 퍼징이 출발점으로 사용하는 모델 파일 수입니다</span></div>
 <div class="rows">
 <div class="row"><div class="m">onnx seeds</div><div>{{seeds_onnx_count}}</div></div>
 <div class="row"><div class="m">gguf seeds</div><div>{{seeds_gguf_count}}</div></div>
 <div class="row"><div class="m">safetensors seeds</div><div>{{seeds_safetensors_count}}</div></div>
-<div class="row"><div class="m">total seeds</div><div>{{seeds_total_count}}</div></div>
-<div class="row"><div class="m">latest run</div><div>{{latest_run_html}}</div></div>
-<div class="row"><div class="m">latest triage</div><div>{{latest_triage_html}}</div></div>
+<div class="row"><div class="m">전체 입력 파일</div><div>{{seeds_total_count}}</div></div>
+<div class="row"><div class="m">최근 검사 결과</div><div>{{latest_run_html}}</div></div>
+<div class="row"><div class="m">최근 판정 결과</div><div>{{latest_triage_html}}</div></div>
 </div>
+<p class="hint">특정 포맷의 입력 파일이 0개면 해당 포맷 실험은 의미 있게 진행되지 않습니다.</p>
 </section>
 </section>
 
 <section class="tab-panel" data-panel="crashes" role="tabpanel" hidden>
 <section class="panel">
-<div class="panel-head">Crashes</div>
-<div class="filter-bar">
-<input id="crash-filter-input" class="filter-input" type="text" placeholder="Filter triage id">
-<button id="crash-sort-btn" class="sort-btn" type="button" data-order="desc">Newest First</button>
-</div>
-<div class="rows">
-<div class="row"><div class="m">Recent triage list</div><div><ul class="mini-list">{{recent_triage_rows}}</ul></div></div>
-<div class="row"><div class="m">Latest valid triage</div><div>{{latest_valid_triage}}</div></div>
-<div class="row"><div class="m">Crash input</div><div>{{latest_valid_input}}</div></div>
-<div class="row"><div class="m">Crash kind</div><div>{{latest_valid_crash_kind}}</div></div>
-<div class="row"><div class="m">Sanitizer / Signal</div><div>{{latest_valid_sanitizer}} / {{latest_valid_signal}}</div></div>
-<div class="row"><div class="m">Normalized signature</div><div><pre>{{latest_valid_normalized_frame_hash}}</pre><span class="hint">basis={{latest_valid_signature_basis}}</span></div></div>
-<div class="row"><div class="m">Signature top1</div><div><pre id="latest-signature-text">{{latest_valid_signature}}</pre><p class="inline-actions"><button id="view-signature-btn" class="ctl-btn" type="button">View In Modal</button></p></div></div>
-<div class="row"><div class="m">Crash summary</div><div><pre>{{latest_valid_crash_summary}}</pre></div></div>
-<div class="row"><div class="m">Summary path</div><div>{{latest_valid_summary_html}}</div></div>
-<div class="row"><div class="m">Report path</div><div>{{latest_valid_report_html}}</div></div>
-<div class="row"><div class="m">Evidence manifest</div><div>{{latest_valid_manifest_html}}</div></div>
-<div class="row"><div class="m">Evidence bundle</div><div>{{latest_valid_bundle_html}}</div></div>
-<div class="row"><div class="m">Suggested severity</div><div>{{latest_suggested_severity}} <span class="hint">confidence={{latest_severity_confidence}}</span></div></div>
+<div class="panel-head"><span>문제 후보</span><span class="panel-note">재현된 크래시 후보와 리포트 근거를 확인합니다</span></div>
+<section class="status-summary status-{{latest_crash_status_class}}">
+<div class="status-summary-mark"></div>
+<div>
+<h3>{{latest_crash_status_title}}</h3>
+<p>{{latest_crash_status_body}}</p>
 </div>
 </section>
 
-<section class="panel">
-<div class="panel-head">Replay</div>
+<div class="summary-grid">
+<div class="summary-card">
+<div class="summary-kind">재현 상태</div>
+<div class="summary-link">{{latest_valid_triage_display}}</div>
+<div class="summary-meta">최근 재현 후보</div>
+<div class="summary-text">리포트 후보로 이어질 수 있는 입력입니다.</div>
+</div>
+<div class="summary-card">
+<div class="summary-kind">문제가 난 입력</div>
+<div class="summary-link">{{latest_valid_input_display}}</div>
+<div class="summary-meta">재현에 사용된 입력</div>
+<div class="summary-text">원본 경로와 증거 파일은 아래 세부 정보에서 확인합니다.</div>
+</div>
+<div class="summary-card">
+<div class="summary-kind">원인 요약</div>
+<div class="summary-link">{{latest_valid_crash_kind_display}}</div>
+<div class="summary-meta">{{latest_valid_runtime_display}}</div>
+<div class="summary-text">{{latest_valid_crash_summary_display}}</div>
+</div>
+<div class="summary-card">
+<div class="summary-kind">리포트 우선순위</div>
+<div class="summary-link">{{latest_suggested_severity_display}}</div>
+<div class="summary-meta">신뢰도: {{latest_severity_confidence_display}}</div>
+<div class="summary-text">심각도는 자동 제안값입니다. 제출 전 수동 검토가 필요합니다.</div>
+</div>
+</div>
+
+<details class="raw-details">
+<summary>개발자 세부 정보</summary>
+<div class="filter-bar">
+<input id="crash-filter-input" class="filter-input" type="text" placeholder="triage id 검색">
+<button id="crash-sort-btn" class="sort-btn" type="button" data-order="desc">최신순</button>
+</div>
 <div class="rows">
-<div class="row"><div class="m">Replay input</div><div id="replay-input" class="mono-text">{{latest_valid_input}}</div></div>
-<div class="row"><div class="m">Replay status</div><div><span id="replay-badge" class="badge badge-neutral">idle</span></div></div>
-<div class="row"><div class="m">Replay actions</div><div class="control-actions"><button id="replay-start" class="ctl-btn" type="button">Replay Start</button><button id="replay-stop" class="ctl-btn ctl-btn-stop" type="button">Replay Stop</button></div></div>
-<div class="row"><div class="m">Replay verdict</div><div id="replay-verdict" class="mono-text">-</div></div>
-<div class="row"><div class="m">Replay summary</div><div id="replay-summary" class="mono-text">-</div></div>
+<div class="row"><div class="m">최근 판정 목록</div><div><ul class="mini-list">{{recent_triage_rows}}</ul></div></div>
+<div class="row"><div class="m">최근 재현 후보</div><div id="latest-crash-cell">{{latest_valid_triage}}</div></div>
+<div class="row"><div class="m">입력 경로</div><div>{{latest_valid_input}}</div></div>
+<div class="row"><div class="m">크래시 유형</div><div>{{latest_valid_crash_kind}}</div></div>
+<div class="row"><div class="m">Sanitizer / Signal</div><div>{{latest_valid_sanitizer}} / {{latest_valid_signal}}</div></div>
+<div class="row"><div class="m">정규화된 시그니처</div><div><pre>{{latest_valid_normalized_frame_hash}}</pre><span class="hint">basis={{latest_valid_signature_basis}}</span></div></div>
+<div class="row"><div class="m">대표 스택 시그니처</div><div><pre id="latest-signature-text">{{latest_valid_signature}}</pre><p class="inline-actions"><button id="view-signature-btn" class="ctl-btn" type="button">크게 보기</button></p></div></div>
+<div class="row"><div class="m">크래시 요약</div><div><pre>{{latest_valid_crash_summary}}</pre></div></div>
+<div class="row"><div class="m">요약 파일</div><div>{{latest_valid_summary_html}}</div></div>
+<div class="row"><div class="m">리포트 파일</div><div>{{latest_valid_report_html}}</div></div>
+<div class="row"><div class="m">증거 manifest</div><div>{{latest_valid_manifest_html}}</div></div>
+<div class="row"><div class="m">증거 묶음</div><div>{{latest_valid_bundle_html}}</div></div>
+<div class="row"><div class="m">심각도 후보</div><div>{{latest_suggested_severity}} <span class="hint">confidence={{latest_severity_confidence}}</span></div></div>
+</div>
+</details>
+</section>
+
+<section class="panel">
+<div class="panel-head"><span>재현 확인</span><span class="panel-note">선택된 입력을 다시 실행해 후보가 반복되는지 확인합니다</span></div>
+<div class="empty-state" data-empty-for="crashes" hidden>
+<strong>아직 재현된 문제 후보가 없습니다.</strong>
+<span>퍼징과 판정이 끝나면 재현 입력과 리포트 근거가 여기에 표시됩니다.</span>
+</div>
+<div class="rows">
+<div class="row"><div class="m">재현 입력</div><div id="replay-input" class="mono-text">{{latest_valid_input}}</div></div>
+<div class="row"><div class="m">상태</div><div><span id="replay-badge" class="badge badge-neutral">대기 중</span></div></div>
+<div class="row"><div class="m">동작</div><div class="control-actions"><button id="replay-start" class="ctl-btn" type="button">재현 시작</button><button id="replay-stop" class="ctl-btn ctl-btn-stop" type="button">중지</button></div></div>
+<div class="row"><div class="m">판정</div><div id="replay-verdict" class="mono-text">-</div></div>
+<div class="row"><div class="m">요약</div><div id="replay-summary" class="mono-text">-</div></div>
 </div>
 </section>
 </section>
 
 <section class="tab-panel" data-panel="reports" role="tabpanel" hidden>
 <section class="panel">
-<div class="panel-head">Reports</div>
+<div class="panel-head"><span>제출 후보 리포트</span><span class="panel-note">재현된 문제를 보고서 형태로 정리한 결과입니다</span></div>
 <div class="filter-bar">
-<input id="report-filter-input" class="filter-input" type="text" placeholder="Filter report id">
-<button id="report-sort-btn" class="sort-btn" type="button" data-order="desc">Newest First</button>
+<input id="report-filter-input" class="filter-input" type="text" placeholder="report id 검색">
+<button id="report-sort-btn" class="sort-btn" type="button" data-order="desc">최신순</button>
 </div>
 <div class="rows">
-<div class="row"><div class="m">Latest report</div><div>{{latest_report_html}}</div></div>
-<div class="row"><div class="m">Latest valid report path</div><div>{{latest_valid_report_html}}</div></div>
-<div class="row"><div class="m">Latest crash kind</div><div>{{latest_valid_crash_kind}}</div></div>
-<div class="row"><div class="m">Latest normalized signature</div><div><pre>{{latest_valid_normalized_frame_hash}}</pre></div></div>
-<div class="row"><div class="m">Latest evidence manifest</div><div>{{latest_valid_manifest_html}}</div></div>
-<div class="row"><div class="m">Latest evidence bundle</div><div>{{latest_valid_bundle_html}}</div></div>
-<div class="row"><div class="m">Latest suggested severity</div><div>{{latest_suggested_severity}} <span class="hint">confidence={{latest_severity_confidence}}, cvss={{latest_suggested_cvss_vector}}</span></div></div>
-<div class="row"><div class="m">Recent report list</div><div><ul class="mini-list">{{recent_report_rows}}</ul></div></div>
+<div class="empty-state" data-empty-for="reports" hidden>
+<strong>아직 생성된 리포트가 없습니다.</strong>
+<span>재현 가능한 문제 후보가 확인되면 제출 후보 리포트와 증거 묶음이 표시됩니다.</span>
 </div>
+<div class="row"><div class="m">최근 리포트</div><div id="latest-report-cell">{{latest_report_html}}</div></div>
+<div class="row"><div class="m">최근 제출 후보</div><div>{{latest_valid_report_html}}</div></div>
+<div class="row"><div class="m">문제 유형</div><div>{{latest_valid_crash_kind}}</div></div>
+<div class="row"><div class="m">증거 manifest</div><div>{{latest_valid_manifest_html}}</div></div>
+<div class="row"><div class="m">증거 묶음</div><div>{{latest_valid_bundle_html}}</div></div>
+<div class="row"><div class="m">심각도 제안</div><div>{{latest_suggested_severity}} <span class="hint">신뢰도={{latest_severity_confidence}}, CVSS={{latest_suggested_cvss_vector}}</span></div></div>
+<div class="row"><div class="m">최근 리포트 목록</div><div><ul class="mini-list">{{recent_report_rows}}</ul></div></div>
+</div>
+<details class="raw-details">
+<summary>개발자 세부 정보</summary>
+<div class="rows">
+<div class="row"><div class="m">정규화된 시그니처</div><div><pre>{{latest_valid_normalized_frame_hash}}</pre></div></div>
+</div>
+</details>
 </section>
 </section>
 
 <section class="tab-panel" data-panel="coverage" role="tabpanel" hidden>
 <section class="panel">
-<div class="panel-head">Coverage</div>
+<div class="panel-head"><span>커버리지 결과</span><span class="panel-note">퍼징 입력이 대상 프로그램 내부를 얼마나 넓게 지나갔는지 보는 근거입니다</span></div>
 <div class="rows">
-<div class="row"><div class="m">Latest coverage</div><div>{{latest_coverage_html}}</div></div>
-<div class="row"><div class="m">Coverage summary</div><div>{{latest_coverage_summary_html}}</div></div>
-<div class="row"><div class="m">Recent coverage list</div><div><ul class="mini-list">{{recent_coverage_rows}}</ul></div></div>
-<div class="row"><div class="m">Coverage jobs</div><div>{{coverage_count}}</div></div>
+<div class="empty-state" data-empty-for="coverage" hidden>
+<strong>아직 커버리지 결과가 없습니다.</strong>
+<span>커버리지 실험을 실행하면 요약 파일과 최근 작업 목록이 표시됩니다.</span>
 </div>
+<div class="row"><div class="m">최근 커버리지 산출물</div><div id="latest-coverage-cell">{{latest_coverage_html}}</div></div>
+<div class="row"><div class="m">최근 요약</div><div>{{latest_coverage_summary_html}}</div></div>
+<div class="row"><div class="m">최근 커버리지 목록</div><div><ul class="mini-list">{{recent_coverage_rows}}</ul></div></div>
+<div class="row"><div class="m">커버리지 작업 수</div><div>{{coverage_count}}</div></div>
+</div>
+<p class="hint">커버리지는 “크래시를 찾았다”가 아니라 “얼마나 깊고 넓게 실행했는가”를 보는 보조 지표입니다.</p>
 </section>
 </section>
 
 <section class="tab-panel" data-panel="triage" role="tabpanel" hidden>
 <section class="panel">
-<div class="panel-head">Triage</div>
+<div class="panel-head"><span>판정 결과</span><span class="panel-note">크래시 후보가 실제로 반복 재현되는지 정리합니다</span></div>
 <div class="rows">
-<div class="row"><div class="m">Latest triage</div><div>{{latest_triage_html}}</div></div>
-<div class="row"><div class="m">Latest report</div><div>{{latest_report_html}}</div></div>
-<div class="row"><div class="m">new_crashes_per_hour</div><div>{{new_crashes_per_hour}}</div></div>
-<div class="row"><div class="m">valid_crash_ratio</div><div>{{valid_crash_ratio}} <span class="hint">source={{valid_crash_ratio_source}}, valid={{valid_crashes}}, total={{total_crashes}}, summaries={{triage_summary_count}}</span></div></div>
+<div class="empty-state" data-empty-for="triage" hidden>
+<strong>아직 판정 결과가 없습니다.</strong>
+<span>크래시 후보를 재실행해 반복 재현 여부를 확인하면 이 탭이 채워집니다.</span>
 </div>
+<div class="row"><div class="m">최근 판정</div><div id="latest-triage-cell">{{latest_triage_html}}</div></div>
+<div class="row"><div class="m">최근 리포트</div><div>{{latest_report_html}}</div></div>
+<div class="row"><div class="m">새 문제 발견 속도</div><div>{{new_crashes_per_hour}} <span class="hint">시간당 새 후보 수</span></div></div>
+<div class="row"><div class="m">재현 성공률</div><div>{{valid_crash_ratio}} <span class="hint">근거={{valid_crash_ratio_source}}, 재현={{valid_crashes}}, 전체={{total_crashes}}, 요약={{triage_summary_count}}</span></div></div>
+</div>
+<p class="hint">재현 성공률이 낮으면 단순 크래시 수보다 리포트 신뢰도를 먼저 확인해야 합니다.</p>
 </section>
 </section>
 </div>
 
-<p class="footer-note">Tip: click run/triage/report/coverage rows to open detail views.</p>
+<p class="footer-note">Tip: 검사·판정·리포트·커버리지 항목을 클릭하면 세부 화면을 열 수 있습니다.</p>
 </div>
 
 <div id="toast-root" class="toast-root" aria-live="polite" aria-atomic="true"></div>
@@ -268,8 +409,8 @@
 <div class="ui-modal-backdrop" data-modal-close="true"></div>
 <div class="ui-modal-card" role="dialog" aria-modal="true" aria-labelledby="ui-modal-title">
 <div class="ui-modal-head">
-<h3 id="ui-modal-title">Detail</h3>
-<button id="ui-modal-close" class="modal-close-btn" type="button" aria-label="Close">Close</button>
+<h3 id="ui-modal-title">세부 정보</h3>
+<button id="ui-modal-close" class="modal-close-btn" type="button" aria-label="닫기">닫기</button>
 </div>
 <pre id="ui-modal-body" class="ui-modal-body"></pre>
 </div>
@@ -317,6 +458,10 @@
   const uiModalBody = document.getElementById("ui-modal-body");
   const uiModalClose = document.getElementById("ui-modal-close");
   const modalCloseTargets = Array.from(document.querySelectorAll("[data-modal-close='true']"));
+  const latestCrashCell = document.getElementById("latest-crash-cell");
+  const latestReportCell = document.getElementById("latest-report-cell");
+  const latestCoverageCell = document.getElementById("latest-coverage-cell");
+  const latestTriageCell = document.getElementById("latest-triage-cell");
 
   const activate = (tabName) => {
     tabs.forEach((btn) => {
@@ -358,6 +503,37 @@
     }, 2400);
   };
 
+  const statusLabel = (value) => {
+    switch (value) {
+      case "running": return "실행 중";
+      case "success": return "완료";
+      case "error": return "오류";
+      case "stopped": return "중지됨";
+      case "idle": return "대기 중";
+      default: return value || "대기 중";
+    }
+  };
+
+  const isEmptyValue = (value) => {
+    const text = (value || "").trim();
+    return !text || text === "-" || text === "not_available" || text === "기록 없음";
+  };
+
+  const confirmAction = (message) => window.confirm(message);
+
+  const applyEmptyState = (name, sourceEl) => {
+    const emptyEl = document.querySelector(`[data-empty-for='${name}']`);
+    if (!emptyEl || !sourceEl) return;
+    emptyEl.hidden = !isEmptyValue(sourceEl.textContent || "");
+  };
+
+  const applyEmptyStates = () => {
+    applyEmptyState("crashes", latestCrashCell);
+    applyEmptyState("reports", latestReportCell);
+    applyEmptyState("coverage", latestCoverageCell);
+    applyEmptyState("triage", latestTriageCell);
+  };
+
   const openModal = (title, body) => {
     if (!uiModal || !uiModalTitle || !uiModalBody) return;
     uiModalTitle.textContent = title;
@@ -391,7 +567,7 @@
         });
       });
       if (sortBtnEl) {
-        sortBtnEl.textContent = isDesc ? "Newest First" : "Oldest First";
+        sortBtnEl.textContent = isDesc ? "최신순" : "오래된순";
       }
     };
 
@@ -408,10 +584,10 @@
   const renderReplayStatus = (status) => {
     if (!replayBadge || !replayVerdict || !replaySummary) return;
     const running = Boolean(status.running);
-    replayBadge.textContent = running ? "running" : "idle";
+    replayBadge.textContent = running ? "실행 중" : "대기 중";
     replayBadge.classList.remove("badge-neutral", "badge-ok", "badge-warn");
     replayBadge.classList.add(running ? "badge-ok" : "badge-neutral");
-    replayVerdict.textContent = status.verdict || (running ? "running" : "-");
+    replayVerdict.textContent = status.verdict || (running ? "실행 중" : "-");
     if (status.summary_path) {
       replaySummary.innerHTML = `<a class="path-link" href="/file?path=${encodeURIComponent(status.summary_path)}">${status.summary_path}</a>`;
     } else {
@@ -425,7 +601,8 @@
     if (!targetBadge) return;
     const running = Boolean(status.running);
     const result = status.result || (running ? "running" : "idle");
-    targetBadge.textContent = result;
+    targetBadge.textContent = statusLabel(result);
+    targetBadge.dataset.rawStatus = result;
     targetBadge.classList.remove("badge-neutral", "badge-ok", "badge-warn");
     if (result === "success" || running) {
       targetBadge.classList.add("badge-ok");
@@ -436,7 +613,7 @@
     }
     if (targetPrepareStart) targetPrepareStart.disabled = running;
     if (targetPrepareStop) targetPrepareStop.disabled = !running;
-    if (targetMessage) targetMessage.textContent = status.message || "ready";
+    if (targetMessage) targetMessage.textContent = status.message || "준비됨";
     if (targetLog) targetLog.textContent = status.log_file || "-";
     if (targetSha256) targetSha256.textContent = status.sha256 || "-";
     if (targetMeta) {
@@ -456,7 +633,8 @@
     if (!targetBuildBadge) return;
     const running = Boolean(status.running);
     const result = status.result || (running ? "running" : "idle");
-    targetBuildBadge.textContent = result;
+    targetBuildBadge.textContent = statusLabel(result);
+    targetBuildBadge.dataset.rawStatus = result;
     targetBuildBadge.classList.remove("badge-neutral", "badge-ok", "badge-warn");
     if (result === "success" || running) {
       targetBuildBadge.classList.add("badge-ok");
@@ -467,7 +645,7 @@
     }
     if (targetBuildStart) targetBuildStart.disabled = running;
     if (targetBuildStop) targetBuildStop.disabled = !running;
-    if (targetBuildMessage) targetBuildMessage.textContent = status.message || "ready";
+    if (targetBuildMessage) targetBuildMessage.textContent = status.message || "준비됨";
     if (targetBuildDir) targetBuildDir.textContent = status.build_dir || "-";
     if (targetBuildArtifact) targetBuildArtifact.textContent = status.artifact || "-";
     if (targetBuildLog) targetBuildLog.textContent = status.log_file || "-";
@@ -532,24 +710,24 @@
     } catch (_e) {
     }
     try {
-      const previous = targetBadge ? targetBadge.textContent : "";
+      const previous = targetBadge ? targetBadge.dataset.rawStatus || "" : "";
       const data = await fetchTargetStatus();
       if (data && data.result === "error" && previous !== "error") {
-        showToast("error", "target prepare failed");
+        showToast("error", "대상 준비 실패");
       }
       if (data && data.result === "success" && previous !== "success") {
-        showToast("success", "target prepare completed");
+        showToast("success", "대상 준비 완료");
       }
     } catch (_e) {
     }
     try {
-      const previous = targetBuildBadge ? targetBuildBadge.textContent : "";
+      const previous = targetBuildBadge ? targetBuildBadge.dataset.rawStatus || "" : "";
       const data = await fetchTargetBuildStatus();
       if (data && data.result === "error" && previous !== "error") {
-        showToast("error", "target build failed");
+        showToast("error", "대상 빌드 실패");
       }
       if (data && data.result === "success" && previous !== "success") {
-        showToast("success", "target build completed");
+        showToast("success", "대상 빌드 완료");
       }
     } catch (_e) {
     }
@@ -558,31 +736,32 @@
   if (replayStart && replayInput) {
     replayStart.addEventListener("click", async () => {
       const input = (replayInput.textContent || "").trim();
-      if (!input || input === "not_available") {
-        showToast("error", "no replay input available");
+      if (isEmptyValue(input)) {
+        showToast("error", "재현할 입력이 없습니다");
         return;
       }
-      setReplayMessage("starting...");
+      if (!confirmAction("선택된 입력을 다시 실행해 재현 여부를 확인합니다. 계속할까요?")) return;
+      setReplayMessage("시작 중...");
       try {
         const target = input.endsWith(".gguf") ? "gguf" : input.endsWith(".safetensors") ? "safetensors" : "onnx";
         await postReplayAction(`/replay/start?target=${encodeURIComponent(target)}&input=${encodeURIComponent(input)}&repro_retries=3&timeout_sec=30`);
         await fetchReplayStatus();
-        showToast("success", "replay started");
+        showToast("success", "재현 확인 시작");
       } catch (e) {
-        showToast("error", "replay start failed");
+        showToast("error", "재현 확인 시작 실패");
         setReplayMessage(String(e));
       }
     });
   }
   if (replayStop) {
     replayStop.addEventListener("click", async () => {
-      setReplayMessage("stopping...");
+      setReplayMessage("중지 중...");
       try {
         await postReplayAction("/replay/stop");
         await fetchReplayStatus();
-        showToast("success", "replay stopped");
+        showToast("success", "재현 확인 중지");
       } catch (e) {
-        showToast("error", "replay stop failed");
+        showToast("error", "재현 확인 중지 실패");
         setReplayMessage(String(e));
       }
     });
@@ -596,27 +775,28 @@
       params.set("target", target);
       if (version) params.set("version", version);
       if (sourceUrl) params.set("source_url", sourceUrl);
-      setTargetMessage("preparing...");
+      if (!confirmAction("대상 파일을 준비합니다. 다운로드와 해시 기록이 실행될 수 있습니다. 계속할까요?")) return;
+      setTargetMessage("준비 중...");
       try {
         await postTargetAction(`/target/prepare?${params.toString()}`);
         const data = await fetchTargetStatus();
-        showToast("success", "target prepare started");
+        showToast("success", "대상 준비 시작");
         if (data?.message) setTargetMessage(data.message);
       } catch (e) {
-        showToast("error", "target prepare failed");
+        showToast("error", "대상 준비 실패");
         setTargetMessage(String(e));
       }
     });
   }
   if (targetPrepareStop) {
     targetPrepareStop.addEventListener("click", async () => {
-      setTargetMessage("stopping...");
+      setTargetMessage("중지 중...");
       try {
         await postTargetAction("/target/stop");
         await fetchTargetStatus();
-        showToast("success", "target prepare stopped");
+        showToast("success", "대상 준비 중지");
       } catch (e) {
-        showToast("error", "target stop failed");
+        showToast("error", "대상 준비 중지 실패");
         setTargetMessage(String(e));
       }
     });
@@ -628,27 +808,28 @@
       const params = new URLSearchParams();
       params.set("target", target);
       if (version) params.set("version", version);
-      setTargetBuildMessage("building...");
+      if (!confirmAction("대상 빌드를 시작합니다. 시간이 걸리고 CPU/디스크를 사용할 수 있습니다. 계속할까요?")) return;
+      setTargetBuildMessage("빌드 중...");
       try {
         const data = await postTargetBuildAction(`/target/build/start?${params.toString()}`);
         await fetchTargetBuildStatus();
-        showToast("success", "target build started");
+        showToast("success", "대상 빌드 시작");
         if (data?.version && targetBuildVersion) targetBuildVersion.value = data.version;
       } catch (e) {
-        showToast("error", "target build failed");
+        showToast("error", "대상 빌드 실패");
         setTargetBuildMessage(String(e));
       }
     });
   }
   if (targetBuildStop) {
     targetBuildStop.addEventListener("click", async () => {
-      setTargetBuildMessage("stopping...");
+      setTargetBuildMessage("중지 중...");
       try {
         await postTargetBuildAction("/target/build/stop");
         await fetchTargetBuildStatus();
-        showToast("success", "target build stopped");
+        showToast("success", "대상 빌드 중지");
       } catch (e) {
-        showToast("error", "target build stop failed");
+        showToast("error", "대상 빌드 중지 실패");
         setTargetBuildMessage(String(e));
       }
     });
@@ -656,7 +837,7 @@
 
   if (viewSignatureBtn && latestSignatureText) {
     viewSignatureBtn.addEventListener("click", () => {
-      openModal("Latest Signature Top1", latestSignatureText.textContent || "not_available");
+      openModal("대표 스택 시그니처", latestSignatureText.textContent || "기록 없음");
     });
   }
   if (uiModalClose) {
@@ -665,6 +846,7 @@
   modalCloseTargets.forEach((el) => el.addEventListener("click", closeModal));
   bindListControls(".tab-panel[data-panel='crashes'] .mini-list", crashFilterInput, crashSortBtn);
   bindListControls(".tab-panel[data-panel='reports'] .mini-list", reportFilterInput, reportSortBtn);
+  applyEmptyStates();
 
   refreshStatus();
   setInterval(refreshStatus, 5000);

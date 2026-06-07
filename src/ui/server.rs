@@ -471,7 +471,7 @@ fn handle_replay_start(
         .map_err(|e| format!("failed to clone replay log handle: {e}"))?;
 
     let cwd = std::env::current_dir().map_err(|e| format!("failed to get current dir: {e}"))?;
-    let mut cmd = Command::new("target/debug/tool");
+    let mut cmd = Command::new(tool_binary_path()?);
     cmd.current_dir(&cwd)
         .arg("triage")
         .arg("--target")
@@ -567,7 +567,7 @@ fn handle_target_prepare(
         .map_err(|e| format!("failed to clone target log handle: {e}"))?;
 
     let cwd = std::env::current_dir().map_err(|e| format!("failed to get current dir: {e}"))?;
-    let mut cmd = Command::new("target/debug/tool");
+    let mut cmd = Command::new(tool_binary_path()?);
     cmd.current_dir(&cwd)
         .arg("prepare-target")
         .arg("--target")
@@ -1369,6 +1369,16 @@ fn target_storage_name(target: &str) -> Option<&'static str> {
         "safetensors" => Some("safetensors"),
         _ => None,
     }
+}
+
+fn tool_binary_path() -> Result<PathBuf, String> {
+    if let Some(value) = std::env::var_os("TOOL_BIN") {
+        let path = PathBuf::from(value);
+        if !path.as_os_str().is_empty() {
+            return Ok(path);
+        }
+    }
+    std::env::current_exe().map_err(|e| format!("failed to resolve current executable: {e}"))
 }
 
 fn is_process_alive(pid: u32) -> bool {
