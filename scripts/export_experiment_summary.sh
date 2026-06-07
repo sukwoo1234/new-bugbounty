@@ -9,6 +9,7 @@ usage: export_experiment_summary.sh \
   --target <onnx|gguf|safetensors> \
   --backend <local-harness|libfuzzer|aflpp> \
   --duration-hours <n> \
+  [--out-dir <dir>] \
   [--corpus-dir <dir>] \
   [--workers <n>] \
   [--timeout-sec <n>] \
@@ -31,6 +32,7 @@ MACHINE_LABEL=""
 TARGET=""
 BACKEND=""
 DURATION_HOURS=""
+OUT_DIR=""
 CORPUS_DIR=""
 WORKERS="1"
 TIMEOUT_SEC="30"
@@ -46,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     --target) TARGET="${2:-}"; shift 2 ;;
     --backend) BACKEND="${2:-}"; shift 2 ;;
     --duration-hours) DURATION_HOURS="${2:-}"; shift 2 ;;
+    --out-dir) OUT_DIR="${2:-}"; shift 2 ;;
     --corpus-dir) CORPUS_DIR="${2:-}"; shift 2 ;;
     --workers) WORKERS="${2:-}"; shift 2 ;;
     --timeout-sec) TIMEOUT_SEC="${2:-}"; shift 2 ;;
@@ -68,6 +71,10 @@ if [[ -z "$CORPUS_DIR" ]]; then
   CORPUS_DIR="seeds/${TARGET}"
 fi
 
+if [[ -z "$OUT_DIR" ]]; then
+  OUT_DIR="results/experiments/${EXPERIMENT_ID}"
+fi
+
 need_cmd jq
 need_cmd git
 
@@ -84,7 +91,6 @@ if [[ -z "$RUN_STATUS_FILE" || ! -f "$RUN_STATUS_FILE" ]]; then
   exit 2
 fi
 
-OUT_DIR="results/experiments/${EXPERIMENT_ID}"
 mkdir -p "$OUT_DIR"
 
 cp "$RUN_STATUS_FILE" "$OUT_DIR/run-status.json"
