@@ -10,6 +10,9 @@ usage: export_experiment_summary.sh \
   --backend <local-harness|libfuzzer|aflpp> \
   --duration-hours <n> \
   [--out-dir <dir>] \
+  [--data-dir <dir>] \
+  [--triage-root <dir>] \
+  [--reports-root <dir>] \
   [--corpus-dir <dir>] \
   [--workers <n>] \
   [--timeout-sec <n>] \
@@ -27,17 +30,84 @@ need_cmd() {
   fi
 }
 
+file_size_bytes() {
+  wc -c < "$1" | tr -d ' '
+}
+
+file_sha256() {
+  local hash_line=""
+  hash_line="$(sha256sum "$1")"
+  printf '%s' "${hash_line%% *}"
+}
+
+write_file_index() {
+  local out_dir="$1"
+  shift
+  local index_path="$out_dir/file-index.tsv"
+  local relative_path=""
+  local artifact_path=""
+  local size_bytes=""
+  local hash_line=""
+
+  {
+    echo -e "relative_path\tsize_bytes\tsha256"
+    for relative_path in "$@"; do
+      artifact_path="$out_dir/$relative_path"
+      [[ -f "$artifact_path" ]] || continue
+      size_bytes="$(file_size_bytes "$artifact_path")"
+      hash_line="$(file_sha256 "$artifact_path")"
+      echo -e "${relative_path}\t${size_bytes}\t${hash_line}"
+    done
+  } > "$index_path"
+}
+
+append_source_index_row() {
+  local source_type="$1"
+  local source_path="$2"
+  [[ -f "$source_path" ]] || return 0
+  printf '%s\t%s\t%s\t%s\n' \
+    "$source_type" \
+    "$source_path" \
+    "$(file_size_bytes "$source_path")" \
+    "$(file_sha256 "$source_path")"
+}
+
+write_source_index() {
+  local index_path="$1"
+  {
+    echo -e "source_type\tpath\tsize_bytes\tsha256"
+    append_source_index_row "run_status" "$RUN_STATUS_FILE"
+    append_source_index_row "metrics_latest" "$METRICS_FILE"
+    if [[ -n "$MUTATION_MANIFEST" ]]; then
+      append_source_index_row "mutation_manifest" "$MUTATION_MANIFEST"
+    fi
+    if [[ -d "$TRIAGE_ROOT" ]]; then
+      while IFS= read -r source_path; do
+        append_source_index_row "triage_summary" "$source_path"
+      done < <(find "$TRIAGE_ROOT" -mindepth 2 -maxdepth 2 -type f -path '*/triage-*/summary.json' | sort)
+    fi
+    if [[ -d "$REPORTS_ROOT" ]]; then
+      while IFS= read -r source_path; do
+        append_source_index_row "report_meta" "$source_path"
+      done < <(find "$REPORTS_ROOT" -mindepth 2 -maxdepth 2 -type f -path '*/report-*/meta.json' | sort)
+    fi
+  } > "$index_path"
+}
+
 EXPERIMENT_ID=""
 MACHINE_LABEL=""
 TARGET=""
 BACKEND=""
 DURATION_HOURS=""
 OUT_DIR=""
+DATA_DIR="data"
+TRIAGE_ROOT=""
+REPORTS_ROOT=""
 CORPUS_DIR=""
 WORKERS="1"
 TIMEOUT_SEC="30"
 RESTART_LIMIT="1"
-METRICS_FILE="data/metrics/latest.json"
+METRICS_FILE=""
 RUN_STATUS_FILE=""
 NOTES_TEXT=""
 
@@ -49,6 +119,9 @@ while [[ $# -gt 0 ]]; do
     --backend) BACKEND="${2:-}"; shift 2 ;;
     --duration-hours) DURATION_HOURS="${2:-}"; shift 2 ;;
     --out-dir) OUT_DIR="${2:-}"; shift 2 ;;
+    --data-dir) DATA_DIR="${2:-}"; shift 2 ;;
+    --triage-root) TRIAGE_ROOT="${2:-}"; shift 2 ;;
+    --reports-root) REPORTS_ROOT="${2:-}"; shift 2 ;;
     --corpus-dir) CORPUS_DIR="${2:-}"; shift 2 ;;
     --workers) WORKERS="${2:-}"; shift 2 ;;
     --timeout-sec) TIMEOUT_SEC="${2:-}"; shift 2 ;;
@@ -75,16 +148,34 @@ if [[ -z "$OUT_DIR" ]]; then
   OUT_DIR="results/experiments/${EXPERIMENT_ID}"
 fi
 
+DATA_DIR="${DATA_DIR%/}"
+if [[ -z "$METRICS_FILE" ]]; then
+  METRICS_FILE="${DATA_DIR}/metrics/latest.json"
+fi
+if [[ -z "$TRIAGE_ROOT" ]]; then
+  TRIAGE_ROOT="${DATA_DIR}/triage"
+fi
+if [[ -z "$REPORTS_ROOT" ]]; then
+  REPORTS_ROOT="${DATA_DIR}/reports"
+fi
+RUNS_ROOT="${DATA_DIR}/runs"
+
 need_cmd jq
 need_cmd git
+need_cmd sha256sum
 
 if [[ ! -f "$METRICS_FILE" ]]; then
   echo "[export-experiment] metrics file not found: $METRICS_FILE" >&2
   exit 2
 fi
 
-if [[ -z "$RUN_STATUS_FILE" ]]; then
-  RUN_STATUS_FILE="$(ls -1t data/runs/run-*/status.json 2>/dev/null | head -n 1 || true)"
+if [[ -z "$RUN_STATUS_FILE" && -d "$RUNS_ROOT" ]]; then
+  RUN_STATUS_FILE="$(
+    find "$RUNS_ROOT" -mindepth 2 -maxdepth 2 -type f -path '*/run-*/status.json' -printf '%T@\t%p\n' 2>/dev/null \
+      | sort -nr \
+      | sed -n '1p' \
+      | cut -f2-
+  )"
 fi
 if [[ -z "$RUN_STATUS_FILE" || ! -f "$RUN_STATUS_FILE" ]]; then
   echo "[export-experiment] run status file not found" >&2
@@ -121,8 +212,9 @@ GLOBAL_ERROR_RATE_5M="$(jq -r '.metrics.global_error_rate_5m // 0' "$OUT_DIR/met
 
 TRIAGE_INDEX="$OUT_DIR/triage-index.tsv"
 {
-  echo -e "triage_id\tverdict\tinput_path\tcrash_kind\tsanitizer\tsignal\tnormalized_frame_hash\tsignature_top1\tsummary_path"
-  for f in $(ls -1 data/triage/triage-*/summary.json 2>/dev/null | sort); do
+  echo -e "triage_id\tverdict\tinput_path\tcrash_kind\tsanitizer\tsignal\tnormalized_frame_hash\tsignature_top1\tsummary_path\tsummary_size_bytes\tsummary_sha256"
+  if [[ -d "$TRIAGE_ROOT" ]]; then
+    while IFS= read -r f; do
     triage_id="$(jq -r '.triage_id // ""' "$f")"
     verdict="$(jq -r '.verdict // ""' "$f")"
     input_path="$(jq -r '.input // ""' "$f")"
@@ -131,14 +223,18 @@ TRIAGE_INDEX="$OUT_DIR/triage-index.tsv"
     signal="$(jq -r '.signal // ""' "$f")"
     normalized_frame_hash="$(jq -r '.normalized_frame_hash // ""' "$f")"
     sig="$(jq -r '.attempts[0].signature_top3[0] // ""' "$f")"
-    echo -e "${triage_id}\t${verdict}\t${input_path}\t${crash_kind}\t${sanitizer}\t${signal}\t${normalized_frame_hash}\t${sig}\t${f}"
-  done
+    summary_size_bytes="$(file_size_bytes "$f")"
+    summary_sha256="$(file_sha256 "$f")"
+    echo -e "${triage_id}\t${verdict}\t${input_path}\t${crash_kind}\t${sanitizer}\t${signal}\t${normalized_frame_hash}\t${sig}\t${f}\t${summary_size_bytes}\t${summary_sha256}"
+    done < <(find "$TRIAGE_ROOT" -mindepth 2 -maxdepth 2 -type f -path '*/triage-*/summary.json' | sort)
+  fi
 } > "$TRIAGE_INDEX"
 
 REPORT_INDEX="$OUT_DIR/report-index.tsv"
 {
-  echo -e "report_id\tsource_triage_id\tcrash_kind\tsanitizer\tsignal\tnormalized_frame_hash\tsuggested_severity\tseverity_confidence\treport_path\tmeta_path"
-  for f in $(ls -1 data/reports/report-*/meta.json 2>/dev/null | sort); do
+  echo -e "report_id\tsource_triage_id\tcrash_kind\tsanitizer\tsignal\tnormalized_frame_hash\tsuggested_severity\tseverity_confidence\treport_path\tmeta_path\tmeta_size_bytes\tmeta_sha256"
+  if [[ -d "$REPORTS_ROOT" ]]; then
+    while IFS= read -r f; do
     report_id="$(jq -r '.report_id // ""' "$f")"
     source_triage_id="$(jq -r '.source_triage_id // ""' "$f")"
     crash_kind="$(jq -r '.crash_kind // ""' "$f")"
@@ -148,8 +244,11 @@ REPORT_INDEX="$OUT_DIR/report-index.tsv"
     suggested_severity="$(jq -r '.suggested_severity // ""' "$f")"
     severity_confidence="$(jq -r '.severity_confidence // ""' "$f")"
     report_path="$(dirname "$f")/report.md"
-    echo -e "${report_id}\t${source_triage_id}\t${crash_kind}\t${sanitizer}\t${signal}\t${normalized_frame_hash}\t${suggested_severity}\t${severity_confidence}\t${report_path}\t${f}"
-  done
+    meta_size_bytes="$(file_size_bytes "$f")"
+    meta_sha256="$(file_sha256 "$f")"
+    echo -e "${report_id}\t${source_triage_id}\t${crash_kind}\t${sanitizer}\t${signal}\t${normalized_frame_hash}\t${suggested_severity}\t${severity_confidence}\t${report_path}\t${f}\t${meta_size_bytes}\t${meta_sha256}"
+    done < <(find "$REPORTS_ROOT" -mindepth 2 -maxdepth 2 -type f -path '*/report-*/meta.json' | sort)
+  fi
 } > "$REPORT_INDEX"
 
 REPRODUCED_COUNT="$(awk -F'\t' 'NR>1 && $2=="reproduced" {c++} END{print c+0}' "$TRIAGE_INDEX")"
@@ -162,6 +261,9 @@ FINISHED_AT="$(date -Iseconds)"
 
 cat > "$OUT_DIR/manifest.json" <<EOF
 {
+  "schema_version": "1.1",
+  "bundle_type": "experiment_summary",
+  "generated_by": "scripts/export_experiment_summary.sh",
   "experiment_id": "${EXPERIMENT_ID}",
   "machine_label": "${MACHINE_LABEL}",
   "target": "${TARGET}",
@@ -170,6 +272,9 @@ cat > "$OUT_DIR/manifest.json" <<EOF
   "timeout_sec": ${TIMEOUT_SEC},
   "restart_limit": ${RESTART_LIMIT},
   "duration_hours": ${DURATION_HOURS},
+  "data_dir": "${DATA_DIR}",
+  "triage_root": "${TRIAGE_ROOT}",
+  "reports_root": "${REPORTS_ROOT}",
   "corpus_dir": "${CORPUS_DIR}",
   "seed_count": ${SEED_COUNT},
   "mutation_manifest": "${MUTATION_MANIFEST}",
@@ -178,7 +283,9 @@ cat > "$OUT_DIR/manifest.json" <<EOF
   "started_at": "${STARTED_AT}",
   "finished_at": "${FINISHED_AT}",
   "metrics_file": "${METRICS_FILE}",
-  "run_status_file": "${RUN_STATUS_FILE}"
+  "run_status_file": "${RUN_STATUS_FILE}",
+  "file_index": "file-index.tsv",
+  "source_index": "source-index.tsv"
 }
 EOF
 
@@ -191,6 +298,9 @@ cat > "$OUT_DIR/summary.md" <<EOF
 - target: \`${TARGET}\`
 - backend: \`${BACKEND}\`
 - duration_hours: \`${DURATION_HOURS}\`
+- data_dir: \`${DATA_DIR}\`
+- triage_root: \`${TRIAGE_ROOT}\`
+- reports_root: \`${REPORTS_ROOT}\`
 - corpus_dir: \`${CORPUS_DIR}\`
 - seed_count: \`${SEED_COUNT}\`
 - mutation_manifest: \`${MUTATION_MANIFEST:-none}\`
@@ -236,6 +346,19 @@ EOF
   fi
 } > "$OUT_DIR/notes.md"
 
+write_source_index "$OUT_DIR/source-index.tsv"
+
+write_file_index \
+  "$OUT_DIR" \
+  "manifest.json" \
+  "summary.md" \
+  "run-status.json" \
+  "metrics-latest.json" \
+  "triage-index.tsv" \
+  "report-index.tsv" \
+  "source-index.tsv" \
+  "notes.md"
+
 echo "[export-experiment] done"
 echo "out_dir: $OUT_DIR"
 echo "files:"
@@ -245,4 +368,6 @@ echo "  - $OUT_DIR/run-status.json"
 echo "  - $OUT_DIR/metrics-latest.json"
 echo "  - $OUT_DIR/triage-index.tsv"
 echo "  - $OUT_DIR/report-index.tsv"
+echo "  - $OUT_DIR/source-index.tsv"
 echo "  - $OUT_DIR/notes.md"
+echo "  - $OUT_DIR/file-index.tsv"

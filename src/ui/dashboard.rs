@@ -912,6 +912,11 @@ fn render_suggested_commands(s: &DashboardSnapshot) -> String {
     } else {
         "<triage-id>"
     };
+    let backend = if s.latest_run_backend != "not_available" {
+        s.latest_run_backend.as_str()
+    } else {
+        "<backend>"
+    };
     let commands: [(&str, String); 6] = [
         (
             "Run",
@@ -931,7 +936,9 @@ fn render_suggested_commands(s: &DashboardSnapshot) -> String {
         ),
         (
             "Export",
-            format!("tool export --run-dir data/runs/{latest_run} --out data/exports/<name>"),
+            format!(
+                "scripts/export_experiment_summary.sh --experiment-id <name> --machine-label <label> --target {target} --backend {backend} --duration-hours <hours> --out-dir data/exports/<name> --data-dir data"
+            ),
         ),
         (
             "Mutate",

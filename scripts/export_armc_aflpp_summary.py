@@ -19,7 +19,9 @@ class RunRecord:
     path: Path
     timestamp: datetime | None
     status: dict[str, Any]
+    status_path: Path
     fuzzer_stats: dict[str, str]
+    fuzzer_stats_path: Path | None
     crash_files: int
     hang_files: int
 
@@ -85,13 +87,19 @@ def load_json(path: Path) -> dict[str, Any]:
         return {}
 
 
-def load_fuzzer_stats(run_dir: Path) -> dict[str, str]:
+def find_fuzzer_stats(run_dir: Path) -> Path | None:
     stats_files = sorted(run_dir.glob("**/fuzzer_stats"))
     if not stats_files:
+        return None
+    return stats_files[0]
+
+
+def load_fuzzer_stats(stats_path: Path | None) -> dict[str, str]:
+    if stats_path is None:
         return {}
     stats: dict[str, str] = {}
     try:
-        for line in stats_files[0].read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in stats_path.read_text(encoding="utf-8", errors="replace").splitlines():
             if ":" not in line:
                 continue
             key, value = line.split(":", 1)
@@ -125,6 +133,7 @@ def collect_records(root: Path, source: str) -> dict[str, RunRecord]:
             continue
         run_name = run_dir.name
         status = load_json(status_path)
+        fuzzer_stats_path = find_fuzzer_stats(run_dir)
         run_id = str(status.get("run_id") or run_name.removeprefix("run-"))
         records[run_name] = RunRecord(
             run_name=run_name,
@@ -133,7 +142,9 @@ def collect_records(root: Path, source: str) -> dict[str, RunRecord]:
             path=run_dir,
             timestamp=timestamp_from_run_id(run_id, run_dir),
             status=status,
-            fuzzer_stats=load_fuzzer_stats(run_dir),
+            status_path=status_path,
+            fuzzer_stats=load_fuzzer_stats(fuzzer_stats_path),
+            fuzzer_stats_path=fuzzer_stats_path,
             crash_files=count_evidence_files(run_dir, "crashes"),
             hang_files=count_evidence_files(run_dir, "hangs"),
         )
@@ -275,6 +286,45 @@ def write_file_index(out_dir: Path, relative_paths: list[str]) -> Path:
     return index_path
 
 
+def write_source_index(path: Path, records: list[RunRecord]) -> None:
+    with path.open("w", encoding="utf-8", newline="") as output:
+        writer = csv.writer(output, delimiter="\t")
+        writer.writerow(
+            [
+                "source_type",
+                "run_name",
+                "run_id",
+                "run_source",
+                "path",
+                "size_bytes",
+                "sha256",
+            ]
+        )
+        for record in records:
+            source_files = [("status_json", record.status_path)]
+            if record.fuzzer_stats_path is not None:
+                source_files.append(("fuzzer_stats", record.fuzzer_stats_path))
+            for source_type, source_path in source_files:
+                if not source_path.is_file():
+                    continue
+                try:
+                    metadata = source_path.stat()
+                    digest = sha256_file(source_path)
+                except OSError:
+                    continue
+                writer.writerow(
+                    [
+                        source_type,
+                        record.run_name,
+                        record.run_id,
+                        record.source,
+                        source_path,
+                        metadata.st_size,
+                        digest,
+                    ]
+                )
+
+
 def write_journal(args: argparse.Namespace, out_dir: Path) -> str:
     if not args.include_journal:
         return ""
@@ -315,6 +365,9 @@ def main() -> int:
     total_crash_files = sum(record.crash_files for record in records)
     total_hang_files = sum(record.hang_files for record in records)
     manifest = {
+        "schema_version": "1.1",
+        "bundle_type": "armc_aflpp_summary",
+        "generated_by": "scripts/export_armc_aflpp_summary.py",
         "experiment_id": args.experiment_id,
         "machine_label": args.machine_label,
         "target": args.target,
@@ -348,6 +401,7 @@ def main() -> int:
         "crash_file_count": total_crash_files,
         "hang_file_count": total_hang_files,
         "file_index": "file-index.tsv",
+        "source_index": "source-index.tsv",
     }
     journal_path = write_journal(args, out_dir)
     if journal_path:
@@ -409,12 +463,15 @@ def main() -> int:
 """
     (out_dir / "summary.md").write_text(summary, encoding="utf-8")
     (out_dir / "notes.md").write_text(f"- note: {notes}\n", encoding="utf-8")
+    source_index_path = out_dir / "source-index.tsv"
+    write_source_index(source_index_path, records)
     file_index_path = write_file_index(
         out_dir,
         [
             "manifest.json",
             "summary.md",
             "run-index.tsv",
+            "source-index.tsv",
             "notes.md",
             "journal.txt",
         ],
@@ -425,6 +482,7 @@ def main() -> int:
     print(f"records: {len(records)}")
     print(f"success/failed/timeout: {manifest['success']}/{manifest['failed']}/{manifest['timeout']}")
     print(f"run_index: {out_dir / 'run-index.tsv'}")
+    print(f"source_index: {source_index_path}")
     print(f"file_index: {file_index_path}")
     print(f"summary: {out_dir / 'summary.md'}")
     return 0
