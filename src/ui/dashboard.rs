@@ -902,16 +902,6 @@ fn render_suggested_commands(s: &DashboardSnapshot) -> String {
     } else {
         "<target>"
     };
-    let latest_run = if s.latest_run != "not_available" {
-        s.latest_run.as_str()
-    } else {
-        "<run-id>"
-    };
-    let latest_triage = if s.latest_triage != "not_available" {
-        s.latest_triage.as_str()
-    } else {
-        "<triage-id>"
-    };
     let backend = if s.latest_run_backend != "not_available" {
         s.latest_run_backend.as_str()
     } else {
@@ -926,14 +916,11 @@ fn render_suggested_commands(s: &DashboardSnapshot) -> String {
         ),
         (
             "Triage",
-            format!("tool triage --run-dir data/runs/{latest_run}"),
-        ),
-        (
-            "Report",
             format!(
-                "tool report --triage data/triage/{latest_triage}/summary.json --out data/reports/<name>"
+                "tool triage --target {target} --input <crash-input> --repro-retries 3 --timeout-sec 60"
             ),
         ),
+        ("Report", "tool report --minimize".to_string()),
         (
             "Export",
             format!(
