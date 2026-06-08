@@ -17,6 +17,8 @@ pub(crate) struct ReproducedTriageView {
     pub(crate) normalized_frame_hash: String,
     pub(crate) signature_basis: String,
     pub(crate) crash_summary: String,
+    pub(crate) deep_triage_grouping_confidence: String,
+    pub(crate) deep_triage_evidence_quality: String,
     pub(crate) summary_path: String,
 }
 
@@ -97,6 +99,12 @@ pub(crate) fn find_latest_reproduced_triage(
             .unwrap_or_else(|| "signature_top3".to_string());
         let crash_summary = extract_json_string_literal(&summary, "crash_summary")
             .unwrap_or_else(|| "not_available".to_string());
+        let deep_triage_grouping_confidence =
+            extract_json_string_literal(&summary, "grouping_confidence")
+                .unwrap_or_else(|| "not_available".to_string());
+        let deep_triage_evidence_quality =
+            extract_json_string_literal(&summary, "evidence_quality")
+                .unwrap_or_else(|| "not_available".to_string());
 
         let item = ReproducedTriageView {
             triage_id: id_text.to_string(),
@@ -108,6 +116,8 @@ pub(crate) fn find_latest_reproduced_triage(
             normalized_frame_hash,
             signature_basis,
             crash_summary,
+            deep_triage_grouping_confidence,
+            deep_triage_evidence_quality,
             summary_path: summary_path.display().to_string(),
         };
         match &latest {
@@ -482,6 +492,8 @@ mod tests {
         assert_eq!(latest.signal, "SIGSEGV");
         assert_eq!(latest.normalized_frame_hash, "abc123def456");
         assert_eq!(latest.signature_basis, "normalized_frame_hash");
+        assert_eq!(latest.deep_triage_grouping_confidence, "high");
+        assert_eq!(latest.deep_triage_evidence_quality, "not_available");
         assert_eq!(
             latest.crash_summary,
             "AddressSanitizer: heap-buffer-overflow"
