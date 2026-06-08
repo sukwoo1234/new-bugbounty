@@ -212,7 +212,7 @@ GLOBAL_ERROR_RATE_5M="$(jq -r '.metrics.global_error_rate_5m // 0' "$OUT_DIR/met
 
 TRIAGE_INDEX="$OUT_DIR/triage-index.tsv"
 {
-  echo -e "triage_id\tverdict\tinput_path\tcrash_kind\tsanitizer\tsignal\tnormalized_frame_hash\tsignature_top1\tsummary_path\tsummary_size_bytes\tsummary_sha256"
+  echo -e "triage_id\tverdict\tinput_path\tcrash_kind\tsanitizer\tsignal\tnormalized_frame_hash\tsignature_top1\tdeep_triage_version\tdeep_triage_grouping_confidence\tdeep_triage_evidence_quality\tsummary_path\tsummary_size_bytes\tsummary_sha256"
   if [[ -d "$TRIAGE_ROOT" ]]; then
     while IFS= read -r f; do
     triage_id="$(jq -r '.triage_id // ""' "$f")"
@@ -223,9 +223,12 @@ TRIAGE_INDEX="$OUT_DIR/triage-index.tsv"
     signal="$(jq -r '.signal // ""' "$f")"
     normalized_frame_hash="$(jq -r '.normalized_frame_hash // ""' "$f")"
     sig="$(jq -r '.attempts[0].signature_top3[0] // ""' "$f")"
+    deep_triage_version="$(jq -r '.deep_triage.version // ""' "$f")"
+    deep_triage_grouping_confidence="$(jq -r '.deep_triage.grouping_confidence // ""' "$f")"
+    deep_triage_evidence_quality="$(jq -r '.deep_triage.evidence_quality // ""' "$f")"
     summary_size_bytes="$(file_size_bytes "$f")"
     summary_sha256="$(file_sha256 "$f")"
-    echo -e "${triage_id}\t${verdict}\t${input_path}\t${crash_kind}\t${sanitizer}\t${signal}\t${normalized_frame_hash}\t${sig}\t${f}\t${summary_size_bytes}\t${summary_sha256}"
+    echo -e "${triage_id}\t${verdict}\t${input_path}\t${crash_kind}\t${sanitizer}\t${signal}\t${normalized_frame_hash}\t${sig}\t${deep_triage_version}\t${deep_triage_grouping_confidence}\t${deep_triage_evidence_quality}\t${f}\t${summary_size_bytes}\t${summary_sha256}"
     done < <(find "$TRIAGE_ROOT" -mindepth 2 -maxdepth 2 -type f -path '*/triage-*/summary.json' | sort)
   fi
 } > "$TRIAGE_INDEX"
