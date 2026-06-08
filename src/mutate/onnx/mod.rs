@@ -20,11 +20,15 @@ pub(crate) use crate::mutate::common::{
 pub(crate) mod attribute;
 pub(crate) mod byte_flip;
 pub(crate) mod dtype;
+pub(crate) mod dtype_valid;
+pub(crate) mod dtype_wide;
 pub(crate) mod graph_metadata;
 pub(crate) mod havoc;
 pub(crate) mod initializer_metadata;
 pub(crate) mod name;
+pub(crate) mod name_consistent;
 pub(crate) mod shape;
+pub(crate) mod shape_valid;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FieldRef {
@@ -99,6 +103,40 @@ pub(crate) fn flip_varint_byte(
     let mask = 1u8 << bit;
     out[idx] ^= mask;
     Some(idx)
+}
+
+pub(crate) fn read_varint_value(bytes: &[u8], start: usize, end: usize) -> Option<u64> {
+    read_varint_in(bytes, start, end).map(|(value, _)| value)
+}
+
+pub(crate) fn write_varint_same_width(
+    out: &mut [u8],
+    start: usize,
+    end: usize,
+    value: u64,
+) -> Option<()> {
+    let end = end.min(out.len());
+    if start >= end {
+        return None;
+    }
+    let width = end - start;
+    if width > 10 {
+        return None;
+    }
+    let mut remaining = value;
+    for idx in 0..width {
+        let mut byte = (remaining & 0x7f) as u8;
+        remaining >>= 7;
+        if idx + 1 < width {
+            byte |= 0x80;
+        }
+        out[start + idx] = byte;
+    }
+    if remaining == 0 {
+        Some(())
+    } else {
+        None
+    }
 }
 
 fn scan_proto_range(bytes: &[u8], start: usize, end: usize) -> Vec<FieldRef> {
@@ -203,6 +241,10 @@ pub(crate) const KNOWN_OPERATORS: &[&str] = &[
     attribute::NAME,
     initializer_metadata::NAME,
     graph_metadata::NAME,
+    shape_valid::NAME,
+    dtype_valid::NAME,
+    dtype_wide::NAME,
+    name_consistent::NAME,
     byte_flip::NAME,
     havoc::NAME,
 ];
@@ -238,9 +280,20 @@ fn dispatch(
         "attribute" => attribute::apply(bytes, rng),
         "initializer_metadata" => initializer_metadata::apply(bytes, rng),
         "graph_metadata" => graph_metadata::apply(bytes, rng),
+        "shape_valid" => shape_valid::apply(bytes, rng),
+        "dtype_valid" => dtype_valid::apply(bytes, rng),
+        "dtype_wide" => dtype_wide::apply(bytes, rng),
+        "name_consistent" => name_consistent::apply(bytes, rng),
         "byte_flip" => byte_flip::apply(bytes, rng),
         "havoc" => havoc::apply(bytes, rng),
         _ => Err(OperatorError::NoApplicableField),
+    }
+}
+
+fn mutation_level_for_operator(operator: &str) -> u32 {
+    match operator {
+        "shape_valid" | "dtype_valid" | "dtype_wide" | "name_consistent" => 2,
+        _ => 1,
     }
 }
 
@@ -303,7 +356,7 @@ fn run_single_mutation(
         output_hash,
         operator: chosen,
         operator_params: result.operator_params,
-        mutation_level: 1,
+        mutation_level: mutation_level_for_operator(chosen),
         parse_preserving: result.parse_preserving,
         validation_status: "skipped",
         seed,
@@ -402,7 +455,7 @@ fn run_batch_mutation(
             output_hash,
             operator: chosen,
             operator_params: result.operator_params,
-            mutation_level: 1,
+            mutation_level: mutation_level_for_operator(chosen),
             parse_preserving: result.parse_preserving,
             validation_status: "skipped",
             seed: entry_seed,
