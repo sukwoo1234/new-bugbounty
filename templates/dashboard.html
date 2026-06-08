@@ -17,6 +17,7 @@
 <div class="topbar-status">
 <span class="status-pill status-{{dashboard_status_class}}">● 상태: {{run_state}}</span>
 <span class="meta-pill">대상 {{latest_run_target}} · 방식 {{latest_run_backend}}</span>
+<span class="meta-pill">캠페인 {{latest_campaign_mode}} · {{latest_campaign_state}}</span>
 </div>
 </header>
 
@@ -56,6 +57,7 @@
 <section class="stat-grid">
 <div class="stat-card stat-primary"><div class="k">검사 진행 상태</div><div class="v">{{run_state}}</div><div class="stat-sub">최근 검사 결과 기준</div></div>
 <div class="stat-card stat-info"><div class="k">검사 대상</div><div class="v">{{latest_run_target}}</div><div class="stat-sub">실행 방식: {{latest_run_backend}}</div></div>
+<div class="stat-card stat-info"><div class="k">캠페인 모드</div><div class="v">{{latest_campaign_mode}}</div><div class="stat-sub">{{latest_campaign_state}} · {{latest_campaign_id}}</div></div>
 <div class="stat-card stat-success"><div class="k">정상 처리</div><div class="v">{{latest_run_success}}</div><div class="stat-sub">문제 없이 처리된 입력</div></div>
 <div class="stat-card stat-danger"><div class="k">실패</div><div class="v">{{latest_run_failed}}</div><div class="stat-sub">실행 중 실패한 입력</div></div>
 <div class="stat-card stat-warning"><div class="k">시간 초과</div><div class="v">{{latest_run_timeout}}</div><div class="stat-sub">너무 오래 걸린 입력</div></div>
@@ -113,6 +115,12 @@
 <div class="summary-text">정상 {{latest_run_success}}개, 실패 {{latest_run_failed}}개, 시간 초과 {{latest_run_timeout}}개</div>
 </div>
 <div class="summary-card">
+<div class="summary-kind">퍼징 캠페인</div>
+<div class="summary-link">{{latest_campaign_id}}</div>
+<div class="summary-meta">모드: {{latest_campaign_mode}} / 상태: {{latest_campaign_state}}</div>
+<div class="summary-text">{{latest_campaign_target}} · {{latest_campaign_backends}} · {{latest_campaign_arms}}</div>
+</div>
+<div class="summary-card">
 <div class="summary-kind">문제 후보 확인</div>
 <div class="summary-link">{{latest_triage_html}}</div>
 <div class="summary-meta">판정: {{latest_triage_verdict}}</div>
@@ -142,6 +150,7 @@
 </thead>
 <tbody>
 <tr><td>검사</td><td>{{run_state}}</td><td>{{latest_run_target}} / {{latest_run_backend}}</td><td>{{latest_run_updated_at}}</td><td>{{latest_run_html}}</td><td>success={{latest_run_success}} | failed={{latest_run_failed}} | timeout={{latest_run_timeout}}</td></tr>
+<tr><td>캠페인</td><td>{{latest_campaign_state}}</td><td>{{latest_campaign_target}} / {{latest_campaign_mode}}</td><td>{{latest_campaign_updated_at}}</td><td>{{latest_campaign_id}}</td><td>backends={{latest_campaign_backends}} | arms={{latest_campaign_arms}}</td></tr>
 <tr><td>문제 후보 확인</td><td>{{latest_triage_verdict}}</td><td>{{latest_triage_target}} / none</td><td>{{latest_triage_updated_at}}</td><td>{{latest_triage_html}}</td><td>reproduced={{triage_verdict_reproduced}} | manual_review={{triage_verdict_manual_review}}</td></tr>
 <tr><td>리포트</td><td>{{latest_report_status}}</td><td>none / none</td><td>{{latest_report_updated_at}}</td><td>{{latest_report_html}}</td><td>severity={{latest_suggested_severity}}</td></tr>
 <tr><td>결과 묶음</td><td>{{latest_export_status}}</td><td>none / none</td><td>{{latest_export_updated_at}}</td><td>{{latest_export_html}}</td><td>summary={{latest_export_summary_html}}</td></tr>
@@ -160,6 +169,8 @@
 <div class="row"><div class="m">정상 처리</div><div>{{latest_run_success}}</div></div>
 <div class="row"><div class="m">실패</div><div>{{latest_run_failed}}</div></div>
 <div class="row"><div class="m">시간 초과</div><div>{{latest_run_timeout}}</div></div>
+<div class="row"><div class="m">캠페인 모드</div><div>{{latest_campaign_mode}}</div></div>
+<div class="row"><div class="m">캠페인 상태</div><div>{{latest_campaign_state}}</div></div>
 <div class="row"><div class="m">마지막 갱신</div><div>{{latest_run_updated_at}}</div></div>
 </div>
 </section>

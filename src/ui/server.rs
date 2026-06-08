@@ -847,11 +847,15 @@ fn handle_control_start(
         .map_err(|e| format!("failed to clone control log handle: {e}"))?;
 
     let cwd = std::env::current_dir().map_err(|e| format!("failed to get current dir: {e}"))?;
+    let tool_bin =
+        std::env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
     let corpus_dir = app_paths.seeds_dir.join(target);
     let mut cmd = Command::new("bash");
     cmd.arg("scripts/run_backend_loop.sh")
         .current_dir(&cwd)
         .env("WORKDIR", cwd.as_os_str())
+        .env("DATA_DIR", app_paths.data_dir.as_os_str())
+        .env("TOOL_BIN", tool_bin.as_os_str())
         .env("TARGET", target)
         .env("BACKEND", backend)
         .env("CORPUS_DIR", corpus_dir.as_os_str())

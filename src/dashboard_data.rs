@@ -83,6 +83,13 @@ pub(crate) struct DashboardSnapshot {
     pub(crate) latest_mutation_count: String,
     pub(crate) latest_run_target: String,
     pub(crate) latest_run_backend: String,
+    pub(crate) latest_campaign_id: String,
+    pub(crate) latest_campaign_mode: String,
+    pub(crate) latest_campaign_state: String,
+    pub(crate) latest_campaign_target: String,
+    pub(crate) latest_campaign_backends: String,
+    pub(crate) latest_campaign_arms: String,
+    pub(crate) latest_campaign_updated_at: String,
     pub(crate) latest_run_total: String,
     pub(crate) latest_run_success: String,
     pub(crate) latest_run_failed: String,
@@ -146,6 +153,7 @@ pub(crate) fn collect_dashboard_snapshot(
     let exports_root = artifact.exports_root;
     let mutated_root = artifact.mutated_root;
     let legacy_mutated_root = artifact.legacy_mutated_root;
+    let campaigns_root = app_paths.data_dir.join("campaigns");
     let metrics_path = artifact.metrics_root.join("latest.json");
     let seeds_onnx_count = count_seed_files(
         &default_seed_dir(app_paths, &TargetKind::Onnx),
@@ -238,12 +246,20 @@ pub(crate) fn collect_dashboard_snapshot(
     let latest_run_view = read_run_status(&runs_root, &latest_run)?;
     let (
         latest_run_target,
+        latest_run_backend,
         latest_run_total,
         latest_run_success,
         latest_run_failed,
         latest_run_timeout,
     ) = if let Some(view) = latest_run_view {
-        (view.target, view.total, view.success, view.failed, view.timeout)
+        (
+            view.target,
+            view.backend,
+            view.total,
+            view.success,
+            view.failed,
+            view.timeout,
+        )
     } else {
         (
             "not_available".to_string(),
@@ -251,13 +267,44 @@ pub(crate) fn collect_dashboard_snapshot(
             "not_available".to_string(),
             "not_available".to_string(),
             "not_available".to_string(),
+            "not_available".to_string(),
         )
     };
-    let latest_run_backend = "not_available".to_string();
     let run_state = if latest_run == "not_available" {
         "no_run".to_string()
     } else {
         "finished".to_string()
+    };
+
+    let latest_campaign = read_latest_campaign_status(&campaigns_root)?;
+    let (
+        latest_campaign_id,
+        latest_campaign_mode,
+        latest_campaign_state,
+        latest_campaign_target,
+        latest_campaign_backends,
+        latest_campaign_arms,
+        latest_campaign_updated_at,
+    ) = if let Some(view) = latest_campaign {
+        (
+            view.id,
+            view.mode,
+            view.state,
+            view.target,
+            view.backends,
+            view.arms,
+            view.updated_at,
+        )
+    } else {
+        (
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+            "not_available".to_string(),
+        )
     };
 
     let latest_triage_summary = read_latest_triage_summary(&triage_root, &latest_triage)?;
@@ -466,6 +513,13 @@ pub(crate) fn collect_dashboard_snapshot(
         latest_mutation_count,
         latest_run_target,
         latest_run_backend,
+        latest_campaign_id,
+        latest_campaign_mode,
+        latest_campaign_state,
+        latest_campaign_target,
+        latest_campaign_backends,
+        latest_campaign_arms,
+        latest_campaign_updated_at,
         latest_run_total,
         latest_run_success,
         latest_run_failed,
@@ -659,6 +713,73 @@ fn dir_mtime_unix_string(root: &Path, dir_name: &str) -> String {
         .unwrap_or_else(|| "not_available".to_string())
 }
 
+struct CampaignStatusView {
+    id: String,
+    mode: String,
+    state: String,
+    target: String,
+    backends: String,
+    arms: String,
+    updated_at: String,
+}
+
+fn read_latest_campaign_status(
+    campaigns_root: &Path,
+) -> Result<Option<CampaignStatusView>, String> {
+    if !campaigns_root.exists() {
+        return Ok(None);
+    }
+
+    let mut best: Option<(SystemTime, CampaignStatusView)> = None;
+    for entry in fs::read_dir(campaigns_root)
+        .map_err(|e| format!("failed to read '{}': {e}", campaigns_root.display()))?
+    {
+        let entry = entry
+            .map_err(|e| format!("failed to read campaign entry: {e}"))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+
+        let status_path = path.join("status.json");
+        let manifest_path = path.join("manifest.json");
+        let source_path = if status_path.is_file() {
+            status_path
+        } else if manifest_path.is_file() {
+            manifest_path
+        } else {
+            continue;
+        };
+        let mtime = entry_mtime(&source_path).unwrap_or(SystemTime::UNIX_EPOCH);
+        let body = fs::read_to_string(&source_path)
+            .map_err(|e| format!("failed to read '{}': {e}", source_path.display()))?;
+        let view = CampaignStatusView {
+            id: extract_json_string_literal(&body, "campaign_id")
+                .unwrap_or_else(|| dir_name.to_string()),
+            mode: extract_json_string_literal(&body, "mode")
+                .unwrap_or_else(|| "not_available".to_string()),
+            state: extract_json_string_literal(&body, "state")
+                .unwrap_or_else(|| "manifest_only".to_string()),
+            target: extract_json_string_literal(&body, "target")
+                .unwrap_or_else(|| "not_available".to_string()),
+            backends: extract_json_string_literal(&body, "backends_label")
+                .unwrap_or_else(|| "not_available".to_string()),
+            arms: extract_json_string_literal(&body, "arms_label")
+                .unwrap_or_else(|| "not_available".to_string()),
+            updated_at: extract_json_string_literal(&body, "updated_at")
+                .unwrap_or_else(|| system_time_to_unix_string(mtime)),
+        };
+        match &best {
+            Some((best_mtime, _)) if mtime <= *best_mtime => {}
+            _ => best = Some((mtime, view)),
+        }
+    }
+    Ok(best.map(|(_, view)| view))
+}
+
 struct LatestTriageSummaryView {
     verdict: String,
     target: String,
@@ -687,6 +808,7 @@ fn read_latest_triage_summary(
 
 pub(crate) struct RunStatusView {
     pub(crate) target: String,
+    pub(crate) backend: String,
     pub(crate) total: String,
     pub(crate) success: String,
     pub(crate) failed: String,
@@ -708,6 +830,8 @@ pub(crate) fn read_run_status(
         .map_err(|e| format!("failed to read '{}': {e}", status_path.display()))?;
     Ok(Some(RunStatusView {
         target: extract_json_string_literal(&body, "target")
+            .unwrap_or_else(|| "not_available".to_string()),
+        backend: extract_json_string_literal(&body, "backend")
             .unwrap_or_else(|| "not_available".to_string()),
         total: extract_json_number_literal(&body, "total")
             .unwrap_or_else(|| "not_available".to_string()),

@@ -10,7 +10,7 @@ const DASHBOARD_HTML_TEMPLATE_PATH: &str = "templates/dashboard.html";
 
 pub(crate) fn render_dashboard_json(s: &DashboardSnapshot) -> String {
     format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"config\": {{\n    \"data_dir\": \"{}\",\n    \"seeds_dir\": \"{}\"\n  }},\n  \"snapshot\": {{\n    \"runs_count\": {},\n    \"triage_count\": {},\n    \"report_count\": {},\n    \"coverage_count\": {},\n    \"latest_run\": \"{}\",\n    \"latest_triage\": \"{}\",\n    \"latest_report\": \"{}\",\n    \"latest_coverage\": \"{}\"\n  }},\n  \"metrics\": {{\n    \"exists\": {},\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"{}\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {}\n  }},\n  \"seeds\": {{\n    \"onnx_count\": {},\n    \"gguf_count\": {},\n    \"safetensors_count\": {},\n    \"total_count\": {}\n  }},\n  \"crash\": {{\n    \"latest_valid_triage\": \"{}\",\n    \"input\": \"{}\",\n    \"signature_top1\": \"{}\",\n    \"crash_kind\": \"{}\",\n    \"sanitizer\": \"{}\",\n    \"signal\": \"{}\",\n    \"normalized_frame_hash\": \"{}\",\n    \"signature_basis\": \"{}\",\n    \"crash_summary\": \"{}\",\n    \"deep_triage_grouping_confidence\": \"{}\",\n    \"deep_triage_evidence_quality\": \"{}\",\n    \"summary\": \"{}\",\n    \"report\": \"{}\",\n    \"manifest\": \"{}\",\n    \"bundle\": \"{}\",\n    \"suggested_severity\": \"{}\",\n    \"severity_confidence\": \"{}\",\n    \"suggested_cvss_vector\": \"{}\"\n  }},\n  \"coverage\": {{\n    \"latest\": \"{}\",\n    \"summary\": \"{}\"\n  }},\n  \"exports\": {{\n    \"latest_id\": \"{}\",\n    \"latest_path\": \"{}\",\n    \"latest_summary\": \"{}\",\n    \"latest_updated_at\": \"{}\"\n  }},\n  \"mutation\": {{\n    \"latest_batch_id\": \"{}\",\n    \"latest_manifest_path\": \"{}\",\n    \"latest_target\": \"{}\",\n    \"latest_count\": \"{}\",\n    \"latest_updated_at\": \"{}\",\n    \"latest_source_corpus\": \"{}\",\n    \"latest_validation_summary\": \"{}\"\n  }},\n  \"run_state\": {{\n    \"state\": \"{}\",\n    \"target\": \"{}\",\n    \"backend\": \"{}\",\n    \"total\": \"{}\",\n    \"success\": \"{}\",\n    \"failed\": \"{}\",\n    \"timeout\": \"{}\",\n    \"updated_at\": \"{}\"\n  }},\n  \"latest_triage\": {{\n    \"verdict\": \"{}\",\n    \"target\": \"{}\",\n    \"updated_at\": \"{}\"\n  }},\n  \"latest_report\": {{\n    \"updated_at\": \"{}\"\n  }},\n  \"triage_verdicts\": {{\n    \"reproduced\": {},\n    \"manual_review\": {},\n    \"not_reproduced\": {},\n    \"timeout\": {},\n    \"infra_oom\": {},\n    \"flaky\": {},\n    \"other\": {}\n  }}\n}}",
+        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"config\": {{\n    \"data_dir\": \"{}\",\n    \"seeds_dir\": \"{}\"\n  }},\n  \"snapshot\": {{\n    \"runs_count\": {},\n    \"triage_count\": {},\n    \"report_count\": {},\n    \"coverage_count\": {},\n    \"latest_run\": \"{}\",\n    \"latest_triage\": \"{}\",\n    \"latest_report\": \"{}\",\n    \"latest_coverage\": \"{}\"\n  }},\n  \"metrics\": {{\n    \"exists\": {},\n    \"successful_runs_per_hour_proxy\": {},\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"{}\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {}\n  }},\n  \"seeds\": {{\n    \"onnx_count\": {},\n    \"gguf_count\": {},\n    \"safetensors_count\": {},\n    \"total_count\": {}\n  }},\n  \"crash\": {{\n    \"latest_valid_triage\": \"{}\",\n    \"input\": \"{}\",\n    \"signature_top1\": \"{}\",\n    \"crash_kind\": \"{}\",\n    \"sanitizer\": \"{}\",\n    \"signal\": \"{}\",\n    \"normalized_frame_hash\": \"{}\",\n    \"signature_basis\": \"{}\",\n    \"crash_summary\": \"{}\",\n    \"deep_triage_grouping_confidence\": \"{}\",\n    \"deep_triage_evidence_quality\": \"{}\",\n    \"summary\": \"{}\",\n    \"report\": \"{}\",\n    \"manifest\": \"{}\",\n    \"bundle\": \"{}\",\n    \"suggested_severity\": \"{}\",\n    \"severity_confidence\": \"{}\",\n    \"suggested_cvss_vector\": \"{}\"\n  }},\n  \"coverage\": {{\n    \"latest\": \"{}\",\n    \"summary\": \"{}\"\n  }},\n  \"exports\": {{\n    \"latest_id\": \"{}\",\n    \"latest_path\": \"{}\",\n    \"latest_summary\": \"{}\",\n    \"latest_updated_at\": \"{}\"\n  }},\n  \"mutation\": {{\n    \"latest_batch_id\": \"{}\",\n    \"latest_manifest_path\": \"{}\",\n    \"latest_target\": \"{}\",\n    \"latest_count\": \"{}\",\n    \"latest_updated_at\": \"{}\",\n    \"latest_source_corpus\": \"{}\",\n    \"latest_validation_summary\": \"{}\"\n  }},\n  \"run_state\": {{\n    \"state\": \"{}\",\n    \"target\": \"{}\",\n    \"backend\": \"{}\",\n    \"total\": \"{}\",\n    \"success\": \"{}\",\n    \"failed\": \"{}\",\n    \"timeout\": \"{}\",\n    \"updated_at\": \"{}\"\n  }},\n  \"campaign\": {{\n    \"id\": \"{}\",\n    \"mode\": \"{}\",\n    \"state\": \"{}\",\n    \"target\": \"{}\",\n    \"backends\": \"{}\",\n    \"arms\": \"{}\",\n    \"updated_at\": \"{}\"\n  }},\n  \"latest_triage\": {{\n    \"verdict\": \"{}\",\n    \"target\": \"{}\",\n    \"updated_at\": \"{}\"\n  }},\n  \"latest_report\": {{\n    \"updated_at\": \"{}\"\n  }},\n  \"triage_verdicts\": {{\n    \"reproduced\": {},\n    \"manual_review\": {},\n    \"not_reproduced\": {},\n    \"timeout\": {},\n    \"infra_oom\": {},\n    \"flaky\": {},\n    \"other\": {}\n  }}\n}}",
         s.generated_at,
         json_escape(&s.data_dir),
         json_escape(&s.seeds_dir),
@@ -75,6 +75,13 @@ pub(crate) fn render_dashboard_json(s: &DashboardSnapshot) -> String {
         json_escape(&s.latest_run_failed),
         json_escape(&s.latest_run_timeout),
         json_escape(&s.latest_run_updated_at),
+        json_escape(&s.latest_campaign_id),
+        json_escape(&s.latest_campaign_mode),
+        json_escape(&s.latest_campaign_state),
+        json_escape(&s.latest_campaign_target),
+        json_escape(&s.latest_campaign_backends),
+        json_escape(&s.latest_campaign_arms),
+        json_escape(&s.latest_campaign_updated_at),
         json_escape(&s.latest_triage_verdict),
         json_escape(&s.latest_triage_target),
         json_escape(&s.latest_triage_updated_at),
@@ -118,6 +125,12 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
     let run_state = run_state_label(&s.run_state);
     let latest_run_target = friendly_value(&s.latest_run_target);
     let latest_run_backend = friendly_value(&s.latest_run_backend);
+    let latest_campaign_id = friendly_value(&s.latest_campaign_id);
+    let latest_campaign_mode = friendly_value(&s.latest_campaign_mode);
+    let latest_campaign_state = friendly_value(&s.latest_campaign_state);
+    let latest_campaign_target = friendly_value(&s.latest_campaign_target);
+    let latest_campaign_backends = friendly_value(&s.latest_campaign_backends);
+    let latest_campaign_arms = friendly_value(&s.latest_campaign_arms);
     let latest_run_total = friendly_value(&s.latest_run_total);
     let latest_run_success = friendly_value(&s.latest_run_success);
     let latest_run_failed = friendly_value(&s.latest_run_failed);
@@ -210,6 +223,31 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
         )
         .replace("{{latest_run_target}}", &html_escape(&latest_run_target))
         .replace("{{latest_run_backend}}", &html_escape(&latest_run_backend))
+        .replace("{{latest_campaign_id}}", &html_escape(&latest_campaign_id))
+        .replace(
+            "{{latest_campaign_mode}}",
+            &html_escape(&latest_campaign_mode),
+        )
+        .replace(
+            "{{latest_campaign_state}}",
+            &html_escape(&latest_campaign_state),
+        )
+        .replace(
+            "{{latest_campaign_target}}",
+            &html_escape(&latest_campaign_target),
+        )
+        .replace(
+            "{{latest_campaign_backends}}",
+            &html_escape(&latest_campaign_backends),
+        )
+        .replace(
+            "{{latest_campaign_arms}}",
+            &html_escape(&latest_campaign_arms),
+        )
+        .replace(
+            "{{latest_campaign_updated_at}}",
+            &html_escape(&s.latest_campaign_updated_at),
+        )
         .replace("{{latest_run_total}}", &html_escape(&latest_run_total))
         .replace("{{latest_run_success}}", &html_escape(&latest_run_success))
         .replace("{{latest_run_failed}}", &html_escape(&latest_run_failed))
@@ -929,11 +967,29 @@ fn render_suggested_commands(s: &DashboardSnapshot) -> String {
     } else {
         "<backend>"
     };
-    let commands: [(&str, String); 6] = [
+    let commands: Vec<(&str, String)> = vec![
         (
             "Run",
             format!(
                 "tool run --target {target} --backend local-harness --corpus-dir seeds/{target} --timeout-sec 30 --restart-limit 1"
+            ),
+        ),
+        (
+            "Serial campaign",
+            format!(
+                "tool campaign --mode serial --target {target} --hours 168 --campaign-id <campaign-id>"
+            ),
+        ),
+        (
+            "Parallel campaign",
+            format!(
+                "tool campaign --mode parallel --target {target} --hours 168 --campaign-id <campaign-id>"
+            ),
+        ),
+        (
+            "Smoke campaign",
+            format!(
+                "tool campaign --mode parallel --target {target} --duration-seconds 10 --campaign-id smoke-{target}-<id> --backends local-harness --max-jobs 1"
             ),
         ),
         (

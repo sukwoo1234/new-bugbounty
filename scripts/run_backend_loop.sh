@@ -2,6 +2,8 @@
 set -euo pipefail
 
 WORKDIR="${WORKDIR:-$PWD}"
+DATA_DIR="${DATA_DIR:-$WORKDIR/data}"
+TOOL_BIN="${TOOL_BIN:-$WORKDIR/target/debug/tool}"
 TARGET="${TARGET:-onnx}"
 BACKEND="${BACKEND:-local-harness}"
 CORPUS_DIR="${CORPUS_DIR:-seeds/${TARGET}}"
@@ -23,7 +25,7 @@ else
   DURATION_LABEL="${DURATION_HOURS}h"
 fi
 
-LOG_DIR="${LOG_DIR:-$WORKDIR/data/longrun}"
+LOG_DIR="${LOG_DIR:-$DATA_DIR/longrun}"
 mkdir -p "$LOG_DIR"
 
 TAG="${TAG:-${TARGET}_${BACKEND}_${DURATION_LABEL}}"
@@ -80,7 +82,7 @@ json_num_field() {
 run_once() {
   local -a cmd
   cmd=(
-    "$WORKDIR/target/debug/tool" run
+    "$TOOL_BIN" --data-dir "$DATA_DIR" run
     --target "$TARGET"
     --backend "$BACKEND"
     --corpus-dir "$CORPUS_DIR"
@@ -123,7 +125,7 @@ while true; do
     failures=$((failures + 1))
   fi
 
-  latest_status="$(ls -1t "$WORKDIR"/data/runs/run-*/status.json 2>/dev/null | head -n 1 || true)"
+  latest_status="$(ls -1t "$DATA_DIR"/runs/run-*/status.json 2>/dev/null | head -n 1 || true)"
   if [[ -n "$latest_status" && -f "$latest_status" ]]; then
     run_failed="$(json_num_field failed "$latest_status")"
     run_timeout="$(json_num_field timeout "$latest_status")"

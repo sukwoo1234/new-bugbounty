@@ -220,6 +220,7 @@ pub(crate) fn run_fuzz_pipeline(
         &run_dir,
         run_id,
         target,
+        backend,
         RunStatusCounts {
             total: s.total,
             success: s.success,
@@ -344,6 +345,7 @@ fn run_engine_backend(
         &run_dir,
         run_id,
         target,
+        backend,
         RunStatusCounts {
             total: workers,
             success,
@@ -651,6 +653,7 @@ fn write_run_status(
     run_dir: &Path,
     run_id: u128,
     target: &TargetKind,
+    backend: &RunBackend,
     counts: RunStatusCounts,
     workers: usize,
     timeout_sec: u64,
@@ -658,9 +661,10 @@ fn write_run_status(
 ) -> Result<PathBuf, String> {
     let status_path = run_dir.join("status.json");
     let status_json = format!(
-        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"retries\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {}\n}}\n",
+        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"retries\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {}\n}}\n",
         run_id,
         target_label(target),
+        run_backend_label(backend),
         counts.total,
         counts.success,
         counts.failed,

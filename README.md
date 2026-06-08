@@ -35,6 +35,7 @@
 
 ## 문서 가이드
 - 공개 문서: [first.md](first.md)
+- 퍼징컴 이관: [docs/fuzzing-pc-migration.md](docs/fuzzing-pc-migration.md)
 - 그 외 운영 계획, 상세 명세, 실험 기록, 후속 계획은 내부 문서로 관리한다.
 
 ## CLI (확정)
@@ -73,7 +74,26 @@ clang++ --version
 
 ## 엔진 실환경 검증(ONNX 기준)
 
-현재 `run --backend <backend>`는 backend 1개만 선택해 실행한다. `aflpp`, `libfuzzer`, `local-harness`를 동시에 돌리는 hybrid 모드는 없고, 비교는 backend별 run을 각각 따로 수행한다.
+`tool run --backend <backend>`는 backend 1개만 선택해 실행한다. 장시간 비교/헌팅은 `tool campaign --mode <serial|parallel>`로 묶어 실행한다.
+
+- `serial`: 같은 시드 스냅샷을 기준으로 backend를 순서대로 실행한다. 논문식 비교/재현성 기준에 적합하다.
+- `parallel`: 같은 시드 스냅샷을 각 backend가 읽고, 결과는 backend별 data dir에 분리해 동시에 실행한다. 버그 헌팅 시간 단축 목적에 적합하다.
+
+```bash
+tool campaign --mode serial --target onnx --hours 168 --campaign-id paper-onnx-001
+tool campaign --mode parallel --target onnx --hours 168 --campaign-id hunt-onnx-001
+```
+
+짧은 스모크는 시간/입력 수를 제한한다.
+
+```bash
+make smoke TARGET=onnx
+make smoke-all TARGET=onnx SECONDS=60
+```
+
+캠페인 결과는 `data/campaigns/<campaign-id>/` 아래에 저장된다. 원본 시드는 `seeds/<target>/`에서 캠페인 스냅샷으로 한 번 복사되고, backend별 실행은 `arms/<backend>/corpus/`와 `arms/<backend>/data/`로 분리된다. 같은 `campaign-id` 재사용은 결과 혼합을 막기 위해 차단한다. 중단 신호(`Ctrl+C`, `TERM`)를 받으면 실행 중인 backend 프로세스를 종료하고 `status.json`/`arms/<backend>/status.json`에 `interrupted` 상태를 기록한다.
+
+퍼징컴에서는 먼저 `make build`, `make preflight TARGET=onnx`, `make smoke TARGET=onnx` 순서로 확인한다.
 
 ### AFL++
 ```bash
