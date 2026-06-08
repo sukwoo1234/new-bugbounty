@@ -51,6 +51,7 @@ pub(crate) fn run_report_pipeline(
     let timeout_sec = extract_json_u64_field(&summary, "timeout_sec").unwrap_or(60);
     let signature_top3 = extract_first_signature_top3_list(&summary);
     let triage_crash = extract_triage_crash_fields(&summary);
+    let triage_deep = extract_triage_deep_fields(&summary);
 
     let input_sha256 = if input != "unknown" {
         sha256_file(Path::new(&input)).unwrap_or_else(|_| "unavailable".to_string())
@@ -112,7 +113,7 @@ pub(crate) fn run_report_pipeline(
     let severity = suggest_report_severity(&crash_report, &stack_lines, &triage_crash);
 
     let meta_json = format!(
-        "{{\n  \"schema_version\": \"1.3\",\n  \"report_id\": \"{}\",\n  \"source_triage_id\": \"{}\",\n  \"source_summary\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"input_sha256\": \"{}\",\n  \"verdict\": \"{}\",\n  \"crash_kind\": \"{}\",\n  \"sanitizer\": \"{}\",\n  \"signal\": \"{}\",\n  \"normalized_frame_hash\": \"{}\",\n  \"signature_basis\": \"{}\",\n  \"crash_summary\": \"{}\",\n  \"suggested_severity\": \"{}\",\n  \"suggested_cvss_vector\": \"{}\",\n  \"severity_confidence\": \"{}\",\n  \"severity_reason\": \"{}\",\n  \"poc_collected\": {},\n  \"poc_path\": \"{}\",\n  \"poc_sha256\": \"{}\",\n  \"poc_size_bytes\": {},\n  \"poc_source_input\": \"{}\",\n  \"poc_error\": \"{}\",\n  \"minimize_requested\": {},\n  \"minimized\": {},\n  \"minimize_strategy\": \"{}\",\n  \"minimized_input\": \"{}\",\n  \"minimized_sha256\": \"{}\",\n  \"minimized_size_bytes\": {},\n  \"original_sha256\": \"{}\",\n  \"original_size_bytes\": {},\n  \"size_reduction_ratio\": {:.4},\n  \"minimize_error\": \"{}\",\n  \"minimize_validation_status\": \"{}\",\n  \"minimize_validation_verdict\": \"{}\",\n  \"minimize_validation_summary\": \"{}\",\n  \"minimized_normalized_frame_hash\": \"{}\",\n  \"retention_days\": 30,\n  \"retention\": {{\n    \"compressed_logs\": {},\n    \"deleted_dirs\": {},\n    \"skipped_log_compress\": {}\n  }}\n}}\n",
+        "{{\n  \"schema_version\": \"1.3\",\n  \"report_id\": \"{}\",\n  \"source_triage_id\": \"{}\",\n  \"source_summary\": \"{}\",\n  \"target\": \"{}\",\n  \"input\": \"{}\",\n  \"input_sha256\": \"{}\",\n  \"verdict\": \"{}\",\n  \"crash_kind\": \"{}\",\n  \"sanitizer\": \"{}\",\n  \"signal\": \"{}\",\n  \"normalized_frame_hash\": \"{}\",\n  \"signature_basis\": \"{}\",\n  \"crash_summary\": \"{}\",\n  \"deep_triage_version\": \"{}\",\n  \"deep_triage_status\": \"{}\",\n  \"deep_triage_grouping_confidence\": \"{}\",\n  \"deep_triage_grouping_reason\": \"{}\",\n  \"deep_triage_evidence_quality\": \"{}\",\n  \"suggested_severity\": \"{}\",\n  \"suggested_cvss_vector\": \"{}\",\n  \"severity_confidence\": \"{}\",\n  \"severity_reason\": \"{}\",\n  \"poc_collected\": {},\n  \"poc_path\": \"{}\",\n  \"poc_sha256\": \"{}\",\n  \"poc_size_bytes\": {},\n  \"poc_source_input\": \"{}\",\n  \"poc_error\": \"{}\",\n  \"minimize_requested\": {},\n  \"minimized\": {},\n  \"minimize_strategy\": \"{}\",\n  \"minimized_input\": \"{}\",\n  \"minimized_sha256\": \"{}\",\n  \"minimized_size_bytes\": {},\n  \"original_sha256\": \"{}\",\n  \"original_size_bytes\": {},\n  \"size_reduction_ratio\": {:.4},\n  \"minimize_error\": \"{}\",\n  \"minimize_validation_status\": \"{}\",\n  \"minimize_validation_verdict\": \"{}\",\n  \"minimize_validation_summary\": \"{}\",\n  \"minimized_normalized_frame_hash\": \"{}\",\n  \"retention_days\": 30,\n  \"retention\": {{\n    \"compressed_logs\": {},\n    \"deleted_dirs\": {},\n    \"skipped_log_compress\": {}\n  }}\n}}\n",
         report_id,
         triage_id,
         json_escape(&summary_path.display().to_string()),
@@ -126,6 +127,11 @@ pub(crate) fn run_report_pipeline(
         json_escape(&triage_crash.normalized_frame_hash),
         json_escape(&triage_crash.signature_basis),
         json_escape(&triage_crash.crash_summary),
+        json_escape(&triage_deep.version),
+        json_escape(&triage_deep.status),
+        json_escape(&triage_deep.grouping_confidence),
+        json_escape(&triage_deep.grouping_reason),
+        json_escape(&triage_deep.evidence_quality),
         json_escape(severity.suggested_severity),
         json_escape(severity.suggested_cvss_vector),
         json_escape(severity.confidence),
@@ -331,6 +337,14 @@ struct TriageCrashFields {
     crash_summary: String,
 }
 
+struct TriageDeepFields {
+    version: String,
+    status: String,
+    grouping_confidence: String,
+    grouping_reason: String,
+    evidence_quality: String,
+}
+
 fn extract_triage_crash_fields(summary: &str) -> TriageCrashFields {
     TriageCrashFields {
         crash_kind: extract_json_string_literal(summary, "crash_kind")
@@ -344,6 +358,21 @@ fn extract_triage_crash_fields(summary: &str) -> TriageCrashFields {
         signature_basis: extract_json_string_literal(summary, "signature_basis")
             .unwrap_or_else(|| "signature_top3".to_string()),
         crash_summary: extract_json_string_literal(summary, "crash_summary")
+            .unwrap_or_else(|| "not_available".to_string()),
+    }
+}
+
+fn extract_triage_deep_fields(summary: &str) -> TriageDeepFields {
+    TriageDeepFields {
+        version: extract_json_string_literal(summary, "version")
+            .unwrap_or_else(|| "not_available".to_string()),
+        status: extract_json_string_literal(summary, "status")
+            .unwrap_or_else(|| "not_available".to_string()),
+        grouping_confidence: extract_json_string_literal(summary, "grouping_confidence")
+            .unwrap_or_else(|| "not_available".to_string()),
+        grouping_reason: extract_json_string_literal(summary, "grouping_reason")
+            .unwrap_or_else(|| "not_available".to_string()),
+        evidence_quality: extract_json_string_literal(summary, "evidence_quality")
             .unwrap_or_else(|| "not_available".to_string()),
     }
 }
@@ -1385,7 +1414,7 @@ fn record_manual_review(
 
 #[cfg(test)]
 mod tests {
-    use super::extract_triage_crash_fields;
+    use super::{extract_triage_crash_fields, extract_triage_deep_fields};
 
     #[test]
     fn triage_crash_fields_read_top_level_values_with_deep_triage_present() {
@@ -1413,7 +1442,8 @@ mod tests {
     "version": "1.0",
     "status": "completed",
     "grouping_confidence": "high",
-    "grouping_reason": "all crashed attempts share normalized_frame_hash, sanitizer, and crash_kind"
+    "grouping_reason": "all crashed attempts share normalized_frame_hash, sanitizer, and crash_kind",
+    "evidence_quality": "baseline_complete"
   }
 }
 "#;
@@ -1429,5 +1459,50 @@ mod tests {
             fields.crash_summary,
             "AddressSanitizer: heap-buffer-overflow"
         );
+    }
+
+    #[test]
+    fn triage_deep_fields_are_preserved_when_present() {
+        let summary = r#"{
+  "schema_version": "1.1",
+  "verdict": "reproduced",
+  "deep_triage": {
+    "version": "1.0",
+    "status": "completed",
+    "grouping_confidence": "medium",
+    "grouping_reason": "multiple crashed attempts share grouping signals, but reproduction is partial",
+    "evidence_quality": "partial"
+  }
+}
+"#;
+
+        let fields = extract_triage_deep_fields(summary);
+
+        assert_eq!(fields.version, "1.0");
+        assert_eq!(fields.status, "completed");
+        assert_eq!(fields.grouping_confidence, "medium");
+        assert_eq!(
+            fields.grouping_reason,
+            "multiple crashed attempts share grouping signals, but reproduction is partial"
+        );
+        assert_eq!(fields.evidence_quality, "partial");
+    }
+
+    #[test]
+    fn triage_deep_fields_fallback_when_absent() {
+        let summary = r#"{
+  "schema_version": "1.1",
+  "verdict": "reproduced",
+  "attempts": []
+}
+"#;
+
+        let fields = extract_triage_deep_fields(summary);
+
+        assert_eq!(fields.version, "not_available");
+        assert_eq!(fields.status, "not_available");
+        assert_eq!(fields.grouping_confidence, "not_available");
+        assert_eq!(fields.grouping_reason, "not_available");
+        assert_eq!(fields.evidence_quality, "not_available");
     }
 }
