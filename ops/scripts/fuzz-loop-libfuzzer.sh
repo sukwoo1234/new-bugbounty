@@ -23,8 +23,17 @@ CORPUS_DIR="${CORPUS_DIR:-${PROJECT_ROOT}/seeds/${TARGET}}"
 ITERATION_SLEEP_SEC="${ITERATION_SLEEP_SEC:-2}"
 MAX_ITERATIONS="${FUZZ_LOOP_MAX_ITERATIONS:-0}"
 
-LIBFUZZER_DRIVER="${LIBFUZZER_DRIVER:-${PROJECT_ROOT}/harnesses/libfuzzer/tool_harness_driver}"
 LIBFUZZER_MAX_TOTAL_TIME="${LIBFUZZER_MAX_TOTAL_TIME:-30}"
+NATIVE_ONNX_DRIVER="${PROJECT_ROOT}/harnesses/libfuzzer/onnxruntime_loader_fuzzer"
+TOOL_DRIVER="${PROJECT_ROOT}/harnesses/libfuzzer/tool_harness_driver"
+
+if [[ -z "${LIBFUZZER_DRIVER:-}" ]]; then
+    if [[ "${TARGET}" == "onnx" && -x "${NATIVE_ONNX_DRIVER}" ]]; then
+        LIBFUZZER_DRIVER="${NATIVE_ONNX_DRIVER}"
+    else
+        LIBFUZZER_DRIVER="${TOOL_DRIVER}"
+    fi
+fi
 
 TOOL_BIN="${PROJECT_ROOT}/target/release/tool"
 
@@ -41,7 +50,11 @@ trap 'stop_requested=1; log "SIGTERM received, will exit after current iteration
 #   {corpus_dir} is substituted by `tool run --backend libfuzzer` with the chosen
 #   workdir-local libfuzzer corpus path. {artifact_dir} is a per-worker run dir
 #   for libFuzzer crash artifacts. -max_total_time bounds per-invocation runtime.
-export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && TOOL_HARNESS_TOOL=${TOOL_BIN} TOOL_HARNESS_TARGET=${TARGET} TOOL_HARNESS_EXT=${TARGET} ${LIBFUZZER_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=${LIBFUZZER_MAX_TOTAL_TIME} {corpus_dir} >/dev/null 2>&1"
+if [[ "${TARGET}" == "onnx" && "${LIBFUZZER_DRIVER}" == "${NATIVE_ONNX_DRIVER}" ]]; then
+    export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && LLVM_PROFILE_FILE={artifact_dir}/onnx-native-%p.profraw ${LIBFUZZER_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=${LIBFUZZER_MAX_TOTAL_TIME} {corpus_dir} >/dev/null 2>&1"
+else
+    export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && TOOL_HARNESS_TOOL=${TOOL_BIN} TOOL_HARNESS_TARGET=${TARGET} TOOL_HARNESS_EXT=${TARGET} ${LIBFUZZER_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=${LIBFUZZER_MAX_TOTAL_TIME} {corpus_dir} >/dev/null 2>&1"
+fi
 
 iter=0
 log "starting libfuzzer loop (target=${TARGET}, workers=${WORKERS}, libfuzzer max_total_time=${LIBFUZZER_MAX_TOTAL_TIME}s, corpus=${CORPUS_DIR})"

@@ -68,7 +68,14 @@ case "$BACKEND" in
   local-harness)
     ;;
   libfuzzer)
-    export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && TOOL_HARNESS_TOOL=${TOOL_BIN} TOOL_HARNESS_TARGET=${TARGET} TOOL_HARNESS_EXT=${TARGET} ./harnesses/libfuzzer/tool_harness_driver -artifact_prefix={artifact_dir}/ -max_total_time=5 {corpus_dir} >/dev/null 2>&1"
+    if [[ -z "${TOOL_LIBFUZZER_CMD:-}" ]]; then
+      NATIVE_ONNX_DRIVER="${WORKDIR}/harnesses/libfuzzer/onnxruntime_loader_fuzzer"
+      if [[ "$TARGET" == "onnx" && -x "$NATIVE_ONNX_DRIVER" ]]; then
+        export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && LLVM_PROFILE_FILE={artifact_dir}/onnx-native-%p.profraw ${NATIVE_ONNX_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=5 {corpus_dir} >/dev/null 2>&1"
+      else
+        export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && TOOL_HARNESS_TOOL=${TOOL_BIN} TOOL_HARNESS_TARGET=${TARGET} TOOL_HARNESS_EXT=${TARGET} ${WORKDIR}/harnesses/libfuzzer/tool_harness_driver -artifact_prefix={artifact_dir}/ -max_total_time=5 {corpus_dir} >/dev/null 2>&1"
+      fi
+    fi
     ;;
   aflpp)
     export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"afl-fuzz -n -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/target/debug/tool harness --target ${TARGET} --input @@ >/dev/null 2>&1\""

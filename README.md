@@ -114,7 +114,14 @@ TOOL_LIBFUZZER_CMD='clang++ --version >/dev/null' \
 cargo run --offline -- run --target onnx --backend libfuzzer --corpus-dir seeds/onnx --workers 2 --timeout-sec 30 --restart-limit 1
 ```
 
-### libFuzzer (tool harness 연결)
+### libFuzzer (ONNX native harness 연결)
+```bash
+scripts/build_libfuzzer_onnx_native.sh
+TOOL_LIBFUZZER_CMD='mkdir -p {artifact_dir} && LLVM_PROFILE_FILE={artifact_dir}/onnx-native-%p.profraw ./harnesses/libfuzzer/onnxruntime_loader_fuzzer -artifact_prefix={artifact_dir}/ -max_total_time=5 {corpus_dir} >/dev/null 2>&1' \
+cargo run --offline -- run --target onnx --backend libfuzzer --corpus-dir seeds/onnx --workers 1 --timeout-sec 30 --restart-limit 1
+```
+
+### libFuzzer (tool harness fallback)
 ```bash
 scripts/build_libfuzzer_tool_driver.sh
 TOOL_LIBFUZZER_CMD='mkdir -p {artifact_dir} && TOOL_HARNESS_TOOL=./target/debug/tool TOOL_HARNESS_TARGET=onnx TOOL_HARNESS_EXT=onnx ./harnesses/libfuzzer/tool_harness_driver -artifact_prefix={artifact_dir}/ -max_total_time=5 {corpus_dir} >/dev/null 2>&1' \

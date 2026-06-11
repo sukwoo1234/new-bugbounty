@@ -151,10 +151,12 @@ fi
 
 if has_backend libfuzzer; then
   need_cmd clang++
-  if [[ -x "$WORKDIR/harnesses/libfuzzer/tool_harness_driver" ]]; then
+  if [[ "$TARGET" == "onnx" && -x "$WORKDIR/harnesses/libfuzzer/onnxruntime_loader_fuzzer" ]]; then
+    ok "libFuzzer native ONNX driver: harnesses/libfuzzer/onnxruntime_loader_fuzzer"
+  elif [[ -x "$WORKDIR/harnesses/libfuzzer/tool_harness_driver" ]]; then
     ok "libFuzzer driver: harnesses/libfuzzer/tool_harness_driver"
   else
-    fail "libFuzzer driver missing; run: bash scripts/build_libfuzzer_tool_driver.sh"
+    fail "libFuzzer driver missing; run: bash scripts/build_libfuzzer_onnx_native.sh or bash scripts/build_libfuzzer_tool_driver.sh"
   fi
 fi
 
