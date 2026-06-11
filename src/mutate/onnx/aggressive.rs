@@ -97,6 +97,13 @@ enum Candidate {
         attribute_name: Option<String>,
         field: FieldRef,
     },
+    ResizableAttributeVarint {
+        scope: &'static str,
+        attribute_name: String,
+        chain: AttributeChain,
+        leaf: ProtoField,
+        original: u64,
+    },
     OpTypeSwap {
         field: FieldRef,
         old_op: String,
@@ -105,6 +112,23 @@ enum Candidate {
     RawDataPattern {
         field: FieldRef,
     },
+}
+
+#[derive(Clone, Copy)]
+struct ProtoField {
+    field_number: u32,
+    wire_type: u8,
+    tag_start: usize,
+    value_start: usize,
+    value_end: usize,
+}
+
+#[derive(Clone, Copy)]
+struct AttributeChain {
+    graph: ProtoField,
+    node: ProtoField,
+    attribute: ProtoField,
+    packed: Option<ProtoField>,
 }
 
 pub(crate) fn apply(
@@ -121,6 +145,21 @@ pub(crate) fn apply(
             attribute_name,
             field,
         } => apply_boundary_varint(bytes, rng, scope, attribute_name.as_deref(), *field),
+        Candidate::ResizableAttributeVarint {
+            scope,
+            attribute_name,
+            chain,
+            leaf,
+            original,
+        } => apply_resizable_attribute_varint(
+            bytes,
+            rng,
+            scope,
+            attribute_name,
+            *chain,
+            *leaf,
+            *original,
+        ),
         Candidate::OpTypeSwap {
             field,
             old_op,
@@ -149,6 +188,7 @@ fn collect_candidates(bytes: &[u8]) -> Vec<Candidate> {
         ],
     );
     extend_named_attribute_candidates(&mut candidates, bytes);
+    extend_resizable_named_attribute_candidates(&mut candidates, bytes);
     extend_op_type_candidates(&mut candidates, bytes);
     extend_raw_data_candidates(&mut candidates, bytes);
     candidates
@@ -226,6 +266,98 @@ fn extend_named_attribute_candidates(candidates: &mut Vec<Candidate>, bytes: &[u
     }
 }
 
+fn extend_resizable_named_attribute_candidates(candidates: &mut Vec<Candidate>, bytes: &[u8]) {
+    for graph in scan_proto_spans(bytes, 0, bytes.len()) {
+        if graph.field_number != 7 || graph.wire_type != 2 {
+            continue;
+        }
+        for node in scan_proto_spans(bytes, graph.value_start, graph.value_end) {
+            if node.field_number != 1 || node.wire_type != 2 {
+                continue;
+            }
+            for attribute in scan_proto_spans(bytes, node.value_start, node.value_end) {
+                if attribute.field_number != 5 || attribute.wire_type != 2 {
+                    continue;
+                }
+                extend_resizable_attribute_fields(candidates, bytes, graph, node, attribute);
+            }
+        }
+    }
+}
+
+fn extend_resizable_attribute_fields(
+    candidates: &mut Vec<Candidate>,
+    bytes: &[u8],
+    graph: ProtoField,
+    node: ProtoField,
+    attribute: ProtoField,
+) {
+    let fields = scan_proto_spans(bytes, attribute.value_start, attribute.value_end);
+    let Some(attribute_name) = fields
+        .iter()
+        .find(|field| field.field_number == 1 && field.wire_type == 2)
+        .and_then(|field| proto_field_text(bytes, *field))
+    else {
+        return;
+    };
+    if !TARGET_ATTRIBUTES.contains(&attribute_name.as_str()) {
+        return;
+    }
+
+    for field in &fields {
+        if field.field_number == 3 && field.wire_type == 0 {
+            if let Some(original) = read_varint_value(bytes, field.value_start, field.value_end) {
+                candidates.push(Candidate::ResizableAttributeVarint {
+                    scope: "semantic_attribute_i",
+                    attribute_name: attribute_name.clone(),
+                    chain: AttributeChain {
+                        graph,
+                        node,
+                        attribute,
+                        packed: None,
+                    },
+                    leaf: *field,
+                    original,
+                });
+            }
+        }
+        if field.field_number == 8 && field.wire_type == 0 {
+            if let Some(original) = read_varint_value(bytes, field.value_start, field.value_end) {
+                candidates.push(Candidate::ResizableAttributeVarint {
+                    scope: "semantic_attribute_ints",
+                    attribute_name: attribute_name.clone(),
+                    chain: AttributeChain {
+                        graph,
+                        node,
+                        attribute,
+                        packed: None,
+                    },
+                    leaf: *field,
+                    original,
+                });
+            }
+        }
+        if field.field_number == 8 && field.wire_type == 2 {
+            for leaf in packed_varint_proto_fields(bytes, *field) {
+                if let Some(original) = read_varint_value(bytes, leaf.value_start, leaf.value_end) {
+                    candidates.push(Candidate::ResizableAttributeVarint {
+                        scope: "semantic_attribute_ints_packed",
+                        attribute_name: attribute_name.clone(),
+                        chain: AttributeChain {
+                            graph,
+                            node,
+                            attribute,
+                            packed: Some(*field),
+                        },
+                        leaf,
+                        original,
+                    });
+                }
+            }
+        }
+    }
+}
+
 fn extend_op_type_candidates(candidates: &mut Vec<Candidate>, bytes: &[u8]) {
     for field in find_fields(bytes, &[(7, 2), (1, 2), (4, 2)]) {
         let Some(old_op) = field_text(bytes, field) else {
@@ -261,11 +393,114 @@ fn candidate_is_viable(bytes: &[u8], candidate: &Candidate) -> bool {
                 .map(|original| !viable_boundary_values(*field, original).is_empty())
                 .unwrap_or(false)
         }
+        Candidate::ResizableAttributeVarint { original, .. } => {
+            BOUNDARY_VALUES.iter().any(|value| value != original)
+        }
         Candidate::OpTypeSwap { new_ops, .. } => !new_ops.is_empty(),
         Candidate::RawDataPattern { field } => {
             field.value_end.saturating_sub(field.value_start) >= 4
         }
     }
+}
+
+fn apply_resizable_attribute_varint(
+    bytes: &[u8],
+    rng: &mut DeterministicRng,
+    scope: &'static str,
+    attribute_name: &str,
+    chain: AttributeChain,
+    leaf: ProtoField,
+    original: u64,
+) -> Result<MutationOutput, OperatorError> {
+    let choices: Vec<u64> = BOUNDARY_VALUES
+        .iter()
+        .copied()
+        .filter(|value| *value != original)
+        .collect();
+    if choices.is_empty() {
+        return Err(OperatorError::NoApplicableField);
+    }
+    let new_value = choices[rng.index(choices.len())];
+    let encoded_value = encode_varint(new_value);
+
+    let mut new_attribute_payload =
+        bytes[chain.attribute.value_start..chain.attribute.value_end].to_vec();
+    let semantic_resize_kind;
+    if let Some(packed) = chain.packed {
+        let mut new_packed_payload = bytes[packed.value_start..packed.value_end].to_vec();
+        replace_relative_range(
+            &mut new_packed_payload,
+            leaf.value_start - packed.value_start,
+            leaf.value_end - packed.value_start,
+            &encoded_value,
+        )?;
+        let new_packed_field =
+            encode_length_delimited_field(packed.field_number, &new_packed_payload);
+        replace_relative_range(
+            &mut new_attribute_payload,
+            packed.tag_start - chain.attribute.value_start,
+            packed.value_end - chain.attribute.value_start,
+            &new_packed_field,
+        )?;
+        semantic_resize_kind = "packed";
+    } else {
+        replace_relative_range(
+            &mut new_attribute_payload,
+            leaf.value_start - chain.attribute.value_start,
+            leaf.value_end - chain.attribute.value_start,
+            &encoded_value,
+        )?;
+        semantic_resize_kind = "direct";
+    }
+
+    let new_attribute_field =
+        encode_length_delimited_field(chain.attribute.field_number, &new_attribute_payload);
+    let mut new_node_payload = bytes[chain.node.value_start..chain.node.value_end].to_vec();
+    replace_relative_range(
+        &mut new_node_payload,
+        chain.attribute.tag_start - chain.node.value_start,
+        chain.attribute.value_end - chain.node.value_start,
+        &new_attribute_field,
+    )?;
+
+    let new_node_field = encode_length_delimited_field(chain.node.field_number, &new_node_payload);
+    let mut new_graph_payload = bytes[chain.graph.value_start..chain.graph.value_end].to_vec();
+    replace_relative_range(
+        &mut new_graph_payload,
+        chain.node.tag_start - chain.graph.value_start,
+        chain.node.value_end - chain.graph.value_start,
+        &new_node_field,
+    )?;
+
+    let new_graph_field =
+        encode_length_delimited_field(chain.graph.field_number, &new_graph_payload);
+    let mut out = bytes.to_vec();
+    replace_relative_range(
+        &mut out,
+        chain.graph.tag_start,
+        chain.graph.value_end,
+        &new_graph_field,
+    )?;
+    if out == bytes {
+        return Err(OperatorError::NoApplicableField);
+    }
+
+    Ok(MutationOutput {
+        bytes: out,
+        operator_params: vec![
+            ("scope", scope.to_string()),
+            ("attribute_name", attribute_name.to_string()),
+            ("path_leaf_field", leaf.field_number.to_string()),
+            ("old_value", original.to_string()),
+            ("new_value", new_value.to_string()),
+            ("boundary", boundary_label(new_value).to_string()),
+            ("semantic_resize", "yes".to_string()),
+            ("semantic_resize_kind", semantic_resize_kind.to_string()),
+            ("old_size", bytes.len().to_string()),
+            ("mutation_level", "3".to_string()),
+        ],
+        parse_preserving: "yes",
+    })
 }
 
 fn apply_boundary_varint(
@@ -443,6 +678,97 @@ fn packed_varint_fields(bytes: &[u8], field: FieldRef) -> Vec<FieldRef> {
     fields
 }
 
+fn packed_varint_proto_fields(bytes: &[u8], field: ProtoField) -> Vec<ProtoField> {
+    let mut fields = Vec::new();
+    let mut cursor = field.value_start;
+    let end = field.value_end.min(bytes.len());
+    while cursor < end {
+        let Some((_, next)) = read_varint_in(bytes, cursor, end) else {
+            break;
+        };
+        fields.push(ProtoField {
+            field_number: field.field_number,
+            wire_type: 0,
+            tag_start: cursor,
+            value_start: cursor,
+            value_end: next,
+        });
+        cursor = next;
+    }
+    fields
+}
+
+fn scan_proto_spans(bytes: &[u8], start: usize, end: usize) -> Vec<ProtoField> {
+    let mut fields = Vec::new();
+    let mut cursor = start;
+    let end = end.min(bytes.len());
+    while cursor < end && fields.len() < 4096 {
+        let tag_start = cursor;
+        let Some((tag, after_tag)) = read_varint_in(bytes, cursor, end) else {
+            break;
+        };
+        if tag == 0 {
+            break;
+        }
+        let wire_type = (tag & 0x7) as u8;
+        let field_number = (tag >> 3) as u32;
+        if field_number == 0 {
+            break;
+        }
+        let (value_start, value_end) = match wire_type {
+            0 => {
+                let Some((_, value_end)) = read_varint_in(bytes, after_tag, end) else {
+                    break;
+                };
+                (after_tag, value_end)
+            }
+            1 => {
+                let Some(value_end) = after_tag.checked_add(8) else {
+                    break;
+                };
+                if value_end > end {
+                    break;
+                }
+                (after_tag, value_end)
+            }
+            2 => {
+                let Some((length, value_start)) = read_varint_in(bytes, after_tag, end) else {
+                    break;
+                };
+                let Ok(length) = usize::try_from(length) else {
+                    break;
+                };
+                let Some(value_end) = value_start.checked_add(length) else {
+                    break;
+                };
+                if value_end > end {
+                    break;
+                }
+                (value_start, value_end)
+            }
+            5 => {
+                let Some(value_end) = after_tag.checked_add(4) else {
+                    break;
+                };
+                if value_end > end {
+                    break;
+                }
+                (after_tag, value_end)
+            }
+            _ => break,
+        };
+        fields.push(ProtoField {
+            field_number,
+            wire_type,
+            tag_start,
+            value_start,
+            value_end,
+        });
+        cursor = value_end;
+    }
+    fields
+}
+
 fn scan_proto_range(bytes: &[u8], start: usize, end: usize) -> Vec<FieldRef> {
     let mut fields = Vec::new();
     let mut cursor = start;
@@ -512,6 +838,56 @@ fn scan_proto_range(bytes: &[u8], start: usize, end: usize) -> Vec<FieldRef> {
     fields
 }
 
+fn proto_field_text(bytes: &[u8], field: ProtoField) -> Option<String> {
+    if field.value_end <= field.value_start || field.value_end > bytes.len() {
+        return None;
+    }
+    let text = std::str::from_utf8(&bytes[field.value_start..field.value_end]).ok()?;
+    if text
+        .bytes()
+        .all(|byte| byte.is_ascii_graphic() || byte == b' ')
+    {
+        Some(text.to_string())
+    } else {
+        None
+    }
+}
+
+fn encode_varint(mut value: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+            out.push(byte);
+        } else {
+            out.push(byte);
+            return out;
+        }
+    }
+}
+
+fn encode_length_delimited_field(field_number: u32, payload: &[u8]) -> Vec<u8> {
+    let mut out = encode_varint(((field_number as u64) << 3) | 2);
+    out.extend(encode_varint(payload.len() as u64));
+    out.extend_from_slice(payload);
+    out
+}
+
+fn replace_relative_range(
+    bytes: &mut Vec<u8>,
+    start: usize,
+    end: usize,
+    replacement: &[u8],
+) -> Result<(), OperatorError> {
+    if start > end || end > bytes.len() {
+        return Err(OperatorError::NoApplicableField);
+    }
+    bytes.splice(start..end, replacement.iter().copied());
+    Ok(())
+}
+
 fn read_varint_in(bytes: &[u8], start: usize, end: usize) -> Option<(u64, usize)> {
     let mut value = 0u64;
     let mut shift = 0u32;
@@ -566,6 +942,19 @@ mod tests {
         encode_length_delimited(7, &graph)
     }
 
+    fn fixture_with_packed_strides() -> Vec<u8> {
+        let mut packed_ints = Vec::new();
+        packed_ints.extend(encode_varint(1));
+        packed_ints.extend(encode_varint(2));
+
+        let mut attr = Vec::new();
+        attr.extend(encode_string_field(1, "strides"));
+        attr.extend(encode_length_delimited(8, &packed_ints));
+        let node = encode_length_delimited(5, &attr);
+        let graph = encode_length_delimited(1, &node);
+        encode_length_delimited(7, &graph)
+    }
+
     #[test]
     fn writes_boundary_without_changing_wire_size() {
         let bytes = fixture_with_initializer_and_attr();
@@ -615,6 +1004,56 @@ mod tests {
                 .any(|(key, value)| *key == "new_value" && value == "0");
         }
         assert!(saw_zero, "zero boundary must be reachable");
+    }
+
+    #[test]
+    fn semantic_resize_can_write_minus_one_and_grow_model() {
+        let bytes = fixture_with_initializer_and_attr();
+        let mut observed = None;
+        for seed in 0..4096 {
+            let mut rng = DeterministicRng::new(seed);
+            let result = apply(&bytes, &mut rng).expect("aggressive candidate exists");
+            let semantic_resize = result
+                .operator_params
+                .iter()
+                .any(|(key, value)| *key == "semantic_resize" && value == "yes");
+            let minus_one = result
+                .operator_params
+                .iter()
+                .any(|(key, value)| *key == "new_value" && value == &u64::MAX.to_string());
+            if semantic_resize && minus_one {
+                observed = Some(result);
+                break;
+            }
+        }
+        let result = observed.expect("semantic resize must be able to write protobuf -1");
+        assert!(result.bytes.len() > bytes.len());
+        assert!(!find_fields(&result.bytes, &[(7, 2), (1, 2), (5, 2), (1, 2)]).is_empty());
+    }
+
+    #[test]
+    fn semantic_resize_handles_packed_int_attributes() {
+        let bytes = fixture_with_packed_strides();
+        let mut observed = None;
+        for seed in 0..4096 {
+            let mut rng = DeterministicRng::new(seed);
+            let result = apply(&bytes, &mut rng).expect("aggressive candidate exists");
+            let semantic_packed = result
+                .operator_params
+                .iter()
+                .any(|(key, value)| *key == "scope" && value == "semantic_attribute_ints_packed");
+            let resized = result
+                .operator_params
+                .iter()
+                .any(|(key, value)| *key == "semantic_resize" && value == "yes");
+            if semantic_packed && resized {
+                observed = Some(result);
+                break;
+            }
+        }
+        let result = observed.expect("packed repeated ints must be semantically resizable");
+        assert_ne!(result.bytes, bytes);
+        assert!(!find_fields(&result.bytes, &[(7, 2), (1, 2), (5, 2), (1, 2)]).is_empty());
     }
 
     #[test]
