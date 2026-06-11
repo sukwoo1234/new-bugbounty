@@ -39,8 +39,9 @@ trap 'stop_requested=1; log "SIGTERM received, will exit after current iteration
 
 # libfuzzer driver invocation contract (matches docs/experiment-ops.md §libfuzzer):
 #   {corpus_dir} is substituted by `tool run --backend libfuzzer` with the chosen
-#   workdir-local libfuzzer corpus path. -max_total_time bounds per-invocation runtime.
-export TOOL_LIBFUZZER_CMD="TOOL_HARNESS_TOOL=${TOOL_BIN} TOOL_HARNESS_TARGET=${TARGET} TOOL_HARNESS_EXT=${TARGET} ${LIBFUZZER_DRIVER} -max_total_time=${LIBFUZZER_MAX_TOTAL_TIME} {corpus_dir} >/dev/null 2>&1"
+#   workdir-local libfuzzer corpus path. {artifact_dir} is a per-worker run dir
+#   for libFuzzer crash artifacts. -max_total_time bounds per-invocation runtime.
+export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && TOOL_HARNESS_TOOL=${TOOL_BIN} TOOL_HARNESS_TARGET=${TARGET} TOOL_HARNESS_EXT=${TARGET} ${LIBFUZZER_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=${LIBFUZZER_MAX_TOTAL_TIME} {corpus_dir} >/dev/null 2>&1"
 
 iter=0
 log "starting libfuzzer loop (target=${TARGET}, workers=${WORKERS}, libfuzzer max_total_time=${LIBFUZZER_MAX_TOTAL_TIME}s, corpus=${CORPUS_DIR})"

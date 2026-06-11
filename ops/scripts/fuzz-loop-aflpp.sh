@@ -223,7 +223,7 @@ mark_latest_aflpp_run() {
 #   {docker_hardening_flags}= --network none --memory 4g --cpus 2 --pids-limit 512
 #   {docker_readonly_flags} = --read-only --tmpfs /tmp:rw,size=1g --tmpfs /dev/shm:rw,size=1g
 #   {workdir_abs}/{corpus_dir_abs}/{run_dir_abs} = host mounts; {container_*} = in-container paths
-export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"afl-fuzz -n -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/${AFLPP_CONTAINER_TOOL} harness --target ${TARGET} --input @@ >/dev/null 2>&1 || true\""
+export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"afl-fuzz -n -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/${AFLPP_CONTAINER_TOOL} harness --target ${TARGET} --input @@ >/dev/null 2>&1\""
 
 iter=0
 log "starting aflpp loop (target=${TARGET}, workers=${WORKERS}, container_tool=${AFLPP_CONTAINER_TOOL}, corpus=${CORPUS_DIR})"

@@ -97,13 +97,13 @@ make smoke-all TARGET=onnx SECONDS=60
 
 ### AFL++
 ```bash
-TOOL_AFLPP_CMD='docker run --rm {docker_user_flag} -v "$PWD":/work -w /work aflplusplus/aflplusplus bash -lc "afl-fuzz -V 5 -i {corpus_dir} -o {run_dir}/afl-out -- /bin/true @@ >/dev/null 2>&1 || true"' \
+TOOL_AFLPP_CMD='docker run --rm {docker_user_flag} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc "afl-fuzz -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- /bin/true @@ >/dev/null 2>&1"' \
 cargo run --offline -- run --target onnx --backend aflpp --corpus-dir seeds/onnx --workers 2 --timeout-sec 30 --restart-limit 1
 ```
 
 ### AFL++ (tool harness 연결)
 ```bash
-TOOL_AFLPP_CMD='docker run --rm {docker_user_flag} -v "$PWD":/work -w /work aflplusplus/aflplusplus bash -lc "afl-fuzz -n -V 5 -i {corpus_dir} -o {run_dir}/afl-out -- /work/target/debug/tool harness --target onnx --input @@ >/dev/null 2>&1 || true"' \
+TOOL_AFLPP_CMD='docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc "afl-fuzz -n -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- /work/target/debug/tool harness --target onnx --input @@ >/dev/null 2>&1"' \
 cargo run --offline -- run --target onnx --backend aflpp --corpus-dir seeds/onnx --workers 1 --timeout-sec 30 --restart-limit 1
 ```
 `permission denied ... docker.sock`가 나오면 Docker 그룹 권한을 다시 적용(`newgrp docker`)하거나 새 셸에서 재시도한다. `run --backend aflpp`는 `{docker_user_flag}`를 현재 사용자로 치환해 `afl-out`이 root 소유로 남지 않게 한다.
@@ -117,7 +117,7 @@ cargo run --offline -- run --target onnx --backend libfuzzer --corpus-dir seeds/
 ### libFuzzer (tool harness 연결)
 ```bash
 scripts/build_libfuzzer_tool_driver.sh
-TOOL_LIBFUZZER_CMD='TOOL_HARNESS_TOOL=./target/debug/tool TOOL_HARNESS_TARGET=onnx TOOL_HARNESS_EXT=onnx ./harnesses/libfuzzer/tool_harness_driver -max_total_time=5 {corpus_dir} >/dev/null 2>&1' \
+TOOL_LIBFUZZER_CMD='mkdir -p {artifact_dir} && TOOL_HARNESS_TOOL=./target/debug/tool TOOL_HARNESS_TARGET=onnx TOOL_HARNESS_EXT=onnx ./harnesses/libfuzzer/tool_harness_driver -artifact_prefix={artifact_dir}/ -max_total_time=5 {corpus_dir} >/dev/null 2>&1' \
 cargo run --offline -- run --target onnx --backend libfuzzer --corpus-dir seeds/onnx --workers 1 --timeout-sec 30 --restart-limit 1
 ```
 

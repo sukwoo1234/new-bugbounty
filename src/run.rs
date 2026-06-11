@@ -13,10 +13,12 @@ use crate::common::{
     artifact_contract, command_exists, command_with_core_dump_off, first_line, now_unix,
     now_unix_millis, shell_escape, AppPaths, ArtifactContract, HarnessExecResult,
 };
+use crate::json_utils::json_escape;
 use crate::metrics::{self, MetricEvent};
 use crate::target::{
     collect_corpus_inputs, default_seed_dir, resolve_target_adapter, target_label, TargetKind,
 };
+use crate::triage;
 
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RunBackend {
@@ -55,6 +57,9 @@ struct RunStatusCounts {
     failed: usize,
     timeout: usize,
     retries: usize,
+    backend_crash_artifacts: usize,
+    backend_crashes_triaged: usize,
+    backend_crash_triage_errors: usize,
 }
 
 struct EngineWorkerPlan {
@@ -71,6 +76,18 @@ enum EngineWorkerOutcome {
     Success,
     Failed,
     Timeout,
+}
+
+struct BackendCrashArtifact {
+    path: PathBuf,
+    kind: &'static str,
+}
+
+struct BackendCrashIngest {
+    discovered: usize,
+    triaged: usize,
+    errors: usize,
+    manifest_path: Option<PathBuf>,
 }
 
 pub(crate) fn run_fuzz_pipeline(
@@ -227,6 +244,9 @@ pub(crate) fn run_fuzz_pipeline(
             failed: s.failed,
             timeout: s.timeout,
             retries: s.retries,
+            backend_crash_artifacts: 0,
+            backend_crashes_triaged: 0,
+            backend_crash_triage_errors: 0,
         },
         workers,
         timeout_sec,
@@ -341,6 +361,9 @@ fn run_engine_backend(
         }
     }
 
+    let ingest =
+        ingest_backend_crash_artifacts(app_paths, &run_dir, run_id, target, backend, timeout_sec)?;
+
     let status_path = write_run_status(
         &run_dir,
         run_id,
@@ -352,6 +375,9 @@ fn run_engine_backend(
             failed,
             timeout,
             retries: 0,
+            backend_crash_artifacts: ingest.discovered,
+            backend_crashes_triaged: ingest.triaged,
+            backend_crash_triage_errors: ingest.errors,
         },
         workers,
         timeout_sec,
@@ -363,6 +389,12 @@ fn run_engine_backend(
     println!("failed: {failed}");
     println!("timeout: {timeout}");
     println!("retries: 0");
+    println!("backend_crash_artifacts: {}", ingest.discovered);
+    println!("backend_crashes_triaged: {}", ingest.triaged);
+    println!("backend_crash_triage_errors: {}", ingest.errors);
+    if let Some(manifest_path) = &ingest.manifest_path {
+        println!("backend_crash_manifest: {}", manifest_path.display());
+    }
     println!("status: {}", status_path.display());
 
     metrics::record_metrics_event(
@@ -424,6 +456,196 @@ fn run_engine_worker(plan: EngineWorkerPlan) -> Result<EngineWorkerResult, Strin
     Ok(EngineWorkerResult { outcome })
 }
 
+fn ingest_backend_crash_artifacts(
+    app_paths: &AppPaths,
+    run_dir: &Path,
+    run_id: u128,
+    target: &TargetKind,
+    backend: &RunBackend,
+    timeout_sec: u64,
+) -> Result<BackendCrashIngest, String> {
+    let artifacts = collect_backend_crash_artifacts(run_dir, backend)?;
+    if artifacts.is_empty() {
+        return Ok(BackendCrashIngest {
+            discovered: 0,
+            triaged: 0,
+            errors: 0,
+            manifest_path: None,
+        });
+    }
+
+    let triage_limit = backend_triage_limit();
+    let manifest_dir = run_dir.join("backend-crashes");
+    fs::create_dir_all(&manifest_dir).map_err(|e| {
+        format!(
+            "failed to create backend crash manifest dir '{}': {e}",
+            manifest_dir.display()
+        )
+    })?;
+
+    let mut triaged = 0usize;
+    let mut errors = 0usize;
+    let mut entries = Vec::with_capacity(artifacts.len());
+    for (idx, artifact) in artifacts.iter().enumerate() {
+        let (triage_status, triage_error) = if idx < triage_limit {
+            match triage::run_triage_pipeline(app_paths, target, &artifact.path, 1, timeout_sec) {
+                Ok(()) => {
+                    triaged += 1;
+                    ("triaged", String::new())
+                }
+                Err(err) => {
+                    errors += 1;
+                    ("triage_failed", err)
+                }
+            }
+        } else {
+            ("skipped_limit", String::new())
+        };
+        entries.push(format!(
+            "    {{\"index\": {}, \"kind\": \"{}\", \"path\": \"{}\", \"triage_status\": \"{}\", \"triage_error\": \"{}\"}}",
+            idx + 1,
+            artifact.kind,
+            json_escape(&artifact.path.display().to_string()),
+            triage_status,
+            json_escape(&triage_error)
+        ));
+    }
+
+    let manifest_path = manifest_dir.join("manifest.json");
+    let manifest = format!(
+        "{{\n  \"schema_version\": \"1.0\",\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"discovered\": {},\n  \"triage_limit\": {},\n  \"triaged\": {},\n  \"errors\": {},\n  \"artifacts\": [\n{}\n  ]\n}}\n",
+        run_id,
+        target_label(target),
+        run_backend_label(backend),
+        artifacts.len(),
+        triage_limit,
+        triaged,
+        errors,
+        entries.join(",\n")
+    );
+    fs::write(&manifest_path, manifest)
+        .map_err(|e| format!("failed to write '{}': {e}", manifest_path.display()))?;
+
+    Ok(BackendCrashIngest {
+        discovered: artifacts.len(),
+        triaged,
+        errors,
+        manifest_path: Some(manifest_path),
+    })
+}
+
+fn backend_triage_limit() -> usize {
+    std::env::var("TOOL_BACKEND_TRIAGE_MAX_CRASHES")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(32)
+}
+
+fn collect_backend_crash_artifacts(
+    run_dir: &Path,
+    backend: &RunBackend,
+) -> Result<Vec<BackendCrashArtifact>, String> {
+    let mut artifacts = Vec::new();
+    match backend {
+        RunBackend::Aflpp => collect_aflpp_crash_artifacts(run_dir, &mut artifacts)?,
+        RunBackend::Libfuzzer => collect_libfuzzer_crash_artifacts(run_dir, &mut artifacts)?,
+        RunBackend::LocalHarness => {}
+    }
+    artifacts.sort_by(|a, b| a.path.cmp(&b.path));
+    artifacts.dedup_by(|a, b| a.path == b.path);
+    Ok(artifacts)
+}
+
+fn collect_aflpp_crash_artifacts(
+    run_dir: &Path,
+    artifacts: &mut Vec<BackendCrashArtifact>,
+) -> Result<(), String> {
+    let afl_out = run_dir.join("afl-out");
+    if !afl_out.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&afl_out)
+        .map_err(|e| format!("failed to read '{}': {e}", afl_out.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read afl-out entry: {e}"))?;
+        let fuzzer_dir = entry.path();
+        if !fuzzer_dir.is_dir() {
+            continue;
+        }
+        let crashes_dir = fuzzer_dir.join("crashes");
+        collect_files_in_dir(&crashes_dir, "aflpp_crash", artifacts)?;
+    }
+    Ok(())
+}
+
+fn collect_libfuzzer_crash_artifacts(
+    run_dir: &Path,
+    artifacts: &mut Vec<BackendCrashArtifact>,
+) -> Result<(), String> {
+    let artifact_root = run_dir.join("backend-artifacts");
+    collect_prefixed_files_recursive(&artifact_root, "libfuzzer_crash", artifacts)
+}
+
+fn collect_prefixed_files_recursive(
+    dir: &Path,
+    kind: &'static str,
+    artifacts: &mut Vec<BackendCrashArtifact>,
+) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in
+        fs::read_dir(dir).map_err(|e| format!("failed to read '{}': {e}", dir.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read artifact entry: {e}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_prefixed_files_recursive(&path, kind, artifacts)?;
+        } else if is_libfuzzer_artifact_file(&path) {
+            artifacts.push(BackendCrashArtifact { path, kind });
+        }
+    }
+    Ok(())
+}
+
+fn collect_files_in_dir(
+    dir: &Path,
+    kind: &'static str,
+    artifacts: &mut Vec<BackendCrashArtifact>,
+) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in
+        fs::read_dir(dir).map_err(|e| format!("failed to read '{}': {e}", dir.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read artifact entry: {e}"))?;
+        let path = entry.path();
+        if path.is_file() && !is_aflpp_metadata_file(&path) {
+            artifacts.push(BackendCrashArtifact { path, kind });
+        }
+    }
+    Ok(())
+}
+
+fn is_aflpp_metadata_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name == "README.txt" || name.starts_with('.'))
+        .unwrap_or(false)
+}
+
+fn is_libfuzzer_artifact_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            ["crash-", "oom-", "timeout-", "leak-"]
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+        })
+        .unwrap_or(false)
+}
+
 fn build_engine_command(
     target: &TargetKind,
     backend: &RunBackend,
@@ -444,6 +666,15 @@ fn build_engine_command(
         absolute_path(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let corpus_dir_abs = absolute_path(corpus_dir);
     let run_dir_abs = absolute_path(run_dir);
+    let artifact_dir = run_dir
+        .join("backend-artifacts")
+        .join(format!("w{worker_id}"));
+    fs::create_dir_all(&artifact_dir).map_err(|e| {
+        format!(
+            "failed to create backend artifact dir '{}': {e}",
+            artifact_dir.display()
+        )
+    })?;
     let template = std::env::var(engine.cmd_env).map_err(|_| {
         format!(
             "{} is not set; provide backend command template. example: {}='echo run {{target}} {{corpus_dir}}; true'",
@@ -466,6 +697,7 @@ fn build_engine_command(
         .replace("{docker_hardening_flags}", docker_hardening_flags)
         .replace("{docker_readonly_flags}", docker_readonly_flags)
         .replace("{run_dir}", &shell_escape(run_dir))
+        .replace("{artifact_dir}", &shell_escape(&artifact_dir))
         .replace("{workdir_abs}", &shell_escape(&workdir_abs))
         .replace("{corpus_dir_abs}", &shell_escape(&corpus_dir_abs))
         .replace("{run_dir_abs}", &shell_escape(&run_dir_abs))
@@ -661,7 +893,7 @@ fn write_run_status(
 ) -> Result<PathBuf, String> {
     let status_path = run_dir.join("status.json");
     let status_json = format!(
-        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"retries\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {}\n}}\n",
+        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"retries\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {},\n  \"backend_crash_artifacts\": {},\n  \"backend_crashes_triaged\": {},\n  \"backend_crash_triage_errors\": {}\n}}\n",
         run_id,
         target_label(target),
         run_backend_label(backend),
@@ -672,9 +904,62 @@ fn write_run_status(
         counts.retries,
         workers,
         timeout_sec,
-        restart_limit
+        restart_limit,
+        counts.backend_crash_artifacts,
+        counts.backend_crashes_triaged,
+        counts.backend_crash_triage_errors
     );
     fs::write(&status_path, status_json)
         .map_err(|e| format!("failed to write '{}': {e}", status_path.display()))?;
     Ok(status_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{collect_backend_crash_artifacts, RunBackend};
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn collects_aflpp_crash_files_without_readme() {
+        let run_dir = unique_temp_dir("aflpp-crash-collect");
+        let crashes = run_dir.join("afl-out").join("default").join("crashes");
+        fs::create_dir_all(&crashes).expect("create crashes dir");
+        fs::write(crashes.join("README.txt"), b"metadata").expect("write readme");
+        fs::write(crashes.join("id:000000,sig:08"), b"crash").expect("write crash");
+
+        let artifacts =
+            collect_backend_crash_artifacts(&run_dir, &RunBackend::Aflpp).expect("collect");
+        assert_eq!(artifacts.len(), 1);
+        assert!(artifacts[0].path.ends_with("id:000000,sig:08"));
+
+        let _ = fs::remove_dir_all(&run_dir);
+    }
+
+    #[test]
+    fn collects_libfuzzer_prefixed_artifacts() {
+        let run_dir = unique_temp_dir("libfuzzer-crash-collect");
+        let worker_dir = run_dir.join("backend-artifacts").join("w1");
+        fs::create_dir_all(&worker_dir).expect("create worker artifact dir");
+        fs::write(worker_dir.join("note.txt"), b"metadata").expect("write note");
+        fs::write(worker_dir.join("crash-deadbeef"), b"crash").expect("write crash");
+
+        let artifacts =
+            collect_backend_crash_artifacts(&run_dir, &RunBackend::Libfuzzer).expect("collect");
+        assert_eq!(artifacts.len(), 1);
+        assert!(artifacts[0].path.ends_with("crash-deadbeef"));
+
+        let _ = fs::remove_dir_all(&run_dir);
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("tool-{name}-{}-{nanos}", std::process::id()))
+    }
 }
