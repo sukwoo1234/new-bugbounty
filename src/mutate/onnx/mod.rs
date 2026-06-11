@@ -17,6 +17,7 @@ pub(crate) use crate::mutate::common::{
     flip_value_byte, operator_set, DeterministicRng, MutationOutput, OperatorError,
 };
 
+pub(crate) mod aggressive;
 pub(crate) mod attribute;
 pub(crate) mod byte_flip;
 pub(crate) mod dtype;
@@ -247,6 +248,7 @@ pub(crate) const KNOWN_OPERATORS: &[&str] = &[
     name_consistent::NAME,
     byte_flip::NAME,
     havoc::NAME,
+    aggressive::NAME,
 ];
 
 pub(crate) fn validate_operators(requested: &[String]) -> Result<Vec<&'static str>, String> {
@@ -286,6 +288,7 @@ fn dispatch(
         "name_consistent" => name_consistent::apply(bytes, rng),
         "byte_flip" => byte_flip::apply(bytes, rng),
         "havoc" => havoc::apply(bytes, rng),
+        "aggressive" => aggressive::apply(bytes, rng),
         _ => Err(OperatorError::NoApplicableField),
     }
 }
@@ -293,6 +296,7 @@ fn dispatch(
 fn mutation_level_for_operator(operator: &str) -> u32 {
     match operator {
         "shape_valid" | "dtype_valid" | "dtype_wide" | "name_consistent" => 2,
+        "aggressive" => 3,
         _ => 1,
     }
 }
@@ -553,5 +557,18 @@ pub(crate) mod test_fixtures {
 
     pub(crate) fn encode_string_field(field_number: u32, value: &str) -> Vec<u8> {
         encode_length_delimited(field_number, value.as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggressive_is_known_but_not_default() {
+        let requested = vec!["aggressive".to_string()];
+        let resolved = validate_operators(&requested).expect("known operator accepted");
+        assert_eq!(resolved, vec![aggressive::NAME]);
+        assert!(!DEFAULT_OPERATORS.contains(&aggressive::NAME));
     }
 }
