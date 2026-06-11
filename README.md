@@ -120,6 +120,7 @@ scripts/build_libfuzzer_onnx_native.sh
 TOOL_LIBFUZZER_CMD='mkdir -p {artifact_dir} && LLVM_PROFILE_FILE={artifact_dir}/onnx-native-%p.profraw ./harnesses/libfuzzer/onnxruntime_loader_fuzzer -artifact_prefix={artifact_dir}/ -max_total_time=5 {corpus_dir} >/dev/null 2>&1' \
 cargo run --offline -- run --target onnx --backend libfuzzer --corpus-dir seeds/onnx --workers 1 --timeout-sec 30 --restart-limit 1
 ```
+기존 `build/cov*` ONNX Runtime에 링크하면 ORT를 직접 호출하고 native crash를 잡지만, ORT 내부 edge-guided libFuzzer coverage까지 보려면 sanitizer-coverage로 빌드한 ORT가 필요하다.
 
 ### libFuzzer (tool harness fallback)
 ```bash

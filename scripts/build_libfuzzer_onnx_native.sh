@@ -71,3 +71,6 @@ echo "[build-libfuzzer-onnx-native] done"
 echo "src: $SRC"
 echo "out: $OUT"
 echo "so: $SO"
+if [[ "$SO_DIR" == *"/build/cov/"* || "$SO_DIR" == *"/build/cov-o0/"* ]]; then
+  echo "note: this ORT build is source-coverage instrumented; native crash capture works, but ORT edge-guided libFuzzer coverage requires a sanitizer-coverage ORT build"
+fi
