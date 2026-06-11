@@ -238,6 +238,23 @@ pub(crate) fn run_report_pipeline(
     fs::write(&report_md_path, report_md)
         .map_err(|e| format!("failed to write '{}': {e}", report_md_path.display()))?;
 
+    let submission_draft = build_submission_draft(
+        &target,
+        &input,
+        &input_sha256,
+        &repro_input,
+        repro_retries,
+        timeout_sec,
+        &triage_crash,
+        &stack_lines,
+        &crash_report,
+        &poc,
+        &severity,
+    );
+    let submission_draft_path = report_dir.join("submission_draft.md");
+    fs::write(&submission_draft_path, submission_draft)
+        .map_err(|e| format!("failed to write '{}': {e}", submission_draft_path.display()))?;
+
     let manifest_path = write_report_manifest(
         &report_dir,
         report_id,
@@ -254,10 +271,11 @@ pub(crate) fn run_report_pipeline(
     println!("report_dir: {}", report_dir.display());
     println!("report: {}", report_md_path.display());
     println!(
-        "evidence: {}, {}, {}, {}",
+        "evidence: {}, {}, {}, {}, {}",
         crash_report_path.display(),
         repro_path.display(),
         meta_path.display(),
+        submission_draft_path.display(),
         manifest_path.display()
     );
     println!("bundle: {}", bundle_path.display());
@@ -396,6 +414,91 @@ fn build_report_title(
     format!("{target} reproduced crash candidate: {signature}")
 }
 
+fn build_submission_draft(
+    target: &str,
+    input: &str,
+    input_sha256: &str,
+    repro_input: &str,
+    repro_retries: u64,
+    timeout_sec: u64,
+    triage_crash: &TriageCrashFields,
+    stack_lines: &[String],
+    crash_report: &str,
+    poc: &PocCollection,
+    severity: &SeveritySuggestion,
+) -> String {
+    let title = build_submission_title(target, triage_crash);
+    let crash = crash_label(triage_crash);
+    let poc_path = poc_path_or_dash(poc);
+    let poc_sha = poc_sha_or_fallback(poc, input_sha256);
+    let stack_text = markdown_list(stack_lines);
+    let crash_evidence = crash_report_excerpt(crash_report);
+    let repro_input_escaped = shell_escape_single_quoted(repro_input);
+    let crash_kind = &triage_crash.crash_kind;
+    let sanitizer = &triage_crash.sanitizer;
+    let signal = &triage_crash.signal;
+    let normalized_signature = &triage_crash.normalized_frame_hash;
+    let suggested_severity = severity.suggested_severity;
+    let suggested_cvss_vector = severity.suggested_cvss_vector;
+    let severity_confidence = severity.confidence;
+    let severity_reason = severity.reason;
+    format!(
+        "# Submission Draft\n\n## Target\n\n`{target}`\n\n## Title\n\n{title}\n\n## External PoC URL\n\nPASTE_PUBLIC_OR_PRIVATE_POC_URL_HERE\n\n## Summary\n\nA crafted `{target}` input triggers a reproduced native `{crash}` while being processed by the target loader/parser/runtime path.\n\nThis is a target-neutral draft. Fill target-specific API calls, package versions, validation behavior, and impact details before submission.\n\n## Affected Input\n\n- Target: `{target}`\n- Source input: `{input}`\n- Source SHA256: `{input_sha256}`\n- Collected PoC: `{poc_path}`\n- Collected PoC SHA256: `{poc_sha}`\n\n## Environment\n\nFill these with the exact environment used for the final reproduction:\n\n- OS/architecture: `uname -a`\n- Target/library version: `FILL_ME`\n- Build or package source: `FILL_ME`\n- Sanitizer/debug build: `FILL_ME`\n\n## Validation Notes\n\nRecord target-specific validation results here. Do not claim format-valid, checker-valid, sandbox impact, or exploitability status until directly verified on the final PoC.\n\n- Parser/checker result: `FILL_ME`\n- Loader/runtime result: `FILL_ME`\n- Inference/execution result, if applicable: `FILL_ME`\n\n## Reproduction Steps\n\n1. Use the collected PoC when available: `{poc_path}`.\n2. Run project triage:\n\n```bash\ntool triage --target {target} --input '{repro_input_escaped}' --repro-retries {repro_retries} --timeout-sec {timeout_sec}\n```\n\n3. Add the minimal target-specific loader/parser command here:\n\n```bash\n# FILL_ME: target-specific reproduction command\n```\n\n## Expected Result\n\nThe loader/parser/runtime should reject malformed input with a managed error and should not terminate the host process.\n\n## Actual Result\n\n- Verdict: `reproduced`\n- Crash kind: `{crash_kind}`\n- Sanitizer: `{sanitizer}`\n- Signal: `{signal}`\n- Normalized signature: `{normalized_signature}`\n\n## Security Impact\n\nThis is a denial-of-service candidate for systems that process untrusted `{target}` files. Manual impact confirmation is required before submission. No arbitrary code execution is claimed in this draft.\n\n## Suggested Severity\n\n- Suggested severity: `{suggested_severity}`\n- Suggested CVSS vector: `{suggested_cvss_vector}`\n- Confidence: `{severity_confidence}`\n- Reason: `{severity_reason}`\n\n## Crash Evidence\n\n```text\n{crash_evidence}\n```\n\n## Stack Top3\n\n{stack_text}\n\n## Submission Checklist\n\n- Replace the PoC URL placeholder.\n- Fill exact target/library versions and OS details.\n- Add a minimal target-specific reproduction command.\n- Confirm validation behavior on the final PoC.\n- Keep claims limited to the reproduced crash path and observed impact.\n"
+    )
+}
+
+fn build_submission_title(target: &str, triage_crash: &TriageCrashFields) -> String {
+    let crash = crash_label(triage_crash);
+    format!("{target} input triggers {crash} during loader/parser/runtime processing")
+}
+
+fn crash_label(triage_crash: &TriageCrashFields) -> &str {
+    if !triage_crash.signal.is_empty()
+        && triage_crash.signal != "unknown"
+        && triage_crash.signal != "none"
+    {
+        &triage_crash.signal
+    } else if !triage_crash.crash_kind.is_empty()
+        && triage_crash.crash_kind != "unknown"
+        && triage_crash.crash_kind != "none"
+    {
+        &triage_crash.crash_kind
+    } else {
+        "native crash"
+    }
+}
+
+fn poc_path_or_dash(poc: &PocCollection) -> &str {
+    if poc.collected && !poc.path.is_empty() {
+        &poc.path
+    } else {
+        "-"
+    }
+}
+
+fn poc_sha_or_fallback<'a>(poc: &'a PocCollection, fallback: &'a str) -> &'a str {
+    if poc.collected && !poc.sha256.is_empty() {
+        &poc.sha256
+    } else {
+        fallback
+    }
+}
+
+fn markdown_list(lines: &[String]) -> String {
+    if lines.is_empty() {
+        return "- not_available".to_string();
+    }
+    lines
+        .iter()
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn crash_report_excerpt(crash_report: &str) -> String {
+    excerpt_lines(crash_report, 25, 25).join("\n")
+}
+
 struct SeveritySuggestion {
     suggested_severity: &'static str,
     suggested_cvss_vector: &'static str,
@@ -504,6 +607,7 @@ fn write_report_manifest(
 ) -> Result<PathBuf, String> {
     let mut relative_paths = vec![
         "report.md".to_string(),
+        "submission_draft.md".to_string(),
         "repro.sh".to_string(),
         "meta.json".to_string(),
         "crash_report.txt".to_string(),
@@ -553,6 +657,7 @@ fn write_evidence_zip(
 ) -> Result<PathBuf, String> {
     let mut relative_paths = vec![
         "report.md".to_string(),
+        "submission_draft.md".to_string(),
         "repro.sh".to_string(),
         "meta.json".to_string(),
         "crash_report.txt".to_string(),
@@ -1414,7 +1519,10 @@ fn record_manual_review(
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_triage_crash_fields, extract_triage_deep_fields};
+    use super::{
+        build_submission_draft, extract_triage_crash_fields, extract_triage_deep_fields,
+        PocCollection, SeveritySuggestion,
+    };
 
     #[test]
     fn triage_crash_fields_read_top_level_values_with_deep_triage_present() {
@@ -1504,5 +1612,58 @@ mod tests {
         assert_eq!(fields.grouping_confidence, "not_available");
         assert_eq!(fields.grouping_reason, "not_available");
         assert_eq!(fields.evidence_quality, "not_available");
+    }
+
+    #[test]
+    fn submission_draft_contains_target_neutral_sections() {
+        let summary = r#"{
+  "target": "gguf",
+  "crash_kind": "signal",
+  "sanitizer": "none",
+  "signal": "SIGSEGV",
+  "normalized_frame_hash": "abc123def456",
+  "signature_basis": "normalized_frame_hash",
+  "crash_summary": "loader terminated by SIGSEGV"
+}
+"#;
+        let triage_crash = extract_triage_crash_fields(summary);
+        let poc = PocCollection {
+            collected: true,
+            path: "data/reports/report-1/poc/crash.gguf".to_string(),
+            sha256: "61d1c65cde3c8ba65433229f23704f5163708f001664c5a5cced5e28cc202ac8".to_string(),
+            size_bytes: 123,
+            error: String::new(),
+        };
+        let severity = SeveritySuggestion {
+            suggested_severity: "dos_candidate",
+            suggested_cvss_vector: "CVSS:3.1/AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:L",
+            confidence: "low",
+            reason: "signal crash observed",
+        };
+
+        let draft = build_submission_draft(
+            "gguf",
+            "data/crashes/crash.gguf",
+            "inputsha",
+            "data/reports/report-1/poc/crash.gguf",
+            3,
+            60,
+            &triage_crash,
+            &["target_loader_frame".to_string()],
+            "Thread received signal SIGSEGV\n",
+            &poc,
+            &severity,
+        );
+
+        assert!(draft.contains("# Submission Draft"));
+        assert!(draft.contains("`gguf`"));
+        assert!(draft.contains("PASTE_PUBLIC_OR_PRIVATE_POC_URL_HERE"));
+        assert!(draft.contains("## Validation Notes"));
+        assert!(draft.contains("Do not claim format-valid"));
+        assert!(draft.contains("tool triage --target gguf"));
+        assert!(draft.contains("target-specific reproduction command"));
+        assert!(draft.contains("No arbitrary code execution is claimed"));
+        assert!(draft.contains("crash.gguf"));
+        assert!(draft.contains("SIGSEGV"));
     }
 }
