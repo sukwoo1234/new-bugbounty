@@ -17,12 +17,13 @@ TIMEOUT_SEC="${TIMEOUT_SEC:-30}"
 RESTART_LIMIT="${RESTART_LIMIT:-1}"
 SEED_DIR="${SEED_DIR:-${PROJECT_ROOT}/seeds/${TARGET}}"
 MUTATE_COUNT="${MUTATE_COUNT:-50}"
+MUTATE_OPERATORS="${MUTATE_OPERATORS:-}"
 ITERATION_SLEEP_SEC="${ITERATION_SLEEP_SEC:-2}"
 MAX_BATCHES_KEEP="${MAX_BATCHES_KEEP:-2000}"
 MAX_ITERATIONS="${FUZZ_LOOP_MAX_ITERATIONS:-0}"
 
 MUTATED_ROOT="${PROJECT_ROOT}/data/corpus/mutated/${TARGET}"
-TOOL_BIN="${PROJECT_ROOT}/target/release/tool"
+TOOL_BIN="${TOOL_BIN:-${PROJECT_ROOT}/target/release/tool}"
 
 log() {
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] fuzz-loop: $*"
@@ -30,6 +31,17 @@ log() {
 
 cd "${PROJECT_ROOT}"
 mkdir -p "${MUTATED_ROOT}"
+
+MUTATE_ARGS=()
+if [[ -n "${MUTATE_OPERATORS}" ]]; then
+    IFS=',' read -r -a raw_mutate_operators <<< "${MUTATE_OPERATORS}"
+    for raw_operator in "${raw_mutate_operators[@]}"; do
+        operator="${raw_operator//[[:space:]]/}"
+        if [[ -n "${operator}" ]]; then
+            MUTATE_ARGS+=(--operator "${operator}")
+        fi
+    done
+fi
 
 stop_requested=0
 trap 'stop_requested=1; log "SIGTERM received, will exit after current iteration"' TERM INT
@@ -41,7 +53,7 @@ last_iter=$(ls -1 "${MUTATED_ROOT}" 2>/dev/null \
     | tail -1 \
     | sed 's/iter//; s/^0*//')
 iter=${last_iter:-0}
-log "starting fuzz-loop (resume from iter=${iter}, target=${TARGET}, backend=${BACKEND}, workers=${WORKERS})"
+log "starting fuzz-loop (resume from iter=${iter}, target=${TARGET}, backend=${BACKEND}, workers=${WORKERS}, mutate_operators=${MUTATE_OPERATORS:-default})"
 
 while :; do
     if [ "${stop_requested}" = "1" ]; then
@@ -62,7 +74,8 @@ while :; do
         --input-dir "${SEED_DIR}" \
         --out-dir "${batch_dir}" \
         --count "${MUTATE_COUNT}" \
-        --seed "${iter}"
+        --seed "${iter}" \
+        "${MUTATE_ARGS[@]}"
     then
         log "iter=${iter} mutate failed, skipping run"
         rm -rf "${batch_dir}"

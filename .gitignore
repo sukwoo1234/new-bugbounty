@@ -25,3 +25,11 @@ docs/format-scope-roadmap.md
 docs/legacy/
 docs/plans/
 .codex/
+
+# demo recording staging (never commit, delete after filming)
+demo-stage/
+
+# native fuzz harness build artifacts
+/harnesses/libfuzzer/onnxruntime_loader_fuzzer
+/harnesses/libfuzzer/onnxruntime_loader_replay
+/harnesses/aflpp/
