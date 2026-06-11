@@ -8,7 +8,9 @@ ORT_SRC="${ORT_SRC:-$PROJECT_ROOT/data/targets/onnxruntime/$ORT_VER/onnxruntime-
 CONFIG="${CONFIG:-RelWithDebInfo}"
 SRC="${SRC:-$PROJECT_ROOT/harnesses/libfuzzer/onnxruntime_loader_fuzzer.cc}"
 OUT="${OUT:-$PROJECT_ROOT/harnesses/libfuzzer/onnxruntime_loader_fuzzer}"
+STANDALONE_OUT="${STANDALONE_OUT:-$PROJECT_ROOT/harnesses/libfuzzer/onnxruntime_loader_replay}"
 FUZZ_SANITIZERS="${FUZZ_SANITIZERS:-fuzzer}"
+STANDALONE_SANITIZERS="${STANDALONE_SANITIZERS:-}"
 COVERAGE_FLAGS="${COVERAGE_FLAGS:-}"
 CLANG_BUNDLE="$PROJECT_ROOT/data/toolchains/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04/bin/clang++"
 
@@ -73,4 +75,22 @@ echo "out: $OUT"
 echo "so: $SO"
 if [[ "$SO_DIR" == *"/build/cov/"* || "$SO_DIR" == *"/build/cov-o0/"* ]]; then
   echo "note: this ORT build is source-coverage instrumented; native crash capture works, but ORT edge-guided libFuzzer coverage requires a sanitizer-coverage ORT build"
+fi
+
+if [[ "${BUILD_STANDALONE:-0}" == "1" ]]; then
+  mkdir -p "$(dirname "$STANDALONE_OUT")"
+  standalone_sanitize_args=()
+  if [[ -n "$STANDALONE_SANITIZERS" ]]; then
+    standalone_sanitize_args=(-fsanitize="$STANDALONE_SANITIZERS")
+  fi
+  echo "[build-libfuzzer-onnx-native] compiling standalone replay"
+  "$CLANGXX" -std=c++17 -O1 -g \
+    -DONNX_FUZZ_STANDALONE \
+    "${standalone_sanitize_args[@]}" \
+    $COVERAGE_FLAGS \
+    -I"$INCLUDE_DIR" \
+    "$SRC" \
+    -L"$SO_DIR" -lonnxruntime -Wl,-rpath,"$SO_DIR" \
+    -o "$STANDALONE_OUT"
+  echo "standalone_out: $STANDALONE_OUT"
 fi
