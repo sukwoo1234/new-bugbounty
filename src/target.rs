@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::{ExitStatus, Output},
 };
 
 use crate::common::{
@@ -58,6 +59,7 @@ pub(crate) struct LibraryConnectResult {
 pub(crate) enum LibraryConnectOutcome {
     SessionOk,
     Invoked,
+    Crashed,
     Unavailable,
 }
 
@@ -66,6 +68,7 @@ impl LibraryConnectOutcome {
         match self {
             LibraryConnectOutcome::SessionOk => "session_ok",
             LibraryConnectOutcome::Invoked => "invoked",
+            LibraryConnectOutcome::Crashed => "crashed",
             LibraryConnectOutcome::Unavailable => "unavailable",
         }
     }
@@ -254,7 +257,13 @@ pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), Strin
         ));
     }
 
-    let external_step = maybe_run_external_harness(target, input)?;
+    let library_crashed = matches!(library_connect.outcome, LibraryConnectOutcome::Crashed);
+    let library_crash_step = library_connect.step.clone();
+    let external_step = if library_crashed {
+        "skipped because library_connect crashed".to_string()
+    } else {
+        maybe_run_external_harness(target, input)?
+    };
     let report = HarnessReport {
         target: target_label(target),
         input: input.display().to_string(),
@@ -265,6 +274,9 @@ pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), Strin
         external_step,
     };
     print_harness_report(&report);
+    if library_crashed {
+        return Err(format!("library connect crashed: {library_crash_step}"));
+    }
     Ok(())
 }
 
@@ -322,13 +334,12 @@ fn maybe_run_external_harness(target: &TargetKind, input: &Path) -> Result<Strin
         .map_err(|e| format!("external harness command failed: {e}"))?;
 
     if status.success() {
-        Ok(format!("{env_key} executed successfully"))
-    } else {
-        Ok(format!(
-            "{env_key} executed but failed with status {}",
-            status
-        ))
+        return Ok(format!("{env_key} executed successfully"));
     }
+
+    Err(format!(
+        "{env_key} executed but failed with status {status}"
+    ))
 }
 
 // --- Format-specific prechecks ---
@@ -447,6 +458,11 @@ fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
                 if lower.contains("failed to execute") && lower.contains("no such file") {
                     continue;
                 }
+                if let Some(result) =
+                    crashed_connect_result("llama.cpp parser", "invocation", &output)
+                {
+                    return result;
+                }
                 return LibraryConnectResult {
                     step: format!(
                         "llama.cpp parser invoked (non-zero exit: {})",
@@ -500,6 +516,9 @@ except Exception as e:
             }
         }
         Ok(output) => {
+            if let Some(result) = crashed_connect_result("onnxruntime", "loader", &output) {
+                return result;
+            }
             let stdout = String::from_utf8_lossy(&output.stdout);
             if output.status.code() == Some(3) {
                 LibraryConnectResult {
@@ -554,6 +573,9 @@ except Exception as e:
             }
         }
         Ok(output) => {
+            if let Some(result) = crashed_connect_result("safetensors", "loader", &output) {
+                return result;
+            }
             let stdout = String::from_utf8_lossy(&output.stdout);
             if output.status.code() == Some(3) {
                 LibraryConnectResult {
@@ -591,4 +613,95 @@ fn detect_python_bin() -> String {
     }
 
     "python3".to_string()
+}
+
+fn crashed_connect_result(
+    component: &str,
+    action: &str,
+    output: &Output,
+) -> Option<LibraryConnectResult> {
+    let detail = crash_status_detail(&output.status)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Some(LibraryConnectResult {
+        step: format!(
+            "{component} {action} crashed ({detail}; stdout: {}; stderr: {})",
+            first_line(&stdout),
+            first_line(&stderr)
+        ),
+        outcome: LibraryConnectOutcome::Crashed,
+    })
+}
+
+fn crash_status_detail(status: &ExitStatus) -> Option<String> {
+    if let Some(signal_number) = exit_signal(status) {
+        return Some(format!(
+            "{} (signal: {signal_number})",
+            signal_name(signal_number)
+        ));
+    }
+
+    let exit_code = status.code()?;
+    exit_code_signal_name(exit_code).map(|signal| format!("{signal} (exit_code: {exit_code})"))
+}
+
+fn exit_code_signal_name(exit_code: i32) -> Option<&'static str> {
+    match exit_code {
+        132 => Some("SIGILL"),
+        134 => Some("SIGABRT"),
+        135 => Some("SIGBUS"),
+        136 => Some("SIGFPE"),
+        137 => Some("SIGKILL"),
+        139 => Some("SIGSEGV"),
+        143 => Some("SIGTERM"),
+        _ => None,
+    }
+}
+
+fn signal_name(signal_number: i32) -> &'static str {
+    match signal_number {
+        4 => "SIGILL",
+        6 => "SIGABRT",
+        7 => "SIGBUS",
+        8 => "SIGFPE",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        15 => "SIGTERM",
+        _ => "unknown",
+    }
+}
+
+#[cfg(unix)]
+fn exit_signal(status: &ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+#[cfg(not(unix))]
+fn exit_signal(_status: &ExitStatus) -> Option<i32> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{crash_status_detail, exit_code_signal_name};
+
+    #[test]
+    fn detects_128_plus_signal_exit_codes() {
+        assert_eq!(exit_code_signal_name(136), Some("SIGFPE"));
+        assert_eq!(exit_code_signal_name(139), Some("SIGSEGV"));
+        assert_eq!(exit_code_signal_name(2), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detects_unix_signal_status() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let status = std::process::ExitStatus::from_raw(11);
+        assert_eq!(
+            crash_status_detail(&status).as_deref(),
+            Some("SIGSEGV (signal: 11)")
+        );
+    }
 }

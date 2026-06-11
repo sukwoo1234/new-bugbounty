@@ -679,12 +679,19 @@ fn extract_signature_top3(output: &str) -> Vec<String> {
 
 fn contains_stack_hint(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
+    if lower.starts_with("input:") {
+        return false;
+    }
     lower.contains("stack")
         || lower.contains("frame")
         || lower.contains("backtrace")
         || lower.contains("addresssanitizer")
         || lower.contains("segv")
         || lower.contains("sigabrt")
+        || lower.contains("sigbus")
+        || lower.contains("sigfpe")
+        || lower.contains("sigill")
+        || lower.contains("signal:")
         || lower.contains("onnxruntimeerror")
         || lower.contains("load_fail")
 }
@@ -816,13 +823,26 @@ fn extract_crash_summary(output: &str, crash_kind: &str) -> String {
             continue;
         }
         let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("input:") {
+            continue;
+        }
         if lower.contains("summary:")
             || lower.contains("error:")
             || lower.contains("fatal")
             || lower.contains("runtimeerror")
             || lower.contains("load_fail")
-            || lower.contains(crash_kind)
+            || contains_signal_hint(&lower)
         {
+            return trimmed.to_string();
+        }
+    }
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.contains(crash_kind) && !lower.starts_with("input:") {
             return trimmed.to_string();
         }
     }
@@ -832,6 +852,15 @@ fn extract_crash_summary(output: &str, crash_kind: &str) -> String {
         .find(|line| !line.is_empty())
         .unwrap_or("")
         .to_string()
+}
+
+fn contains_signal_hint(lower: &str) -> bool {
+    lower.contains("sigsegv")
+        || lower.contains("sigabrt")
+        || lower.contains("sigbus")
+        || lower.contains("sigfpe")
+        || lower.contains("sigill")
+        || lower.contains("signal:")
 }
 
 fn extract_top_frames(output: &str) -> Vec<String> {
@@ -974,7 +1003,9 @@ fn exit_signal(_status: &ExitStatus) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_deep_triage_metadata, TriageAttempt};
+    use super::{
+        build_deep_triage_metadata, extract_crash_summary, extract_signature_top3, TriageAttempt,
+    };
     use crate::json_utils::{extract_json_number_literal, extract_json_string_literal};
 
     // Backward-compatibility fixture: an old schema_version="1.1" triage summary
@@ -1029,6 +1060,34 @@ mod tests {
         assert_eq!(
             extract_json_number_literal(SCHEMA_1_1_SAMPLE_SUMMARY, "repro_retries").as_deref(),
             Some("3")
+        );
+    }
+
+    #[test]
+    fn sigfpe_summary_prefers_runtime_signal_over_input_path() {
+        let output = "\
+input: /tmp/poc_checker_valid_sigfpe.onnx
+library_step: onnxruntime loader crashed (SIGFPE (signal: 8); stdout: no output; stderr: no output)
+";
+
+        assert_eq!(
+            extract_crash_summary(output, "sigfpe"),
+            "library_step: onnxruntime loader crashed (SIGFPE (signal: 8); stdout: no output; stderr: no output)"
+        );
+    }
+
+    #[test]
+    fn sigfpe_signal_line_is_signature_hint() {
+        let output = "\
+input: /tmp/poc_checker_valid_sigfpe.onnx
+[harness] done
+target: onnx
+library_step: onnxruntime loader crashed (SIGFPE (signal: 8); stdout: no output; stderr: no output)
+";
+
+        assert_eq!(
+            extract_signature_top3(output).first().map(String::as_str),
+            Some("library_step: onnxruntime loader crashed (SIGFPE (signal: 8); stdout: no output; stderr: no output)")
         );
     }
 

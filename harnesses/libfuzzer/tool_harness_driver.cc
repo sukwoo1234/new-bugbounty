@@ -1,7 +1,9 @@
 #include <atomic>
+#include <csignal>
 #include <cstdlib>
 #include <fstream>
 #include <string>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace {
@@ -47,8 +49,15 @@ extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, size_t size) {
       shell_escape(tool_bin) + " harness --target " + shell_escape(target) +
       " --input " + shell_escape(input_path) + " >/dev/null 2>&1";
   const int rc = std::system(cmd.c_str());
-  (void)rc;
-
   std::remove(input_path.c_str());
+  if (rc == -1) {
+    std::abort();
+  }
+  if (WIFSIGNALED(rc)) {
+    std::raise(WTERMSIG(rc));
+  }
+  if (!WIFEXITED(rc) || WEXITSTATUS(rc) != 0) {
+    std::abort();
+  }
   return 0;
 }
