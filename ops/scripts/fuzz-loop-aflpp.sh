@@ -4,9 +4,9 @@
 # and the libfuzzer (Arm B) ops pair ops/scripts/fuzz-loop-libfuzzer.sh / ops/systemd/tool-fuzz-onnx-libfuzzer.service.
 #
 # Difference vs ops/scripts/fuzz-loop-libfuzzer.sh (Arm B):
-#   - AFL++ runs as a hardened Docker container (aflplusplus/aflplusplus) in `-n` dumb/black-box mode.
-#     The container drives the uninstrumented `tool harness` against @@ inputs — onnxruntime is NOT
-#     instrumented (same black-box framing as the libfuzzer driver). No native afl-fuzz install needed.
+#   - AFL++ runs as a hardened Docker container (aflplusplus/aflplusplus).
+#     If harnesses/aflpp/onnxruntime_loader_replay exists, AFL++ drives that native ONNX binary
+#     without `-n`; otherwise it falls back to `-n` dumb/black-box mode over `tool harness`.
 #   - TOOL_AFLPP_CMD env var must be set; this wrapper exports the hardened template (matches
 #     scripts/run_long.sh aflpp leg + docs/specs.md §Docker hardening). run.rs substitutes the
 #     {docker_*}/{workdir_abs}/{corpus_dir_abs}/{run_dir_abs}/{container_*} placeholders at run time.
@@ -58,7 +58,15 @@ AFLPP_RUN_SUMMARY_ROOT="${AFLPP_RUN_SUMMARY_ROOT:-$(canonical_path "${PROJECT_RO
 AFLPP_ARCHIVE_MAX_CRASH_FILES="${AFLPP_ARCHIVE_MAX_CRASH_FILES:-200}"
 
 # In-container target binary path (relative to {container_workdir}=/work).
+AFLPP_CONTAINER_TOOL_WAS_SET="${AFLPP_CONTAINER_TOOL+x}"
 AFLPP_CONTAINER_TOOL="${AFLPP_CONTAINER_TOOL:-target/release/tool}"
+AFLPP_NATIVE_ONNX_DRIVER="harnesses/aflpp/onnxruntime_loader_replay"
+AFLPP_NATIVE_ONNX_MODE=0
+if [ -z "${AFLPP_CONTAINER_TOOL_WAS_SET}" ] && [ "${TARGET}" = "onnx" ] && [ -x "${PROJECT_ROOT}/${AFLPP_NATIVE_ONNX_DRIVER}" ]; then
+    AFLPP_CONTAINER_TOOL="${AFLPP_NATIVE_ONNX_DRIVER}"
+    AFLPP_NATIVE_ONNX_MODE=1
+fi
+ONNX_AFLPP_LD_LIBRARY_PATH="{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/Linux/Release:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov-o0/RelWithDebInfo:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov/RelWithDebInfo"
 
 TOOL_BIN="${PROJECT_ROOT}/target/release/tool"
 
@@ -223,7 +231,11 @@ mark_latest_aflpp_run() {
 #   {docker_hardening_flags}= --network none --memory 4g --cpus 2 --pids-limit 512
 #   {docker_readonly_flags} = --read-only --tmpfs /tmp:rw,size=1g --tmpfs /dev/shm:rw,size=1g
 #   {workdir_abs}/{corpus_dir_abs}/{run_dir_abs} = host mounts; {container_*} = in-container paths
-export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"afl-fuzz -n -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/${AFLPP_CONTAINER_TOOL} harness --target ${TARGET} --input @@ >/dev/null 2>&1\""
+if [ "${AFLPP_NATIVE_ONNX_MODE}" = "1" ]; then
+    export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"LD_LIBRARY_PATH=${ONNX_AFLPP_LD_LIBRARY_PATH}:\\\$LD_LIBRARY_PATH afl-fuzz -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/${AFLPP_CONTAINER_TOOL} @@ >/dev/null 2>&1\""
+else
+    export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"afl-fuzz -n -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/${AFLPP_CONTAINER_TOOL} harness --target ${TARGET} --input @@ >/dev/null 2>&1\""
+fi
 
 iter=0
 log "starting aflpp loop (target=${TARGET}, workers=${WORKERS}, container_tool=${AFLPP_CONTAINER_TOOL}, corpus=${CORPUS_DIR})"
