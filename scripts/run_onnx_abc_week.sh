@@ -27,6 +27,7 @@ Options:
   --restart-limit <n>             Default: 1
   --mutate-count <n>              Default: 50
   --mutate-operators <ops>        Default: aggressive
+  --max-local-batches-keep <n>    Default: 20; 0 disables Arm A corpus cleanup
   --libfuzzer-max-total-time <n>  Default: 30
   --monitor-interval-sec <n>      Default: 300
   --min-free-gb <n>               Default: 50
@@ -51,6 +52,7 @@ TIMEOUT_SEC="30"
 RESTART_LIMIT="1"
 MUTATE_COUNT="50"
 MUTATE_OPERATORS="aggressive"
+MAX_LOCAL_BATCHES_KEEP="20"
 LIBFUZZER_MAX_TOTAL_TIME="30"
 MONITOR_INTERVAL_SEC="300"
 MIN_FREE_GB="50"
@@ -73,6 +75,7 @@ while [[ $# -gt 0 ]]; do
     --restart-limit) RESTART_LIMIT="${2:-}"; shift 2 ;;
     --mutate-count) MUTATE_COUNT="${2:-}"; shift 2 ;;
     --mutate-operators) MUTATE_OPERATORS="${2:-}"; shift 2 ;;
+    --max-local-batches-keep) MAX_LOCAL_BATCHES_KEEP="${2:-}"; shift 2 ;;
     --libfuzzer-max-total-time) LIBFUZZER_MAX_TOTAL_TIME="${2:-}"; shift 2 ;;
     --monitor-interval-sec) MONITOR_INTERVAL_SEC="${2:-}"; shift 2 ;;
     --min-free-gb) MIN_FREE_GB="${2:-}"; shift 2 ;;
@@ -113,6 +116,7 @@ require_uint "--workers-aflpp" "$WORKERS_AFLPP" 1
 require_uint "--timeout-sec" "$TIMEOUT_SEC" 1
 require_uint "--restart-limit" "$RESTART_LIMIT" 0
 require_uint "--mutate-count" "$MUTATE_COUNT" 1
+require_uint "--max-local-batches-keep" "$MAX_LOCAL_BATCHES_KEEP" 0
 require_uint "--libfuzzer-max-total-time" "$LIBFUZZER_MAX_TOTAL_TIME" 1
 require_uint "--monitor-interval-sec" "$MONITOR_INTERVAL_SEC" 1
 require_uint "--min-free-gb" "$MIN_FREE_GB" 0
@@ -221,6 +225,7 @@ write_manifest() {
   "restart_limit": $RESTART_LIMIT,
   "mutate_count": $MUTATE_COUNT,
   "mutate_operators": "$(json_escape "$MUTATE_OPERATORS")",
+  "max_local_batches_keep": $MAX_LOCAL_BATCHES_KEEP,
   "libfuzzer_max_total_time": $LIBFUZZER_MAX_TOTAL_TIME,
   "arms": [
     {"arm": "A", "backend": "local-harness", "workers": $WORKERS_LOCAL, "notes": "aggressive ONNX mutation loop"},
@@ -329,7 +334,36 @@ run_local_block() {
     then
       log "Arm A local block=${block_index} iter=${iter} run failed; continuing"
     fi
+    cleanup_old_local_batches "$mutated_root"
   done
+}
+
+cleanup_old_local_batches() {
+  local mutated_root="$1"
+  local batch_count
+  local excess
+  local old_batches=()
+  local old_batch
+
+  if [[ "$MAX_LOCAL_BATCHES_KEEP" -eq 0 ]]; then
+    return 0
+  fi
+  [[ -d "$mutated_root" ]] || return 0
+
+  batch_count="$(find "$mutated_root" -mindepth 1 -maxdepth 1 -type d -name 'batch-*' | wc -l | tr -d ' ')"
+  if [[ "$batch_count" -le "$MAX_LOCAL_BATCHES_KEEP" ]]; then
+    return 0
+  fi
+
+  excess=$((batch_count - MAX_LOCAL_BATCHES_KEEP))
+  mapfile -t old_batches < <(find "$mutated_root" -mindepth 1 -maxdepth 1 -type d -name 'batch-*' -printf '%T@\t%p\n' \
+    | sort -n \
+    | head -n "$excess" \
+    | cut -f2-)
+  for old_batch in "${old_batches[@]}"; do
+    rm -rf "$old_batch"
+  done
+  log "Arm A local cleanup: removed ${excess} old batch(es), kept newest ${MAX_LOCAL_BATCHES_KEEP}"
 }
 
 run_libfuzzer_block() {
