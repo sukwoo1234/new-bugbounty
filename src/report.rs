@@ -1163,7 +1163,13 @@ fn single_line_excerpt(input: &str, max_len: usize) -> String {
     if compact.len() <= max_len {
         compact
     } else {
-        format!("{}...", &compact[..max_len])
+        // Truncate at the largest char boundary <= max_len so multibyte subprocess
+        // output (accents/CJK/emoji) cannot panic on a mid-character byte slice.
+        let mut end = max_len;
+        while end > 0 && !compact.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &compact[..end])
     }
 }
 
@@ -1521,8 +1527,22 @@ fn record_manual_review(
 mod tests {
     use super::{
         build_submission_draft, extract_triage_crash_fields, extract_triage_deep_fields,
-        PocCollection, SeveritySuggestion,
+        single_line_excerpt, PocCollection, SeveritySuggestion,
     };
+
+    #[test]
+    fn single_line_excerpt_truncates_multibyte_on_char_boundary_without_panicking() {
+        // A7 regression: byte max_len can land inside a multibyte char (subprocess
+        // error text with accents/CJK/emoji). Slicing at a raw byte index panics and
+        // aborts the whole report run, losing evidence for a real crash.
+        let input = "é".repeat(200); // each 'é' is 2 bytes; odd byte indices are mid-char
+        let out = single_line_excerpt(&input, 5);
+        let body = out
+            .strip_suffix("...")
+            .expect("over-long input must be truncated with an ellipsis");
+        assert!(body.len() <= 5, "truncated body {} bytes exceeds max", body.len());
+        assert!(body.chars().all(|c| c == 'é'), "body must contain only whole chars: {body}");
+    }
 
     #[test]
     fn triage_crash_fields_read_top_level_values_with_deep_triage_present() {
