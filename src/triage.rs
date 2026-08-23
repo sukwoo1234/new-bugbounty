@@ -950,10 +950,15 @@ fn contains_timeout(output: &str) -> bool {
 
 fn contains_oom(output: &str) -> bool {
     let lower = output.to_ascii_lowercase();
+    // Match only explicit OOM markers. Bare "oom"/"killed" substrings appear in
+    // benign input paths (e.g. bloom-560m.onnx) and non-OOM crash text, so matching
+    // them would discard real crashes as infra_oom. exit_code==137 is handled by the
+    // caller; here we rely on the harness-injected marker and the kernel OOM lines.
     lower.contains("infra_oom")
         || lower.contains("out of memory")
-        || lower.contains("oom")
-        || lower.contains("killed")
+        || lower.contains("oom-killer")
+        || lower.contains("oom killer")
+        || lower.contains("killed process")
 }
 
 fn stable_hash_hex(input: &str) -> String {
@@ -1004,7 +1009,8 @@ fn exit_signal(_status: &ExitStatus) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_deep_triage_metadata, extract_crash_summary, extract_signature_top3, TriageAttempt,
+        build_deep_triage_metadata, contains_oom, extract_crash_summary, extract_signature_top3,
+        parse_crash_log, TriageAttempt,
     };
     use crate::json_utils::{extract_json_number_literal, extract_json_string_literal};
 
@@ -1089,6 +1095,43 @@ library_step: onnxruntime loader crashed (SIGFPE (signal: 8); stdout: no output;
             extract_signature_top3(output).first().map(String::as_str),
             Some("library_step: onnxruntime loader crashed (SIGFPE (signal: 8); stdout: no output; stderr: no output)")
         );
+    }
+
+    #[test]
+    fn contains_oom_ignores_bare_oom_and_killed_substrings() {
+        // A1 regression: a benign input path (BLOOM is a real model family) contains
+        // the trigram "oom", and non-OOM crash text can contain "killed"; neither must
+        // be mistaken for an out-of-memory event (which would discard a real crash).
+        assert!(!contains_oom("input: /data/models/bloom-560m.onnx"));
+        assert!(!contains_oom(
+            "library_step: onnxruntime loader crashed; process was killed by signal 11"
+        ));
+    }
+
+    #[test]
+    fn contains_oom_matches_explicit_oom_markers() {
+        assert!(contains_oom("infra_oom:exit_137\ninput: /tmp/x.onnx"));
+        assert!(contains_oom("terminate: Out of memory"));
+        assert!(contains_oom("Out of memory: Killed process 1234 (python3)"));
+        assert!(contains_oom("python invoked oom-killer: gfp_mask=0x100"));
+    }
+
+    #[test]
+    fn crash_with_oom_in_input_path_is_not_infra_oom() {
+        // A1 impact: a real SIGSEGV whose input path merely contains "oom" must be
+        // classified as the real crash, not silently downgraded to infra_oom.
+        let parsed = parse_crash_log(
+            "input: /data/models/bloom-560m.onnx\n\
+library_step: onnxruntime loader crashed (SIGSEGV (signal: 11); stdout: no output; stderr: no output)\n",
+            Some(4),
+            Some(11),
+            "crashed",
+        );
+        assert!(
+            !parsed.infra_oom,
+            "benign 'oom' in the input path must not be classified as infra_oom"
+        );
+        assert_ne!(parsed.crash_kind, "infra_oom");
     }
 
     #[test]
