@@ -317,6 +317,7 @@ pub(crate) enum ParseError {
     TensorMissingField(&'static str),
     DataOffsetsNotPair,
     ShapeNotArray,
+    JsonNestingTooDeep,
 }
 
 impl std::fmt::Display for ParseError {
@@ -342,6 +343,7 @@ impl std::fmt::Display for ParseError {
                 write!(f, "safetensors data_offsets is not a 2-element array")
             }
             Self::ShapeNotArray => write!(f, "safetensors shape is not an array"),
+            Self::JsonNestingTooDeep => write!(f, "safetensors json nesting exceeds depth limit"),
         }
     }
 }
@@ -485,6 +487,8 @@ pub(crate) fn parse_safetensors(bytes: &[u8]) -> Result<SafetensorsLayout, Parse
         metadata,
     })
 }
+
+const MAX_JSON_NESTING_DEPTH: usize = 64;
 
 struct JsonWalker<'a> {
     src: &'a str,
@@ -733,6 +737,15 @@ impl<'a> JsonWalker<'a> {
     }
 
     fn skip_value(&mut self) -> Result<(), ParseError> {
+        self.skip_value_depth(0)
+    }
+
+    fn skip_value_depth(&mut self, depth: usize) -> Result<(), ParseError> {
+        // safetensors headers are flat (tensor objects one level deep); a small cap
+        // stops crafted deeply-nested '['/'{' from exhausting the stack (A6).
+        if depth > MAX_JSON_NESTING_DEPTH {
+            return Err(ParseError::JsonNestingTooDeep);
+        }
         self.skip_whitespace();
         match self.peek() {
             Some(b'"') => {
@@ -756,7 +769,7 @@ impl<'a> JsonWalker<'a> {
                     let _ = self.parse_string()?;
                     self.skip_whitespace();
                     self.expect(b':')?;
-                    self.skip_value()?;
+                    self.skip_value_depth(depth + 1)?;
                 }
             }
             Some(b'[') => {
@@ -773,7 +786,7 @@ impl<'a> JsonWalker<'a> {
                         self.skip_whitespace();
                     }
                     first = false;
-                    self.skip_value()?;
+                    self.skip_value_depth(depth + 1)?;
                 }
             }
             Some(b't') | Some(b'f') | Some(b'n') => {
@@ -857,6 +870,20 @@ pub(crate) mod test_fixtures {
 mod tests {
     use super::test_fixtures::{build_minimal_safetensors, build_safetensors_with_metadata};
     use super::*;
+
+    #[test]
+    fn skip_value_rejects_deeply_nested_json() {
+        // A6 regression: unbounded recursion on nested '['/'{' lets a crafted header
+        // overflow the stack (SIGABRT) before any bounds check. Must be a clean error.
+        let depth = 500usize;
+        let json = format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+        let mut walker = JsonWalker::new(&json, 0);
+        let result = walker.skip_value();
+        assert!(
+            matches!(result, Err(ParseError::JsonNestingTooDeep)),
+            "deeply nested json must be rejected with JsonNestingTooDeep"
+        );
+    }
 
     #[test]
     fn parse_minimal_safetensors_succeeds() {
