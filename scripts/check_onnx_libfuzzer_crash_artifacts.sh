@@ -85,6 +85,13 @@ fi
 log "build native libFuzzer harness"
 "$PROJECT_ROOT/scripts/build_libfuzzer_onnx_native.sh" >/tmp/onnx-libfuzzer-artifact-build.log
 
+# A11 guard: never wipe a caller-supplied DATA_DIR that is not the dedicated scratch
+# dir. Exporting DATA_DIR=<real data root> for a fuzzing session is a documented
+# convention, and an unguarded `rm -rf "$DATA_DIR"` would delete the entire data tree.
+case "$DATA_DIR" in
+  */onnx-libfuzzer-artifact-check | */onnx-libfuzzer-artifact-check/) : ;;
+  *) fail "refusing to wipe DATA_DIR='$DATA_DIR': must be a dedicated onnx-libfuzzer-artifact-check scratch dir (unset DATA_DIR or point it at one)" ;;
+esac
 rm -rf "$DATA_DIR"
 mkdir -p "$DATA_DIR"
 corpus_dir="$(mktemp -d "$DATA_DIR/corpus.XXXXXX")"
