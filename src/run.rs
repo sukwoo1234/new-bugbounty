@@ -144,6 +144,9 @@ pub(crate) fn run_fuzz_pipeline(
     let logs_dir = run_dir.join("logs");
     fs::create_dir_all(&logs_dir)
         .map_err(|e| format!("failed to create run log dir '{}': {e}", logs_dir.display()))?;
+    // A10: durable home for crashing/hanging reproducers, outside the mutation batch
+    // dir that retention prunes. Created lazily on the first failed/timeout job.
+    let crash_inputs_dir = run_dir.join("crash-inputs");
 
     let jobs = inputs
         .into_iter()
@@ -180,6 +183,7 @@ pub(crate) fn run_fuzz_pipeline(
         let queue = Arc::clone(&queue);
         let stats = Arc::clone(&stats);
         let logs_dir = logs_dir.clone();
+        let crash_inputs_dir = crash_inputs_dir.clone();
         let target = target.clone();
 
         handles.push(thread::spawn(move || {
@@ -212,10 +216,28 @@ pub(crate) fn run_fuzz_pipeline(
                 if is_session_ok {
                     s.library_session_ok += 1;
                 }
-                match result {
-                    HarnessExecResult::Success(_) => s.success += 1,
-                    HarnessExecResult::Failed(_) => s.failed += 1,
-                    HarnessExecResult::Timeout(_) => s.timeout += 1,
+                let persist_reproducer = match result {
+                    HarnessExecResult::Success(_) => {
+                        s.success += 1;
+                        false
+                    }
+                    HarnessExecResult::Failed(_) => {
+                        s.failed += 1;
+                        true
+                    }
+                    HarnessExecResult::Timeout(_) => {
+                        s.timeout += 1;
+                        true
+                    }
+                };
+                drop(s);
+                if persist_reproducer {
+                    if let Err(e) = persist_crash_input(&crash_inputs_dir, job.id, &job.input) {
+                        eprintln!(
+                            "[run] warning: failed to persist reproducer for {}: {e}",
+                            job.input.display()
+                        );
+                    }
                 }
             }
             Ok(())
@@ -791,6 +813,25 @@ fn run_job_with_retry(
     Ok((last, retries_used, last_session_ok))
 }
 
+// A10: local-harness runs record only counters; a crashing/hanging input still lives
+// only in the mutation batch dir, which retention prunes. Copy it into the durable
+// run dir so the reproducer survives to be triaged/reported.
+fn persist_crash_input(
+    crash_inputs_dir: &Path,
+    job_id: usize,
+    input: &Path,
+) -> std::io::Result<PathBuf> {
+    fs::create_dir_all(crash_inputs_dir)?;
+    let name = input
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("input");
+    // job_id keeps the name unique within a run and preserves provenance.
+    let dest = crash_inputs_dir.join(format!("job-{job_id:06}-{name}"));
+    fs::copy(input, &dest)?;
+    Ok(dest)
+}
+
 pub(crate) fn execute_harness_subprocess(
     job: &RunJob,
     target: &TargetKind,
@@ -916,12 +957,38 @@ fn write_run_status(
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_backend_crash_artifacts, RunBackend};
+    use super::{collect_backend_crash_artifacts, persist_crash_input, RunBackend};
     use std::{
         fs,
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn persist_crash_input_survives_batch_dir_deletion() {
+        // A10: a local-harness crashing input must be copied into run_dir/crash-inputs/
+        // so the reproducer survives when mutation-batch retention prunes the batch dir.
+        let root = unique_temp_dir("a10-persist");
+        let batch = root.join("batch-000");
+        fs::create_dir_all(&batch).expect("create batch dir");
+        let input = batch.join("crash.onnx");
+        fs::write(&input, b"crashing-onnx-bytes").expect("write input");
+
+        let crash_dir = root.join("run-x").join("crash-inputs");
+        let dest = persist_crash_input(&crash_dir, 7, &input).expect("persist");
+
+        // simulate mutation-batch retention deleting the whole batch dir
+        fs::remove_dir_all(&batch).expect("prune batch");
+
+        assert!(dest.exists(), "reproducer must survive batch deletion");
+        assert_eq!(fs::read(&dest).expect("read dest"), b"crashing-onnx-bytes");
+        assert!(dest
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.contains("crash.onnx")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn collects_aflpp_crash_files_without_readme() {
