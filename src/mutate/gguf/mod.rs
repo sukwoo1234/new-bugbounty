@@ -352,6 +352,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn skip_value_rejects_deeply_nested_arrays() {
+        // A5 regression: an Array-of-Array chain with no depth limit drives unbounded
+        // recursion (stack overflow / SIGABRT). parse_gguf calls skip_value for every
+        // metadata value, so a crafted seed must yield a clean parse error, not a crash.
+        let levels = 500usize;
+        let mut payload = Vec::new();
+        for i in 0..levels {
+            if i + 1 < levels {
+                payload.extend_from_slice(&(GgufValueType::Array as u32).to_le_bytes());
+                payload.extend_from_slice(&1u64.to_le_bytes());
+            } else {
+                // innermost: an empty scalar array terminates the chain.
+                payload.extend_from_slice(&(GgufValueType::U8 as u32).to_le_bytes());
+                payload.extend_from_slice(&0u64.to_le_bytes());
+            }
+        }
+        let result = skip_value(&payload, 0, GgufValueType::Array);
+        assert!(
+            matches!(result, Err(ParseError::NestingTooDeep)),
+            "deeply nested arrays must be rejected with NestingTooDeep"
+        );
+    }
+
+    #[test]
     fn parse_minimal_gguf_succeeds() {
         let bytes = build_minimal_gguf();
         let layout = parse_gguf(&bytes).expect("minimal fixture must parse");
@@ -540,6 +564,7 @@ pub(crate) enum ParseError {
     InvalidValueType(u32),
     OversizedCount(&'static str),
     InvalidUtf8,
+    NestingTooDeep,
 }
 
 impl std::fmt::Display for ParseError {
@@ -554,6 +579,7 @@ impl std::fmt::Display for ParseError {
             Self::InvalidValueType(v) => write!(f, "gguf invalid value_type {}", v),
             Self::OversizedCount(where_) => write!(f, "gguf oversized count at {}", where_),
             Self::InvalidUtf8 => write!(f, "gguf string is not valid utf-8"),
+            Self::NestingTooDeep => write!(f, "gguf array nesting exceeds depth limit"),
         }
     }
 }
@@ -786,7 +812,23 @@ pub(crate) fn parse_gguf(bytes: &[u8]) -> Result<GgufLayout, ParseError> {
     })
 }
 
+// GGUF metadata arrays are flat in practice; a small cap prevents a crafted
+// Array-of-Array chain from exhausting the stack during parse (A5).
+const MAX_VALUE_NESTING_DEPTH: usize = 64;
+
 fn skip_value(bytes: &[u8], start: usize, value_type: GgufValueType) -> Result<usize, ParseError> {
+    skip_value_depth(bytes, start, value_type, 0)
+}
+
+fn skip_value_depth(
+    bytes: &[u8],
+    start: usize,
+    value_type: GgufValueType,
+    depth: usize,
+) -> Result<usize, ParseError> {
+    if depth > MAX_VALUE_NESTING_DEPTH {
+        return Err(ParseError::NestingTooDeep);
+    }
     if let Some(scalar) = value_type.scalar_size() {
         let end = start
             .checked_add(scalar)
@@ -828,7 +870,7 @@ fn skip_value(bytes: &[u8], start: usize, value_type: GgufValueType) -> Result<u
                 .map_err(|_| ParseError::OversizedCount("value:array_count"))?;
             let mut cursor = after_count;
             for _ in 0..count_usize {
-                cursor = skip_value(bytes, cursor, elem_type)?;
+                cursor = skip_value_depth(bytes, cursor, elem_type, depth + 1)?;
             }
             Ok(cursor)
         }
