@@ -704,4 +704,56 @@ mod tests {
             Some("SIGSEGV (signal: 11)")
         );
     }
+
+    // G1 regression: protect the crash-propagation fix (commit 0a0b475). A library
+    // subprocess killed by a signal must be classified as a crash, and run_harness
+    // must surface it as Err rather than a silent clean EXIT:0. Both tests are
+    // self-contained: no private PoC and no real onnxruntime.
+    #[cfg(unix)]
+    #[test]
+    fn signal_killed_library_output_is_classified_as_crashed() {
+        use super::{crashed_connect_result, LibraryConnectOutcome};
+        use std::os::unix::process::ExitStatusExt;
+
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(11), // WIFSIGNALED, SIGSEGV
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        let result = crashed_connect_result("onnxruntime", "loader", &output)
+            .expect("a signal-killed library subprocess must be classified as a crash");
+        assert!(matches!(result.outcome, LibraryConnectOutcome::Crashed));
+        assert!(result.step.contains("SIGSEGV"), "step was: {}", result.step);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_harness_returns_err_when_library_subprocess_is_signal_killed() {
+        use super::{run_harness, TargetKind};
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("tool-g1-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Stand-in for the onnxruntime probe: dies by SIGSEGV instead of loading.
+        let script = dir.join("segv_python.sh");
+        {
+            let mut f = std::fs::File::create(&script).unwrap();
+            writeln!(f, "#!/bin/sh\nkill -SEGV \"$$\"").unwrap();
+        }
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let input = dir.join("sample.onnx");
+        std::fs::write(&input, b"not-a-real-onnx-but-non-empty").unwrap();
+
+        std::env::set_var("TOOL_PYTHON_BIN", &script);
+        std::env::remove_var("TOOL_ONNX_HARNESS_CMD");
+        let result = run_harness(&TargetKind::Onnx, &input);
+        std::env::remove_var("TOOL_PYTHON_BIN");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let err = result.expect_err(
+            "a signal-killed library subprocess must make run_harness return Err, not Ok",
+        );
+        assert!(err.contains("crash"), "err was: {err}");
+    }
 }
