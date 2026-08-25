@@ -125,19 +125,25 @@ pub(crate) fn output_with_deadline(
     let stdout_path = std::env::temp_dir().join(format!("{unique}.out"));
     let stderr_path = std::env::temp_dir().join(format!("{unique}.err"));
 
-    let spawned = cmd
+    let result = run_to_deadline(&mut cmd, deadline, &stdout_path, &stderr_path);
+
+    // always reclaim the capture files, including on an early error return
+    let _ = fs::remove_file(&stdout_path);
+    let _ = fs::remove_file(&stderr_path);
+    result
+}
+
+fn run_to_deadline(
+    cmd: &mut Command,
+    deadline: Duration,
+    stdout_path: &Path,
+    stderr_path: &Path,
+) -> std::io::Result<(Output, bool)> {
+    let mut child = cmd
         .stdin(Stdio::null())
-        .stdout(Stdio::from(fs::File::create(&stdout_path)?))
-        .stderr(Stdio::from(fs::File::create(&stderr_path)?))
-        .spawn();
-    let mut child = match spawned {
-        Ok(child) => child,
-        Err(e) => {
-            let _ = fs::remove_file(&stdout_path);
-            let _ = fs::remove_file(&stderr_path);
-            return Err(e);
-        }
-    };
+        .stdout(Stdio::from(create_capture_file(stdout_path)?))
+        .stderr(Stdio::from(create_capture_file(stderr_path)?))
+        .spawn()?;
 
     let started = Instant::now();
     let mut timed_out = false;
@@ -153,19 +159,23 @@ pub(crate) fn output_with_deadline(
         thread::sleep(Duration::from_millis(20));
     };
 
-    let stdout = fs::read(&stdout_path).unwrap_or_default();
-    let stderr = fs::read(&stderr_path).unwrap_or_default();
-    let _ = fs::remove_file(&stdout_path);
-    let _ = fs::remove_file(&stderr_path);
-
     Ok((
         Output {
             status,
-            stdout,
-            stderr,
+            stdout: fs::read(stdout_path).unwrap_or_default(),
+            stderr: fs::read(stderr_path).unwrap_or_default(),
         },
         timed_out,
     ))
+}
+
+// create_new refuses an existing path, so a pre-planted symlink in a shared /tmp cannot
+// redirect the capture into someone else's file.
+fn create_capture_file(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
 }
 
 /// A29: under GNU coreutils `timeout 0s` means "no limit", so a zero budget silently
