@@ -1,7 +1,8 @@
 use std::{fs, path::Path, process::ExitStatus};
 
 use crate::common::{
-    command_exists, command_with_core_dump_off, now_unix, now_unix_millis, AppPaths,
+    command_exists, command_with_core_dump_off, now_unix, now_unix_millis, output_with_deadline,
+    validate_timeout_sec, AppPaths,
 };
 use crate::json_utils::json_escape;
 use crate::metrics::MetricEvent;
@@ -60,6 +61,8 @@ pub(crate) fn run_triage_pipeline(
     if repro_retries == 0 {
         return Err("repro_retries must be >= 1".to_string());
     }
+    // A29: `timeout 0s` means "no limit", so a zero budget silently unbounded every attempt.
+    let timeout_sec = validate_timeout_sec(timeout_sec)?;
 
     let triage_id = now_unix_millis();
     let triage_dir = app_paths
@@ -539,16 +542,24 @@ fn execute_triage_subprocess(
         .env("NUMEXPR_NUM_THREADS", "1")
         .env("VECLIB_MAXIMUM_THREADS", "1");
 
-    let out = cmd
-        .output()
-        .map_err(|e| format!("failed to execute triage subprocess: {e}"))?;
+    // A38: same hole as A9 in the run pipeline - without the `timeout` binary the
+    // harness child ran unbounded and a hanging input blocked triage forever.
+    let (out, timed_out) = if timeout_available {
+        let out = cmd
+            .output()
+            .map_err(|e| format!("failed to execute triage subprocess: {e}"))?;
+        let timed_out = out.status.code() == Some(124);
+        (out, timed_out)
+    } else {
+        output_with_deadline(cmd, timeout_sec)
+            .map_err(|e| format!("failed to execute triage subprocess: {e}"))?
+    };
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let mut merged = format!("{}\n{}", stdout, stderr);
     let exit_code = out.status.code();
     let signal = exit_signal(&out.status);
 
-    let timed_out = timeout_available && exit_code == Some(124);
     let result = classify_harness_exit(out.status.success(), exit_code, timed_out);
 
     // OOM 137 triage 분기(DoS vs 인프라): v1은 infra_oom 힌트를 붙여 후속 triage/report에서 구분 가능하게 남긴다.
@@ -1738,6 +1749,31 @@ onnxruntimeerror: invalid model graph\n",
             timeout: false,
             infra_oom: false,
         }
+    }
+
+    // A29: a zero timeout budget disables the bound instead of tightening it.
+    #[test]
+    fn triage_pipeline_rejects_a_zero_timeout() {
+        use super::run_triage_pipeline;
+        use crate::common::AppPaths;
+        use crate::target::TargetKind;
+
+        let root = std::env::temp_dir().join(format!(
+            "tool-a29-triage-{}-{}",
+            std::process::id(),
+            crate::common::now_unix_millis()
+        ));
+        let seeds = root.join("seeds");
+        std::fs::create_dir_all(&seeds).expect("create seeds dir");
+        let input = seeds.join("case.onnx");
+        std::fs::write(&input, b"bytes").expect("write input");
+        let paths = AppPaths::prepare(&root.join("data"), &seeds).expect("prepare paths");
+
+        let err = run_triage_pipeline(&paths, &TargetKind::Onnx, &input, 1, 0)
+            .expect_err("timeout_sec=0 must be rejected");
+
+        assert!(err.contains("timeout_sec"), "err was: {err}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // G3: exit code 4 means the library crashed; a benign harness-side rejection

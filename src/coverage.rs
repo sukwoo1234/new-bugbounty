@@ -1,7 +1,8 @@
 use std::{fs, path::Path, process::Command};
 
 use crate::common::{
-    artifact_contract, command_exists, now_unix, now_unix_millis, AppPaths, HarnessExecResult,
+    artifact_contract, command_exists, now_unix, now_unix_millis, validate_timeout_sec, AppPaths,
+    HarnessExecResult,
 };
 use crate::json_utils::{extract_json_string_literal, extract_json_u64_field, json_escape};
 use crate::run::{execute_harness_subprocess, write_job_log, RunJob};
@@ -14,6 +15,9 @@ pub(crate) fn run_coverage_job(
     timeout_sec: u64,
     max_jobs: Option<usize>,
 ) -> Result<(), String> {
+    // A29: same zero-budget hole as the run pipeline.
+    let timeout_sec = validate_timeout_sec(timeout_sec)?;
+
     let artifact = artifact_contract(app_paths);
     let corpus_dir = match corpus_dir {
         Some(path) => path.to_path_buf(),

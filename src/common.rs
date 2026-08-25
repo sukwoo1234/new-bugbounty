@@ -1,8 +1,10 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    process::{Command, Output, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub(crate) struct AppPaths {
@@ -95,6 +97,84 @@ pub(crate) fn command_with_core_dump_off(program: &str) -> Command {
 // Err(NotFound), so callers must recognise the wrapper's own failure sentinel.
 pub(crate) fn is_core_dump_wrapper_exec_failure(exit_code: Option<i32>, stderr: &str) -> bool {
     matches!(exit_code, Some(126) | Some(127)) && stderr.contains("prlimit: failed to execute")
+}
+
+/// A9/A38: enforce `timeout_sec` in-process. The pipeline relied solely on the external
+/// `timeout` binary, so on a host without it the child ran unbounded: a hanging input
+/// blocked the worker (or triage) forever and the Timeout verdict was unreachable.
+///
+/// stdout/stderr go to temp files rather than pipes. A child that fills the pipe buffer
+/// blocks before it can exit (so a poll loop would never see it finish), and draining the
+/// pipes from reader threads instead makes the call block for as long as a surviving
+/// grandchild holds the write end - exactly the hang this fix removes. Files have neither
+/// problem, and unlinking them afterwards frees the space even if a grandchild keeps
+/// writing. Like the `timeout` binary, only the direct child is killed.
+pub(crate) fn output_with_deadline(
+    mut cmd: Command,
+    timeout_sec: u64,
+) -> std::io::Result<(Output, bool)> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let deadline = Duration::from_secs(timeout_sec.max(1));
+    let unique = format!(
+        "tool-exec-{}-{}-{}",
+        std::process::id(),
+        now_unix_millis(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    let stdout_path = std::env::temp_dir().join(format!("{unique}.out"));
+    let stderr_path = std::env::temp_dir().join(format!("{unique}.err"));
+
+    let spawned = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(fs::File::create(&stdout_path)?))
+        .stderr(Stdio::from(fs::File::create(&stderr_path)?))
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = fs::remove_file(&stdout_path);
+            let _ = fs::remove_file(&stderr_path);
+            return Err(e);
+        }
+    };
+
+    let started = Instant::now();
+    let mut timed_out = false;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= deadline {
+            timed_out = true;
+            let _ = child.kill();
+            break child.wait()?;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+
+    let stdout = fs::read(&stdout_path).unwrap_or_default();
+    let stderr = fs::read(&stderr_path).unwrap_or_default();
+    let _ = fs::remove_file(&stdout_path);
+    let _ = fs::remove_file(&stderr_path);
+
+    Ok((
+        Output {
+            status,
+            stdout,
+            stderr,
+        },
+        timed_out,
+    ))
+}
+
+/// A29: under GNU coreutils `timeout 0s` means "no limit", so a zero budget silently
+/// removed the per-job bound instead of bounding it.
+pub(crate) fn validate_timeout_sec(timeout_sec: u64) -> Result<u64, String> {
+    if timeout_sec == 0 {
+        return Err("timeout_sec must be >= 1 (0 means no time limit)".to_string());
+    }
+    Ok(timeout_sec)
 }
 
 fn core_dump_off_env() -> String {
@@ -286,7 +366,64 @@ pub(crate) enum HarnessExecResult {
 
 #[cfg(test)]
 mod tests {
-    use super::is_core_dump_wrapper_exec_failure;
+    use super::{is_core_dump_wrapper_exec_failure, output_with_deadline, validate_timeout_sec};
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    // A9/A38: when the `timeout` binary is missing the pipeline ran with no time bound
+    // at all, so a hanging input blocked a worker (or triage) forever.
+    #[test]
+    fn deadline_kills_a_hanging_child_and_reports_timeout() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("sleep 30");
+
+        let started = Instant::now();
+        let (output, timed_out) = output_with_deadline(cmd, 1).expect("spawn");
+
+        assert!(timed_out, "a child past its deadline must be reported as timed out");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the deadline must actually fire: {:?}",
+            started.elapsed()
+        );
+        assert!(!output.status.success());
+    }
+
+    #[test]
+    fn deadline_returns_full_output_of_a_fast_child() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("printf hello; printf oops >&2; exit 3");
+
+        let (output, timed_out) = output_with_deadline(cmd, 5).expect("spawn");
+
+        assert!(!timed_out);
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "hello");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "oops");
+    }
+
+    #[test]
+    fn deadline_captures_output_larger_than_the_pipe_buffer() {
+        // a plain try_wait() poll loop deadlocks here: the child blocks writing into a
+        // full pipe and never exits, so the deadline would fire on a healthy run.
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("dd if=/dev/zero bs=1024 count=256 2>/dev/null | tr '\\0' 'a'");
+
+        let (output, timed_out) = output_with_deadline(cmd, 20).expect("spawn");
+
+        assert!(!timed_out, "a healthy child must not hit the deadline");
+        assert_eq!(output.stdout.len(), 256 * 1024);
+    }
+
+    // A29: `timeout 0s` means "no limit" under GNU coreutils, so accepting 0 silently
+    // disabled the per-job bound.
+    #[test]
+    fn zero_timeout_is_rejected() {
+        assert!(validate_timeout_sec(0).is_err());
+        assert_eq!(validate_timeout_sec(1).expect("1s is valid"), 1);
+        assert_eq!(validate_timeout_sec(30).expect("30s is valid"), 30);
+    }
 
     // A13: prlimit runs fine and reports the failure itself, so a missing or
     // non-executable interpreter arrives as a plain exit 126/127 instead of

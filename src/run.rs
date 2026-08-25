@@ -11,7 +11,8 @@ use std::{
 
 use crate::common::{
     artifact_contract, command_exists, command_with_core_dump_off, first_line, now_unix,
-    now_unix_millis, shell_escape, AppPaths, ArtifactContract, HarnessExecResult,
+    now_unix_millis, output_with_deadline, shell_escape, validate_timeout_sec, AppPaths,
+    ArtifactContract, HarnessExecResult,
 };
 use crate::json_utils::json_escape;
 use crate::metrics::{self, MetricEvent};
@@ -101,6 +102,9 @@ pub(crate) fn run_fuzz_pipeline(
     restart_limit: u32,
     max_jobs: Option<usize>,
 ) -> Result<(), String> {
+    // A29: `timeout 0s` means "no limit", so a zero budget silently unbounded every job.
+    let timeout_sec = validate_timeout_sec(timeout_sec)?;
+
     let artifact = artifact_contract(app_paths);
     if *backend != RunBackend::LocalHarness {
         return run_engine_backend(
@@ -861,9 +865,18 @@ pub(crate) fn execute_harness_subprocess(
         .env("NUMEXPR_NUM_THREADS", "1")
         .env("VECLIB_MAXIMUM_THREADS", "1");
 
-    let out = cmd
-        .output()
-        .map_err(|e| format!("failed to execute harness subprocess: {e}"))?;
+    // A9: the external `timeout` bounds the run where it exists; where it does not, the
+    // child used to run unbounded, so enforce the same budget in-process instead.
+    let (out, timed_out) = if timeout_available {
+        let out = cmd
+            .output()
+            .map_err(|e| format!("failed to execute harness subprocess: {e}"))?;
+        let timed_out = out.status.code() == Some(124);
+        (out, timed_out)
+    } else {
+        output_with_deadline(cmd, timeout_sec)
+            .map_err(|e| format!("failed to execute harness subprocess: {e}"))?
+    };
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     let is_session_ok = stdout
@@ -875,7 +888,7 @@ pub(crate) fn execute_harness_subprocess(
         first_line(&stderr)
     );
 
-    if timeout_available && out.status.code() == Some(124) {
+    if timed_out {
         return Ok((HarnessExecResult::Timeout(summary), is_session_ok));
     }
     if out.status.success() {
@@ -957,12 +970,42 @@ fn write_run_status(
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_backend_crash_artifacts, persist_crash_input, RunBackend};
+    use super::{
+        collect_backend_crash_artifacts, persist_crash_input, run_fuzz_pipeline, RunBackend,
+    };
+    use crate::common::AppPaths;
+    use crate::target::TargetKind;
     use std::{
         fs,
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    // A29: `timeout 0s` means "no limit" under GNU coreutils, so a zero budget used to
+    // be accepted and silently unbound every job.
+    #[test]
+    fn run_pipeline_rejects_a_zero_timeout() {
+        let root = unique_temp_dir("a29-run");
+        let seeds = root.join("seeds");
+        fs::create_dir_all(&seeds).expect("create seeds dir");
+        let paths = AppPaths::prepare(&root.join("data"), &seeds).expect("prepare paths");
+
+        let err = run_fuzz_pipeline(
+            &paths,
+            &TargetKind::Onnx,
+            &RunBackend::LocalHarness,
+            true,
+            None,
+            1,
+            0,
+            1,
+            None,
+        )
+        .expect_err("timeout_sec=0 must be rejected");
+
+        assert!(err.contains("timeout_sec"), "err was: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn persist_crash_input_survives_batch_dir_deletion() {
