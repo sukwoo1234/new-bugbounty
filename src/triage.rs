@@ -548,32 +548,42 @@ fn execute_triage_subprocess(
     let exit_code = out.status.code();
     let signal = exit_signal(&out.status);
 
-    if timeout_available && exit_code == Some(124) {
-        return Ok(TriageExecResult {
-            result: TriageResult::Timeout,
-            output: merged,
-            exit_code,
-            signal,
-        });
-    }
-    if out.status.success() {
-        return Ok(TriageExecResult {
-            result: TriageResult::Clean,
-            output: merged,
-            exit_code,
-            signal,
-        });
-    }
+    let timed_out = timeout_available && exit_code == Some(124);
+    let result = classify_harness_exit(out.status.success(), exit_code, timed_out);
+
     // OOM 137 triage 분기(DoS vs 인프라): v1은 infra_oom 힌트를 붙여 후속 triage/report에서 구분 가능하게 남긴다.
     if exit_code == Some(137) {
         merged = format!("infra_oom:exit_137\n{}", merged);
     }
+    // G3: a benign harness-side rejection is not a crash, but it must stay visible in
+    // the attempt log so "clean" is not mistaken for "the library loaded the input".
+    if exit_code == Some(i32::from(crate::EXIT_HARNESS_BENIGN)) {
+        merged = format!("harness_error:exit_{}\n{}", crate::EXIT_HARNESS_BENIGN, merged);
+    }
+
     Ok(TriageExecResult {
-        result: TriageResult::Crashed,
+        result,
         output: merged,
         exit_code,
         signal,
     })
+}
+
+// G3: map a harness process exit to a triage verdict. Only the benign harness exit
+// code is carved out of "crashed"; every other non-zero exit and every signal death
+// (which has no exit code at all) stays Crashed, so a real crash is never dropped
+// (regression guard for the crash-propagation fix, commit 0a0b475).
+fn classify_harness_exit(success: bool, exit_code: Option<i32>, timed_out: bool) -> TriageResult {
+    if timed_out {
+        return TriageResult::Timeout;
+    }
+    if success {
+        return TriageResult::Clean;
+    }
+    if exit_code == Some(i32::from(crate::EXIT_HARNESS_BENIGN)) {
+        return TriageResult::Clean;
+    }
+    TriageResult::Crashed
 }
 
 struct ParsedCrashLog {
@@ -1399,6 +1409,44 @@ library_step: onnxruntime loader crashed (SIGSEGV (signal: 11); stdout: no outpu
             timeout: false,
             infra_oom: false,
         }
+    }
+
+    // G3: exit code 4 means the library crashed; a benign harness-side rejection
+    // (missing input / precheck reject) exits with EXIT_HARNESS_BENIGN and must not
+    // be counted as a crash. Every other non-zero exit stays Crashed so a real crash
+    // is never silently dropped (regression guard for commit 0a0b475).
+    #[test]
+    fn benign_harness_exit_is_not_classified_as_crashed() {
+        use super::{classify_harness_exit, TriageResult};
+
+        assert!(matches!(
+            classify_harness_exit(
+                false,
+                Some(i32::from(crate::EXIT_HARNESS_LIBRARY_CRASH)),
+                false
+            ),
+            TriageResult::Crashed
+        ));
+        assert!(matches!(
+            classify_harness_exit(false, None, false),
+            TriageResult::Crashed
+        ));
+        assert!(matches!(
+            classify_harness_exit(false, Some(139), false),
+            TriageResult::Crashed
+        ));
+        assert!(matches!(
+            classify_harness_exit(false, Some(i32::from(crate::EXIT_HARNESS_BENIGN)), false),
+            TriageResult::Clean
+        ));
+        assert!(matches!(
+            classify_harness_exit(true, Some(0), false),
+            TriageResult::Clean
+        ));
+        assert!(matches!(
+            classify_harness_exit(false, Some(124), true),
+            TriageResult::Timeout
+        ));
     }
 
     fn crashed_attempt_without_runtime_evidence(attempt_number: u32) -> TriageAttempt {

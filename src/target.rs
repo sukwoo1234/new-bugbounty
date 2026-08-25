@@ -220,21 +220,55 @@ pub(crate) fn prepare_target(
     Ok(())
 }
 
-pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), String> {
+/// G3: why a harness invocation failed. A real library crash is the finding we fuzz
+/// for; a benign harness-side rejection (missing input, precheck reject, probe
+/// unavailable) is not. They exit with different codes so `run`/`triage` and the
+/// engine drivers can tell them apart instead of counting rejections as crashes.
+#[derive(Debug)]
+pub(crate) enum HarnessError {
+    LibraryCrash(String),
+    Benign(String),
+}
+
+impl HarnessError {
+    pub(crate) fn exit_code(&self) -> u8 {
+        match self {
+            HarnessError::LibraryCrash(_) => crate::EXIT_HARNESS_LIBRARY_CRASH,
+            HarnessError::Benign(_) => crate::EXIT_HARNESS_BENIGN,
+        }
+    }
+}
+
+impl std::fmt::Display for HarnessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HarnessError::LibraryCrash(msg) | HarnessError::Benign(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), HarnessError> {
     if !input.exists() {
-        return Err(format!("input not found: {}", input.display()));
+        return Err(HarnessError::Benign(format!(
+            "input not found: {}",
+            input.display()
+        )));
     }
     if !input.is_file() {
-        return Err(format!("input is not a file: {}", input.display()));
+        return Err(HarnessError::Benign(format!(
+            "input is not a file: {}",
+            input.display()
+        )));
     }
 
-    let bytes =
-        fs::read(input).map_err(|e| format!("failed to read input '{}': {e}", input.display()))?;
+    let bytes = fs::read(input).map_err(|e| {
+        HarnessError::Benign(format!("failed to read input '{}': {e}", input.display()))
+    })?;
 
     let parser_step = match target {
-        TargetKind::Gguf => gguf_precheck(&bytes)?,
-        TargetKind::Onnx => onnx_precheck(&bytes)?,
-        TargetKind::Safetensors => safetensors_precheck(&bytes)?,
+        TargetKind::Gguf => gguf_precheck(&bytes).map_err(HarnessError::Benign)?,
+        TargetKind::Onnx => onnx_precheck(&bytes).map_err(HarnessError::Benign)?,
+        TargetKind::Safetensors => safetensors_precheck(&bytes).map_err(HarnessError::Benign)?,
     };
 
     let core_path_step = match target {
@@ -251,10 +285,11 @@ pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), Strin
         .map(|v| v == "1")
         .unwrap_or(false);
     if strict_connect && matches!(library_connect.outcome, LibraryConnectOutcome::Unavailable) {
-        return Err(format!(
+        // Environment problem, not a finding: the library never ran.
+        return Err(HarnessError::Benign(format!(
             "library connect required but unavailable: {}",
             library_connect.step
-        ));
+        )));
     }
 
     let library_crashed = matches!(library_connect.outcome, LibraryConnectOutcome::Crashed);
@@ -262,7 +297,9 @@ pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), Strin
     let external_step = if library_crashed {
         "skipped because library_connect crashed".to_string()
     } else {
-        maybe_run_external_harness(target, input)?
+        // A failing external harness stays a crash: sanitizers report findings through
+        // a plain non-zero exit (ASAN exitcode=1), so downgrading it would lose crashes.
+        maybe_run_external_harness(target, input).map_err(HarnessError::LibraryCrash)?
     };
     let report = HarnessReport {
         target: target_label(target),
@@ -275,7 +312,9 @@ pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), Strin
     };
     print_harness_report(&report);
     if library_crashed {
-        return Err(format!("library connect crashed: {library_crash_step}"));
+        return Err(HarnessError::LibraryCrash(format!(
+            "library connect crashed: {library_crash_step}"
+        )));
     }
     Ok(())
 }
@@ -754,6 +793,49 @@ mod tests {
         let err = result.expect_err(
             "a signal-killed library subprocess must make run_harness return Err, not Ok",
         );
-        assert!(err.contains("crash"), "err was: {err}");
+        assert!(
+            matches!(err, super::HarnessError::LibraryCrash(_)),
+            "err was: {err:?}"
+        );
+        assert_eq!(err.exit_code(), crate::EXIT_HARNESS_LIBRARY_CRASH);
+        assert!(err.to_string().contains("crash"), "err was: {err}");
+    }
+
+    // G3: exit code 4 must mean "the library really crashed". Benign harness-side
+    // rejections (missing input, precheck reject) exit with a different code so
+    // triage does not count them as crashes.
+    #[test]
+    fn missing_input_is_a_benign_harness_error() {
+        use super::{run_harness, HarnessError, TargetKind};
+
+        let missing = std::env::temp_dir().join(format!(
+            "tool-g3-missing-{}-{}.onnx",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_file(&missing);
+
+        let err = run_harness(&TargetKind::Onnx, &missing)
+            .expect_err("a missing input must make run_harness return Err");
+        assert!(matches!(err, HarnessError::Benign(_)), "err was: {err:?}");
+        assert_eq!(err.exit_code(), crate::EXIT_HARNESS_BENIGN);
+    }
+
+    #[test]
+    fn precheck_rejection_is_a_benign_harness_error() {
+        use super::{run_harness, HarnessError, TargetKind};
+
+        let dir = std::env::temp_dir().join(format!("tool-g3-precheck-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("tiny.safetensors");
+        // shorter than the 8-byte header length prefix -> rejected before any library call
+        std::fs::write(&input, b"abc").unwrap();
+
+        let err = run_harness(&TargetKind::Safetensors, &input)
+            .expect_err("a precheck-rejected input must make run_harness return Err");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(matches!(err, HarnessError::Benign(_)), "err was: {err:?}");
+        assert_eq!(err.exit_code(), crate::EXIT_HARNESS_BENIGN);
     }
 }

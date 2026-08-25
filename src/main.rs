@@ -35,6 +35,13 @@ const E_TRIAGE_PIPELINE: &str = "E4001";
 const E_REPORT_PIPELINE: &str = "E5001";
 const E_UI_SERVER: &str = "E6001";
 
+// G3: `tool harness` exit codes. 4 means the target library really crashed (the
+// finding); EXIT_HARNESS_BENIGN means the harness rejected the input before the
+// library ran (missing input, precheck reject, probe unavailable). `run`, `triage`
+// and the engine drivers key off this split, so the two must never share a code.
+pub(crate) const EXIT_HARNESS_LIBRARY_CRASH: u8 = 4;
+pub(crate) const EXIT_HARNESS_BENIGN: u8 = 9;
+
 #[derive(Parser)]
 #[command(name = "tool", version, about = "Bug bounty fuzzing platform CLI")]
 struct Cli {
@@ -712,7 +719,7 @@ fn main() -> ExitCode {
         Commands::Harness(args) => {
             if let Err(err) = target::run_harness(&args.target, &args.input) {
                 eprintln!("[{E_HARNESS_EXEC}] harness error: {err}");
-                return ExitCode::from(4);
+                return ExitCode::from(err.exit_code());
             }
         }
         Commands::Mutate(args) => {
