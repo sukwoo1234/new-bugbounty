@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::common::AppPaths;
 use crate::dashboard_data::collect_dashboard_snapshot;
-use crate::json_utils::{html_escape, json_escape, url_encode};
+use crate::json_utils::{extract_json_string_literal, html_escape, json_escape, url_encode};
 
 /// A4: a client that opens the socket and then goes quiet must not be able to hold a slot
 /// forever, and a slow reader must not wedge a writer.
@@ -534,21 +534,25 @@ fn handle_replay_start(
         );
     }
 
+    let triage_id = match extract_query_param(raw_path, "triage_id") {
+        Some(value) => url_decode(value).ok_or_else(|| "invalid url encoding".to_string())?,
+        None => String::new(),
+    };
     let input_value = extract_query_param(raw_path, "input").unwrap_or("");
-    if input_value.is_empty() {
-        return write_response(
-            stream,
-            "400 Bad Request",
-            "application/json; charset=utf-8",
-            "{\"error\":\"missing_input\"}",
-        );
+    if triage_id.is_empty() && input_value.is_empty() {
+        return bad_request(stream, "missing_input");
     }
-    let decoded_input =
-        url_decode(input_value).ok_or_else(|| "invalid url encoding".to_string())?;
-    if !is_safe_query_value(&decoded_input) {
-        return bad_request(stream, "invalid_input");
-    }
-    let Some(input_path) = resolve_replay_input(app_paths, &decoded_input) else {
+    let input_path = if triage_id.is_empty() {
+        let decoded_input =
+            url_decode(input_value).ok_or_else(|| "invalid url encoding".to_string())?;
+        if !is_safe_query_value(&decoded_input) {
+            return bad_request(stream, "invalid_input");
+        }
+        resolve_replay_input(app_paths, &decoded_input)
+    } else {
+        resolve_triage_input(app_paths, &triage_id)
+    };
+    let Some(input_path) = input_path else {
         return bad_request(stream, "invalid_input");
     };
 
@@ -1877,6 +1881,32 @@ fn from_hex(c: u8) -> Option<u8> {
     }
 }
 
+/// The dashboard's replay button names the triage record, not a path: the input is read back out
+/// of the summary the tool itself wrote. That keeps the caller from choosing which file gets fed
+/// to triage (A14) while still replaying a PoC the researcher triaged from outside the data dir.
+fn resolve_triage_input(app_paths: &AppPaths, triage_id: &str) -> Option<PathBuf> {
+    if triage_id.is_empty()
+        || triage_id == "not_available"
+        || !triage_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        || triage_id.contains("..")
+    {
+        return None;
+    }
+    let summary_rel = app_paths
+        .data_dir
+        .join("triage")
+        .join(triage_id)
+        .join("summary.json");
+    let summary_path =
+        resolve_safe_data_path(&app_paths.data_dir, &summary_rel.display().to_string()).ok()?;
+    let summary = fs::read_to_string(summary_path).ok()?;
+    let recorded = extract_json_string_literal(&summary, "input")?;
+    let path = fs::canonicalize(recorded).ok()?;
+    path.is_file().then_some(path)
+}
+
 /// A14: replay/start used to accept any path that existed and was a file, so `tool triage` could
 /// be aimed at anything the server could read. Crash inputs the dashboard offers live under the
 /// data dir and corpus entries under the seeds dir; a PoC kept anywhere else is replayed with the
@@ -1947,7 +1977,7 @@ mod tests {
         is_safe_query_value, is_safe_source_url, is_safe_version, parse_request_head,
         positive_timeout_sec_or_default, proc_stat_field, process_pgid, process_start_ticks,
         process_state, read_request_head, reap_children, register_child, resolve_replay_input,
-        running_job_pid, signal_job, spawn_job, SIGTERM,
+        resolve_triage_input, running_job_pid, signal_job, spawn_job, SIGTERM,
     };
     use crate::common::{now_unix_millis, AppPaths};
     use std::fs;
@@ -2088,6 +2118,52 @@ mod tests {
         assert_eq!(bounded_count_or_default(Some("--data-dir"), 64, "2"), "2");
         assert_eq!(bounded_count_or_default(Some(""), 64, "2"), "2");
         assert_eq!(bounded_count_or_default(None, 64, "2"), "2");
+    }
+
+    // The dashboard offers "replay the latest reproduced crash", and the crash that summary
+    // records may sit outside the data dir - a PoC the researcher triaged from the CLI. Confining
+    // a caller-supplied path (A14) is right, but the button must still work, so the request names
+    // the triage record and the server reads the input out of the summary the tool itself wrote.
+    #[test]
+    fn a_replay_can_name_a_triage_record_instead_of_a_path() {
+        let root = unique_tmp_dir("replay-id");
+        let data_dir = root.join("data");
+        let outside = root.join("outside");
+        fs::create_dir_all(data_dir.join("triage").join("triage-1")).expect("triage dir");
+        fs::create_dir_all(&outside).expect("outside dir");
+        let poc = outside.join("poc.onnx");
+        fs::write(&poc, b"x").expect("write poc");
+        fs::write(
+            data_dir
+                .join("triage")
+                .join("triage-1")
+                .join("summary.json"),
+            format!(
+                "{{\"schema_version\": \"1.1\", \"input\": \"{}\"}}",
+                poc.display()
+            ),
+        )
+        .expect("write summary");
+        let app_paths = AppPaths {
+            data_dir: data_dir.clone(),
+            seeds_dir: root.join("seeds"),
+        };
+
+        assert_eq!(
+            resolve_triage_input(&app_paths, "triage-1").as_deref(),
+            Some(poc.canonicalize().expect("canonical poc").as_path()),
+            "the input recorded by the tool itself is trusted provenance"
+        );
+        assert!(resolve_triage_input(&app_paths, "missing").is_none());
+        assert!(
+            resolve_triage_input(&app_paths, "../../etc").is_none(),
+            "a triage id must not walk out of the triage tree"
+        );
+        assert!(resolve_triage_input(&app_paths, "a/b").is_none());
+        assert!(resolve_triage_input(&app_paths, "").is_none());
+        assert!(resolve_triage_input(&app_paths, "not_available").is_none());
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     // R2: the server never wait()s the children it spawns, so an exited child stays a zombie -

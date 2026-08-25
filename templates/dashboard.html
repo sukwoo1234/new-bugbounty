@@ -341,7 +341,7 @@
 <div class="rows">
 <div class="row"><div class="m">재현 입력</div><div id="replay-input" class="mono-text">{{latest_valid_input}}</div></div>
 <div class="row"><div class="m">상태</div><div><span id="replay-badge" class="badge badge-neutral">대기 중</span></div></div>
-<div class="row"><div class="m">동작</div><div class="control-actions"><button id="replay-start" class="ctl-btn" type="button">재현 시작</button><button id="replay-stop" class="ctl-btn ctl-btn-stop" type="button">중지</button></div></div>
+<div class="row"><div class="m">동작</div><div class="control-actions"><button id="replay-start" class="ctl-btn" type="button" data-triage-id="{{latest_valid_triage_id}}">재현 시작</button><button id="replay-stop" class="ctl-btn ctl-btn-stop" type="button">중지</button></div></div>
 <div class="row"><div class="m">판정</div><div id="replay-verdict" class="mono-text">-</div></div>
 <div class="row"><div class="m">요약</div><div id="replay-summary" class="mono-text">-</div></div>
 </div>
@@ -756,7 +756,19 @@
       setReplayMessage("시작 중...");
       try {
         const target = input.endsWith(".gguf") ? "gguf" : input.endsWith(".safetensors") ? "safetensors" : "onnx";
-        await postReplayAction(`/replay/start?target=${encodeURIComponent(target)}&input=${encodeURIComponent(input)}&repro_retries=3&timeout_sec=30`);
+        // Name the triage record rather than the path: the server reads the input back out of the
+        // summary it wrote itself, so a crash triaged from outside the data dir still replays.
+        const triageId = (replayStart.dataset.triageId || "").trim();
+        const params = new URLSearchParams();
+        params.set("target", target);
+        if (triageId && triageId !== "not_available") {
+          params.set("triage_id", triageId);
+        } else {
+          params.set("input", input);
+        }
+        params.set("repro_retries", "3");
+        params.set("timeout_sec", "30");
+        await postReplayAction(`/replay/start?${params.toString()}`);
         await fetchReplayStatus();
         showToast("success", "재현 확인 시작");
       } catch (e) {

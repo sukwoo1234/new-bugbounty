@@ -93,6 +93,8 @@ check_rejected_inputs() {
     "A16 traversal in build version"
   check_status 400 POST "${BASE_URL}/replay/start?target=onnx&input=%2Fetc%2Fpasswd" \
     "A14 replay input outside the data dir"
+  check_status 400 POST "${BASE_URL}/replay/start?target=onnx&triage_id=..%2F..%2Fetc" \
+    "A14 triage id must not leave the triage tree"
   local state="$WORKDIR/data/ui-target/prepare-target.state"
   if [[ -f "$state" ]] && grep -qx 'pid=1234' "$state"; then
     echo "[FAIL] A2 injected a pid line into $state" | tee -a "$CHECK_LOG"
@@ -127,6 +129,15 @@ check_stalled_client_does_not_block() {
 check_stalled_client_does_not_block
 
 dash_html="$(curl -fsS "${BASE_URL}/dashboard.html")"
+
+# A placeholder that survives into the served page means the binary and templates/dashboard.html
+# have drifted apart, which silently breaks whatever that placeholder drives.
+if printf '%s' "$dash_html" | grep -q '{{'; then
+  echo "[FAIL] dashboard.html still carries an unsubstituted placeholder:" | tee -a "$CHECK_LOG"
+  printf '%s' "$dash_html" | grep -o '{{[a-z_]*}}' | sort -u | tee -a "$CHECK_LOG"
+  exit 1
+fi
+echo "[OK] every dashboard placeholder is substituted" | tee -a "$CHECK_LOG"
 run_path="$(printf '%s' "$dash_html" | sed -n 's/.*href="\(\/*run\/[^"]*\)".*/\1/p' | head -n 1)"
 triage_path="$(printf '%s' "$dash_html" | sed -n 's/.*href="\(\/*triage\/[^"]*\)".*/\1/p' | head -n 1)"
 report_path="$(printf '%s' "$dash_html" | sed -n 's/.*href="\(\/*report\/[^"]*\)".*/\1/p' | head -n 1)"

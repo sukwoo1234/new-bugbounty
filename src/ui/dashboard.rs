@@ -382,6 +382,10 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
         )
         .replace("{{latest_valid_triage}}", &latest_valid_triage_html)
         .replace(
+            "{{latest_valid_triage_id}}",
+            &html_escape(&s.latest_valid_triage),
+        )
+        .replace(
             "{{latest_valid_triage_display}}",
             &html_escape(&latest_valid_triage_display),
         )
