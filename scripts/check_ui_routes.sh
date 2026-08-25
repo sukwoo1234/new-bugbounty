@@ -2,10 +2,52 @@
 set -euo pipefail
 
 WORKDIR="${WORKDIR:-$PWD}"
-BIND="${BIND:-127.0.0.1:8787}"
+
+# R5: this check used to run against the operator's real ./data on the campaign
+# port, and it calls state-writing routes. It also overwrote the per-user token
+# file, so running it while a dashboard was up logged the operator out. Everything
+# it touches now lives in a throwaway tree.
+WORK="$(mktemp -d)"
+DATA_DIR="${DATA_DIR:-$WORK/data}"
+SEEDS_DIR="${SEEDS_DIR:-$WORK/seeds}"
+LOG_DIR="${LOG_DIR:-$WORK/ui-check}"
+mkdir -p "$DATA_DIR" "$SEEDS_DIR/onnx" "$LOG_DIR" "$WORK/run"
+
+case "$DATA_DIR" in
+  "$WORKDIR"/data|"$WORKDIR"/data/*)
+    echo "[FAIL] the check must not run against the operator data dir: $DATA_DIR" >&2
+    exit 1
+    ;;
+esac
+
+# The token file lives under XDG_RUNTIME_DIR. Point it at the throwaway tree and
+# remember the operator's own file so the run can prove it left it alone.
+ORIG_TOKEN_FILE="${XDG_RUNTIME_DIR:-$HOME/.cache/tool}/tool-ui-token"
+ORIG_TOKEN_SUM=""
+if [[ -f "$ORIG_TOKEN_FILE" ]]; then
+  ORIG_TOKEN_SUM="$(sha256sum "$ORIG_TOKEN_FILE" | cut -d' ' -f1)"
+fi
+export XDG_RUNTIME_DIR="$WORK/run"
+
+# Older runs of this check left a data/ui-check directory behind. Remember its
+# state so the run can prove it did not add to or modify it.
+ORIG_UI_CHECK_STAMP="absent"
+if [[ -e "$WORKDIR/data/ui-check" ]]; then
+  ORIG_UI_CHECK_STAMP="$(stat -c '%Y' "$WORKDIR/data/ui-check")"
+fi
+
+# An ephemeral port, so a running campaign dashboard on 8787 is not in the way.
+pick_port() {
+  python3 - <<'PYEOF' 2>/dev/null || echo 18787
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PYEOF
+}
+BIND="${BIND:-127.0.0.1:$(pick_port)}"
 BASE_URL="http://${BIND}"
-LOG_DIR="${LOG_DIR:-$WORKDIR/data/ui-check}"
-mkdir -p "$LOG_DIR"
 
 SERVER_LOG="${LOG_DIR}/ui-serve.log"
 # A3: the control endpoints need this token. Setting it here also exercises the documented
@@ -19,12 +61,21 @@ cleanup() {
     kill "$SERVER_PID" >/dev/null 2>&1 || true
     wait "$SERVER_PID" 2>/dev/null || true
   fi
+  rm -rf "$WORK"
 }
 trap cleanup EXIT
 
 cd "$WORKDIR"
 
-cargo run --offline -- ui-serve --bind "$BIND" >"$SERVER_LOG" 2>&1 &
+# Enough of a tree that the entity-detail assertions still assert something.
+printf 'seed' > "$SEEDS_DIR/onnx/seed.onnx"
+mkdir -p "$DATA_DIR/runs/run-1" "$DATA_DIR/triage/triage-1"
+printf '{"run_id": "run-1", "total": 1, "success": 1}\n' > "$DATA_DIR/runs/run-1/status.json"
+printf '{"triage_id": "triage-1", "verdict": "not_reproduced", "attempts": []}\n' \
+  > "$DATA_DIR/triage/triage-1/summary.json"
+
+cargo run --offline -- --data-dir "$DATA_DIR" --seeds-dir "$SEEDS_DIR" \
+  ui-serve --bind "$BIND" >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
 wait_for_server() {
@@ -103,7 +154,7 @@ check_rejected_inputs() {
     "A14 triage id must not leave the triage tree" "${AUTH[@]}"
   # A handler error used to close the connection with zero bytes (curl exit 52) instead of a status.
   check_status 500 GET "${BASE_URL}/file?path=%2Fetc%2Fpasswd" "a refused file view answers a status"
-  local state="$WORKDIR/data/ui-target/prepare-target.state"
+  local state="$DATA_DIR/ui-target/prepare-target.state"
   if [[ -f "$state" ]] && grep -qx 'pid=1234' "$state"; then
     echo "[FAIL] A2 injected a pid line into $state" | tee -a "$CHECK_LOG"
     return 1
@@ -139,7 +190,7 @@ check_authorization() {
     return 1
   fi
   case "$token_file" in
-    "$WORKDIR/data/"*)
+    "$DATA_DIR/"*)
       echo "[FAIL] token file $token_file is inside the data dir /file can serve" | tee -a "$CHECK_LOG"
       return 1
       ;;
@@ -207,6 +258,31 @@ coverage_path="$(printf '%s' "$dash_html" | sed -n 's/.*href="\(\/*coverage\/[^"
 [[ -n "$triage_path" ]] && check_url "${BASE_URL}${triage_path}"
 [[ -n "$report_path" ]] && check_url "${BASE_URL}${report_path}"
 [[ -n "$coverage_path" ]] && check_url "${BASE_URL}${coverage_path}"
+
+# R5: the operator's own token file must be exactly as it was.
+if [[ -n "$ORIG_TOKEN_SUM" ]]; then
+  now_sum="$(sha256sum "$ORIG_TOKEN_FILE" 2>/dev/null | cut -d' ' -f1 || true)"
+  if [[ "$now_sum" != "$ORIG_TOKEN_SUM" ]]; then
+    echo "[FAIL] the check rewrote the operator token file $ORIG_TOKEN_FILE" | tee -a "$CHECK_LOG"
+    exit 1
+  fi
+  echo "[OK] the operator token file was left alone" | tee -a "$CHECK_LOG"
+elif [[ -e "$ORIG_TOKEN_FILE" ]]; then
+  echo "[FAIL] the check created a token file at $ORIG_TOKEN_FILE" | tee -a "$CHECK_LOG"
+  exit 1
+else
+  echo "[OK] no operator token file was created" | tee -a "$CHECK_LOG"
+fi
+
+now_ui_check_stamp="absent"
+if [[ -e "$WORKDIR/data/ui-check" ]]; then
+  now_ui_check_stamp="$(stat -c '%Y' "$WORKDIR/data/ui-check")"
+fi
+if [[ "$now_ui_check_stamp" != "$ORIG_UI_CHECK_STAMP" ]]; then
+  echo "[FAIL] the check wrote into the operator data dir" | tee -a "$CHECK_LOG"
+  exit 1
+fi
+echo "[OK] the operator data dir was not touched" | tee -a "$CHECK_LOG"
 
 echo "[ui-check] done"
 echo "server_log: $SERVER_LOG"
