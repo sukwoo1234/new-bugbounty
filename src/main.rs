@@ -388,9 +388,7 @@ fn run_campaign_command(app_paths: &AppPaths, args: &CampaignArgs) -> Result<(),
     if args.workers == 0 {
         return Err("workers must be >= 1".to_string());
     }
-    if args.max_jobs == Some(0) {
-        return Err("max-jobs must be >= 1".to_string());
-    }
+    common::validate_max_jobs(args.max_jobs)?;
 
     let cwd = std::env::current_dir().map_err(|e| format!("failed to get current dir: {e}"))?;
     let script = cwd.join("scripts").join("run_campaign.sh");

@@ -193,6 +193,16 @@ pub(crate) fn validate_timeout_sec(timeout_sec: u64) -> Result<u64, String> {
     Ok(timeout_sec)
 }
 
+/// A25: `--max-jobs 0` truncated the input list to nothing after the "no inputs"
+/// check, so a run that executed nothing still published a status.json, a coverage
+/// summary and a metrics event that all read as a clean zero-crash run.
+pub(crate) fn validate_max_jobs(max_jobs: Option<usize>) -> Result<Option<usize>, String> {
+    if max_jobs == Some(0) {
+        return Err("max_jobs must be >= 1 (0 means no work)".to_string());
+    }
+    Ok(max_jobs)
+}
+
 fn core_dump_off_env() -> String {
     let existing = std::env::var("ASAN_OPTIONS").unwrap_or_default();
     if existing.trim().is_empty() {
@@ -385,6 +395,22 @@ pub(crate) enum HarnessExecResult {
 
 #[cfg(test)]
 mod tests {
+    // A25 / the same hole in `run`: `--max-jobs 0` truncated the input list to
+    // nothing AFTER the "no inputs" check, so a run that executed nothing still
+    // published a status.json, a coverage summary and a metrics event that read as
+    // a clean, successful, zero-crash run.
+    #[test]
+    fn a_zero_job_budget_is_rejected() {
+        use super::validate_max_jobs;
+
+        assert!(
+            validate_max_jobs(Some(0)).is_err(),
+            "a budget of zero jobs must not be accepted"
+        );
+        assert_eq!(validate_max_jobs(Some(1)), Ok(Some(1)));
+        assert_eq!(validate_max_jobs(None), Ok(None));
+    }
+
     use super::{is_core_dump_wrapper_exec_failure, output_with_deadline, validate_timeout_sec};
     use std::process::Command;
     use std::time::{Duration, Instant};

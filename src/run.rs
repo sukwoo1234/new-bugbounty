@@ -11,7 +11,8 @@ use std::{
 
 use crate::common::{
     artifact_contract, command_exists, command_with_core_dump_off, first_line, now_unix,
-    now_unix_millis, output_with_deadline, shell_escape, validate_timeout_sec, AppPaths,
+    now_unix_millis, output_with_deadline, shell_escape, validate_max_jobs, validate_timeout_sec,
+    AppPaths,
     ArtifactContract, HarnessExecResult,
 };
 use crate::json_utils::json_escape;
@@ -134,6 +135,7 @@ pub(crate) fn run_fuzz_pipeline(
 ) -> Result<(), String> {
     // A29: `timeout 0s` means "no limit", so a zero budget silently unbounded every job.
     let timeout_sec = validate_timeout_sec(timeout_sec)?;
+    let max_jobs = validate_max_jobs(max_jobs)?;
 
     let artifact = artifact_contract(app_paths);
     if *backend != RunBackend::LocalHarness {
