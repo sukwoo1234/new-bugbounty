@@ -345,7 +345,9 @@ cat > "$OUT_DIR/summary.md" <<EOF
 ## Caveat
 - \`successful_runs_per_hour_proxy\` is a success-count proxy metric, not true edge/path coverage.
 - \`new_crashes_per_hour\` is based on triage inputs where a crash was observed.
-- \`global_error_rate_5m\` is computed as recent \`errors / total\` over metric events.
+- \`global_error_rate_5m\` is computed as recent \`errors / total\` over **local-harness run** events only, and is \`not_available\` when no such event falls in the window. A triage event's \`errors\` counts attempts in which the crash reproduced - the desired outcome - so it is not an operational error and is excluded.
+- \`successful_runs_per_hour_proxy\` likewise counts local-harness per-input runs only. On an \`aflpp\` or \`libfuzzer\` arm both rows read 0 / \`not_available\` **by construction**: that arm's unit is a worker, not an input. Read \`backend_worker_runs_per_hour\` and \`backend_worker_errors_5m\` instead.
+- Rows exported before the per-kind split mixed all three units, so they are not comparable with rows exported after it.
 - \`valid_crash_ratio\` is calculated from \`data/triage/triage-*/summary.json\` when \`valid_crash_ratio_source=triage_summary_scan\`.
 - \`valid_crash_ratio\` is \`not_available\` when there are no triage crash observations to support the ratio.
 - \`unique_signature_count\` counts only \`reproduced\` triage rows, using \`normalized_frame_hash\` when present and falling back to legacy \`signature_top1\`.

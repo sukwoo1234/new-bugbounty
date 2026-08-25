@@ -64,6 +64,7 @@ fi
 
 PROCESSED=0
 SKIPPED=0
+NO_ATTEMPTS=0
 declare -A VERDICT_COUNT
 
 for summary in "$TRIAGE_ROOT"/triage-*/summary.json; do
@@ -104,8 +105,10 @@ for summary in "$TRIAGE_ROOT"/triage-*/summary.json; do
   # A31: attempts[]가 비면 "모든 시도가 크래시" 조건이 공허하게 참이 되어
   # verdict=reproduced가 찍혔다. 근거 없는 크래시 주장이므로 재해석하지 않고 건너뛴다.
   if [[ "$total" -eq 0 ]]; then
+    # Counted separately: this one still carries an unverifiable crash claim, which
+    # is not the same thing as "already migrated and needed no work".
     echo "[retriage] skip: no attempts to re-derive a verdict from: $summary" >&2
-    SKIPPED=$((SKIPPED + 1))
+    NO_ATTEMPTS=$((NO_ATTEMPTS + 1))
     continue
   fi
 
@@ -156,6 +159,7 @@ echo ""
 echo "[retriage] done"
 echo "processed: $PROCESSED"
 echo "skipped (already v2 labels): $SKIPPED"
+echo "skipped (no attempts, verdict left unverified): $NO_ATTEMPTS"
 if [[ ${#VERDICT_COUNT[@]} -gt 0 ]]; then
   echo "verdict distribution:"
   for v in "${!VERDICT_COUNT[@]}"; do

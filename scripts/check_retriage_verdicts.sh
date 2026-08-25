@@ -82,4 +82,10 @@ log "ok: a lone crash with a matching signature is flaky"
   || fail "disagreeing signatures were re-stamped $(verdict_of mismatched)"
 log "ok: disagreeing signatures are flaky_stack_mismatch"
 
+# The evidence-less summary must be reported on its own line, not folded into the
+# "already migrated, no work needed" tally.
+grep -q 'skipped (no attempts, verdict left unverified): 1' "$WORK/out.log" \
+  || fail "an evidence-less summary was not reported separately: $(cat "$WORK/out.log")"
+log "ok: an evidence-less summary is counted and reported on its own"
+
 log "all checks passed"
