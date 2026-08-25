@@ -63,6 +63,7 @@ struct RunStatusCounts {
     backend_crash_artifacts: usize,
     backend_crashes_triaged: usize,
     backend_crash_triage_errors: usize,
+    backend_crash_scan_errors: usize,
 }
 
 struct EngineWorkerPlan {
@@ -90,7 +91,25 @@ struct BackendCrashIngest {
     discovered: usize,
     triaged: usize,
     errors: usize,
+    scan_errors: usize,
+    manifest_error: bool,
     manifest_path: Option<PathBuf>,
+}
+
+/// What a crash-directory sweep found, plus how many directories or entries it could
+/// not read. A28: an unreadable directory used to abort the whole run through `?`,
+/// which threw away status.json and the metrics event for jobs that had already
+/// finished. Losing a finished block's record is worse than losing one scan.
+struct BackendCrashScan {
+    artifacts: Vec<BackendCrashArtifact>,
+    scan_errors: usize,
+}
+
+impl BackendCrashScan {
+    fn note_error(&mut self, message: String) {
+        eprintln!("[run] warning: {message}");
+        self.scan_errors += 1;
+    }
 }
 
 pub(crate) fn run_fuzz_pipeline(
@@ -274,6 +293,7 @@ pub(crate) fn run_fuzz_pipeline(
             backend_crash_artifacts: 0,
             backend_crashes_triaged: 0,
             backend_crash_triage_errors: 0,
+            backend_crash_scan_errors: 0,
         },
         workers,
         timeout_sec,
@@ -396,7 +416,7 @@ fn run_engine_backend(
     }
 
     let ingest =
-        ingest_backend_crash_artifacts(app_paths, &run_dir, run_id, target, backend, timeout_sec)?;
+        ingest_backend_crash_artifacts(app_paths, &run_dir, run_id, target, backend, timeout_sec);
 
     let status_path = write_run_status(
         &run_dir,
@@ -413,6 +433,7 @@ fn run_engine_backend(
             backend_crash_artifacts: ingest.discovered,
             backend_crashes_triaged: ingest.triaged,
             backend_crash_triage_errors: ingest.errors,
+            backend_crash_scan_errors: ingest.scan_errors,
         },
         workers,
         timeout_sec,
@@ -428,6 +449,7 @@ fn run_engine_backend(
     println!("backend_crash_artifacts: {}", ingest.discovered);
     println!("backend_crashes_triaged: {}", ingest.triaged);
     println!("backend_crash_triage_errors: {}", ingest.errors);
+    println!("backend_crash_scan_errors: {}", ingest.scan_errors);
     if let Some(manifest_path) = &ingest.manifest_path {
         println!("backend_crash_manifest: {}", manifest_path.display());
     }
@@ -448,14 +470,16 @@ fn run_engine_backend(
         },
     )?;
 
-    if failed == 0 && timeout == 0 {
+    if failed == 0 && timeout == 0 && ingest.scan_errors == 0 && !ingest.manifest_error {
         Ok(())
     } else {
         Err(format!(
-            "backend '{}' engine command failed (failed={}, timeout={}, run_dir={})",
+            "backend '{}' engine command failed (failed={}, timeout={}, crash_scan_errors={}, manifest_error={}, run_dir={})",
             run_backend_label(backend),
             failed,
             timeout,
+            ingest.scan_errors,
+            ingest.manifest_error,
             run_dir.display()
         ))
     }
@@ -499,26 +523,21 @@ fn ingest_backend_crash_artifacts(
     target: &TargetKind,
     backend: &RunBackend,
     timeout_sec: u64,
-) -> Result<BackendCrashIngest, String> {
-    let artifacts = collect_backend_crash_artifacts(run_dir, backend)?;
+) -> BackendCrashIngest {
+    let scan = collect_backend_crash_artifacts(run_dir, backend);
+    let artifacts = scan.artifacts;
     if artifacts.is_empty() {
-        return Ok(BackendCrashIngest {
+        return BackendCrashIngest {
             discovered: 0,
             triaged: 0,
             errors: 0,
+            scan_errors: scan.scan_errors,
+            manifest_error: false,
             manifest_path: None,
-        });
+        };
     }
 
     let triage_limit = backend_triage_limit();
-    let manifest_dir = run_dir.join("backend-crashes");
-    fs::create_dir_all(&manifest_dir).map_err(|e| {
-        format!(
-            "failed to create backend crash manifest dir '{}': {e}",
-            manifest_dir.display()
-        )
-    })?;
-
     let mut triaged = 0usize;
     let mut errors = 0usize;
     let mut entries = Vec::with_capacity(artifacts.len());
@@ -547,6 +566,25 @@ fn ingest_backend_crash_artifacts(
         ));
     }
 
+    // The manifest is a convenience index. Triage has already run at this point, so a
+    // manifest that cannot be written is reported, not allowed to discard the results.
+    let manifest_dir = run_dir.join("backend-crashes");
+    let mut manifest_error = false;
+    if let Err(e) = fs::create_dir_all(&manifest_dir) {
+        eprintln!(
+            "[run] warning: failed to create backend crash manifest dir '{}': {e}",
+            manifest_dir.display()
+        );
+        return BackendCrashIngest {
+            discovered: artifacts.len(),
+            triaged,
+            errors,
+            scan_errors: scan.scan_errors,
+            manifest_error: true,
+            manifest_path: None,
+        };
+    }
+
     let manifest_path = manifest_dir.join("manifest.json");
     let manifest = format!(
         "{{\n  \"schema_version\": \"1.0\",\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"discovered\": {},\n  \"triage_limit\": {},\n  \"triaged\": {},\n  \"errors\": {},\n  \"artifacts\": [\n{}\n  ]\n}}\n",
@@ -559,15 +597,26 @@ fn ingest_backend_crash_artifacts(
         errors,
         entries.join(",\n")
     );
-    fs::write(&manifest_path, manifest)
-        .map_err(|e| format!("failed to write '{}': {e}", manifest_path.display()))?;
+    let manifest_path = match fs::write(&manifest_path, manifest) {
+        Ok(()) => Some(manifest_path),
+        Err(e) => {
+            eprintln!(
+                "[run] warning: failed to write '{}': {e}",
+                manifest_path.display()
+            );
+            manifest_error = true;
+            None
+        }
+    };
 
-    Ok(BackendCrashIngest {
+    BackendCrashIngest {
         discovered: artifacts.len(),
         triaged,
         errors,
-        manifest_path: Some(manifest_path),
-    })
+        scan_errors: scan.scan_errors,
+        manifest_error,
+        manifest_path,
+    }
 }
 
 fn backend_triage_limit() -> usize {
@@ -577,91 +626,107 @@ fn backend_triage_limit() -> usize {
         .unwrap_or(32)
 }
 
-fn collect_backend_crash_artifacts(
-    run_dir: &Path,
-    backend: &RunBackend,
-) -> Result<Vec<BackendCrashArtifact>, String> {
-    let mut artifacts = Vec::new();
+fn collect_backend_crash_artifacts(run_dir: &Path, backend: &RunBackend) -> BackendCrashScan {
+    let mut scan = BackendCrashScan {
+        artifacts: Vec::new(),
+        scan_errors: 0,
+    };
     match backend {
-        RunBackend::Aflpp => collect_aflpp_crash_artifacts(run_dir, &mut artifacts)?,
-        RunBackend::Libfuzzer => collect_libfuzzer_crash_artifacts(run_dir, &mut artifacts)?,
+        RunBackend::Aflpp => collect_aflpp_crash_artifacts(run_dir, &mut scan),
+        RunBackend::Libfuzzer => collect_libfuzzer_crash_artifacts(run_dir, &mut scan),
         RunBackend::LocalHarness => {}
     }
-    artifacts.sort_by(|a, b| a.path.cmp(&b.path));
-    artifacts.dedup_by(|a, b| a.path == b.path);
-    Ok(artifacts)
+    scan.artifacts.sort_by(|a, b| a.path.cmp(&b.path));
+    scan.artifacts.dedup_by(|a, b| a.path == b.path);
+    scan
 }
 
-fn collect_aflpp_crash_artifacts(
-    run_dir: &Path,
-    artifacts: &mut Vec<BackendCrashArtifact>,
-) -> Result<(), String> {
+fn collect_aflpp_crash_artifacts(run_dir: &Path, scan: &mut BackendCrashScan) {
     let afl_out = run_dir.join("afl-out");
     if !afl_out.exists() {
-        return Ok(());
+        return;
     }
-    for entry in fs::read_dir(&afl_out)
-        .map_err(|e| format!("failed to read '{}': {e}", afl_out.display()))?
-    {
-        let entry = entry.map_err(|e| format!("failed to read afl-out entry: {e}"))?;
+    let entries = match fs::read_dir(&afl_out) {
+        Ok(entries) => entries,
+        Err(e) => {
+            scan.note_error(format!("failed to read '{}': {e}", afl_out.display()));
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                scan.note_error(format!("failed to read afl-out entry: {e}"));
+                continue;
+            }
+        };
         let fuzzer_dir = entry.path();
         if !fuzzer_dir.is_dir() {
             continue;
         }
         let crashes_dir = fuzzer_dir.join("crashes");
-        collect_files_in_dir(&crashes_dir, "aflpp_crash", artifacts)?;
+        collect_files_in_dir(&crashes_dir, "aflpp_crash", scan);
     }
-    Ok(())
 }
 
-fn collect_libfuzzer_crash_artifacts(
-    run_dir: &Path,
-    artifacts: &mut Vec<BackendCrashArtifact>,
-) -> Result<(), String> {
+fn collect_libfuzzer_crash_artifacts(run_dir: &Path, scan: &mut BackendCrashScan) {
     let artifact_root = run_dir.join("backend-artifacts");
-    collect_prefixed_files_recursive(&artifact_root, "libfuzzer_crash", artifacts)
+    collect_prefixed_files_recursive(&artifact_root, "libfuzzer_crash", scan);
 }
 
-fn collect_prefixed_files_recursive(
-    dir: &Path,
-    kind: &'static str,
-    artifacts: &mut Vec<BackendCrashArtifact>,
-) -> Result<(), String> {
+fn collect_prefixed_files_recursive(dir: &Path, kind: &'static str, scan: &mut BackendCrashScan) {
     if !dir.exists() {
-        return Ok(());
+        return;
     }
-    for entry in
-        fs::read_dir(dir).map_err(|e| format!("failed to read '{}': {e}", dir.display()))?
-    {
-        let entry = entry.map_err(|e| format!("failed to read artifact entry: {e}"))?;
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            scan.note_error(format!("failed to read '{}': {e}", dir.display()));
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                scan.note_error(format!("failed to read artifact entry: {e}"));
+                continue;
+            }
+        };
         let path = entry.path();
         if path.is_dir() {
-            collect_prefixed_files_recursive(&path, kind, artifacts)?;
+            collect_prefixed_files_recursive(&path, kind, scan);
         } else if is_libfuzzer_artifact_file(&path) {
-            artifacts.push(BackendCrashArtifact { path, kind });
+            scan.artifacts.push(BackendCrashArtifact { path, kind });
         }
     }
-    Ok(())
 }
 
-fn collect_files_in_dir(
-    dir: &Path,
-    kind: &'static str,
-    artifacts: &mut Vec<BackendCrashArtifact>,
-) -> Result<(), String> {
+fn collect_files_in_dir(dir: &Path, kind: &'static str, scan: &mut BackendCrashScan) {
     if !dir.exists() {
-        return Ok(());
+        return;
     }
-    for entry in
-        fs::read_dir(dir).map_err(|e| format!("failed to read '{}': {e}", dir.display()))?
-    {
-        let entry = entry.map_err(|e| format!("failed to read artifact entry: {e}"))?;
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            scan.note_error(format!("failed to read '{}': {e}", dir.display()));
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                scan.note_error(format!("failed to read artifact entry: {e}"));
+                continue;
+            }
+        };
         let path = entry.path();
         if path.is_file() && !is_aflpp_metadata_file(&path) {
-            artifacts.push(BackendCrashArtifact { path, kind });
+            scan.artifacts.push(BackendCrashArtifact { path, kind });
         }
     }
-    Ok(())
 }
 
 fn is_aflpp_metadata_file(path: &Path) -> bool {
@@ -1027,7 +1092,7 @@ fn write_run_status(
 ) -> Result<PathBuf, String> {
     let status_path = run_dir.join("status.json");
     let status_json = format!(
-        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"rejected\": {},\n  \"retries\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {},\n  \"engine_mode\": \"{}\",\n  \"backend_crash_artifacts\": {},\n  \"backend_crashes_triaged\": {},\n  \"backend_crash_triage_errors\": {}\n}}\n",
+        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"rejected\": {},\n  \"retries\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {},\n  \"engine_mode\": \"{}\",\n  \"backend_crash_artifacts\": {},\n  \"backend_crashes_triaged\": {},\n  \"backend_crash_triage_errors\": {},\n  \"backend_crash_scan_errors\": {}\n}}\n",
         run_id,
         target_label(target),
         run_backend_label(backend),
@@ -1043,7 +1108,8 @@ fn write_run_status(
         json_escape(engine_mode),
         counts.backend_crash_artifacts,
         counts.backend_crashes_triaged,
-        counts.backend_crash_triage_errors
+        counts.backend_crash_triage_errors,
+        counts.backend_crash_scan_errors
     );
     fs::write(&status_path, status_json)
         .map_err(|e| format!("failed to write '{}': {e}", status_path.display()))?;
@@ -1182,6 +1248,7 @@ mod tests {
                 backend_crash_artifacts: 0,
                 backend_crashes_triaged: 0,
                 backend_crash_triage_errors: 0,
+                backend_crash_scan_errors: 0,
             },
             1,
             30,
@@ -1258,11 +1325,77 @@ mod tests {
         fs::write(crashes.join("README.txt"), b"metadata").expect("write readme");
         fs::write(crashes.join("id:000000,sig:08"), b"crash").expect("write crash");
 
-        let artifacts =
-            collect_backend_crash_artifacts(&run_dir, &RunBackend::Aflpp).expect("collect");
-        assert_eq!(artifacts.len(), 1);
-        assert!(artifacts[0].path.ends_with("id:000000,sig:08"));
+        let scan = collect_backend_crash_artifacts(&run_dir, &RunBackend::Aflpp);
+        assert_eq!(scan.scan_errors, 0);
+        assert_eq!(scan.artifacts.len(), 1);
+        assert!(scan.artifacts[0].path.ends_with("id:000000,sig:08"));
 
+        let _ = fs::remove_dir_all(&run_dir);
+    }
+
+    // A28: a crash directory the process cannot read used to abort the whole engine run
+    // through `?`, so status.json and the metrics event for a block that had already
+    // finished were never written. An unreadable directory is now counted, not fatal.
+    #[test]
+    fn an_unreadable_crash_dir_is_counted_not_fatal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let run_dir = unique_temp_dir("a28-unreadable-crashes");
+        let crashes = run_dir.join("afl-out").join("default").join("crashes");
+        fs::create_dir_all(&crashes).expect("create crashes dir");
+        fs::write(crashes.join("id:000000,sig:11"), b"crash").expect("write crash");
+        fs::set_permissions(&crashes, fs::Permissions::from_mode(0o000)).expect("chmod");
+
+        if fs::read_dir(&crashes).is_ok() {
+            // Running as root, where the mode is not enforced. Nothing to assert.
+            let _ = fs::set_permissions(&crashes, fs::Permissions::from_mode(0o755));
+            let _ = fs::remove_dir_all(&run_dir);
+            return;
+        }
+
+        let scan = collect_backend_crash_artifacts(&run_dir, &RunBackend::Aflpp);
+        assert_eq!(scan.scan_errors, 1, "the unreadable directory must be counted");
+        assert!(scan.artifacts.is_empty());
+
+        let _ = fs::set_permissions(&crashes, fs::Permissions::from_mode(0o755));
+        let _ = fs::remove_dir_all(&run_dir);
+    }
+
+    #[test]
+    fn run_status_records_the_crash_scan_errors() {
+        use super::{write_run_status, RunStatusCounts};
+
+        let run_dir = unique_temp_dir("a28-scan-errors-status");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        let status_path = write_run_status(
+            &run_dir,
+            7,
+            &TargetKind::Onnx,
+            &RunBackend::Aflpp,
+            RunStatusCounts {
+                total: 1,
+                success: 1,
+                failed: 0,
+                timeout: 0,
+                rejected: 0,
+                retries: 0,
+                backend_crash_artifacts: 0,
+                backend_crashes_triaged: 0,
+                backend_crash_triage_errors: 0,
+                backend_crash_scan_errors: 2,
+            },
+            1,
+            30,
+            1,
+            "blackbox_n",
+        )
+        .expect("write status");
+
+        let status = fs::read_to_string(&status_path).expect("read status");
+        assert!(
+            status.contains("\"backend_crash_scan_errors\": 2"),
+            "status was: {status}"
+        );
         let _ = fs::remove_dir_all(&run_dir);
     }
 
@@ -1274,10 +1407,10 @@ mod tests {
         fs::write(worker_dir.join("note.txt"), b"metadata").expect("write note");
         fs::write(worker_dir.join("crash-deadbeef"), b"crash").expect("write crash");
 
-        let artifacts =
-            collect_backend_crash_artifacts(&run_dir, &RunBackend::Libfuzzer).expect("collect");
-        assert_eq!(artifacts.len(), 1);
-        assert!(artifacts[0].path.ends_with("crash-deadbeef"));
+        let scan = collect_backend_crash_artifacts(&run_dir, &RunBackend::Libfuzzer);
+        assert_eq!(scan.scan_errors, 0);
+        assert_eq!(scan.artifacts.len(), 1);
+        assert!(scan.artifacts[0].path.ends_with("crash-deadbeef"));
 
         let _ = fs::remove_dir_all(&run_dir);
     }
