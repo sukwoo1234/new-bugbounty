@@ -723,10 +723,32 @@ fn collect_files_in_dir(dir: &Path, kind: &'static str, scan: &mut BackendCrashS
             }
         };
         let path = entry.path();
-        if path.is_file() && !is_aflpp_metadata_file(&path) {
+        let is_file = match dir_entry_is_file(&entry) {
+            Ok(is_file) => is_file,
+            Err(e) => {
+                scan.note_error(format!("failed to stat '{}': {e}", path.display()));
+                continue;
+            }
+        };
+        if is_file && !is_aflpp_metadata_file(&path) {
             scan.artifacts.push(BackendCrashArtifact { path, kind });
         }
     }
+}
+
+/// Whether a directory entry names a regular file, following a symlink.
+///
+/// The listing itself carries the entry type, so this still answers when the
+/// directory denies search and stat-ing the entry does not. `Path::is_file` alone
+/// reports "not a file" for that permission error, which used to drop a real crash
+/// artifact without a trace.
+fn dir_entry_is_file(entry: &fs::DirEntry) -> std::io::Result<bool> {
+    if let Ok(file_type) = entry.file_type() {
+        if !file_type.is_symlink() {
+            return Ok(file_type.is_file());
+        }
+    }
+    entry.path().metadata().map(|meta| meta.is_file())
 }
 
 fn is_aflpp_metadata_file(path: &Path) -> bool {
@@ -1396,6 +1418,53 @@ mod tests {
             status.contains("\"backend_crash_scan_errors\": 2"),
             "status was: {status}"
         );
+        let _ = fs::remove_dir_all(&run_dir);
+    }
+
+    // The crash file is listed but not stat-able when the directory denies search.
+    // `Path::is_file` reports "not a file" for that permission error, which dropped a
+    // real AFL++ crash artifact with neither an artifact nor an error to show for it.
+    #[test]
+    fn a_crash_file_in_a_search_denied_dir_is_not_silently_dropped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let run_dir = unique_temp_dir("aflpp-search-denied");
+        let crashes = run_dir.join("afl-out").join("default").join("crashes");
+        fs::create_dir_all(&crashes).expect("create crashes dir");
+        let crash = crashes.join("id:000000,sig:11");
+        fs::write(&crash, b"crash").expect("write crash");
+        fs::set_permissions(&crashes, fs::Permissions::from_mode(0o444)).expect("chmod");
+
+        if crash.metadata().is_ok() {
+            // Running as root, where the mode is not enforced. Nothing to assert.
+            let _ = fs::set_permissions(&crashes, fs::Permissions::from_mode(0o755));
+            let _ = fs::remove_dir_all(&run_dir);
+            return;
+        }
+
+        let scan = collect_backend_crash_artifacts(&run_dir, &RunBackend::Aflpp);
+        assert_eq!(scan.artifacts.len(), 1, "the crash must not be dropped");
+        assert!(scan.artifacts[0].path.ends_with("id:000000,sig:11"));
+
+        let _ = fs::set_permissions(&crashes, fs::Permissions::from_mode(0o755));
+        let _ = fs::remove_dir_all(&run_dir);
+    }
+
+    // The listing reports a symlink's own type, which says nothing about its target,
+    // so the target still has to be consulted.
+    #[test]
+    fn a_symlinked_crash_file_is_still_collected() {
+        let run_dir = unique_temp_dir("aflpp-symlinked-crash");
+        let crashes = run_dir.join("afl-out").join("default").join("crashes");
+        fs::create_dir_all(&crashes).expect("create crashes dir");
+        let real = run_dir.join("real-crash");
+        fs::write(&real, b"crash").expect("write crash");
+        std::os::unix::fs::symlink(&real, crashes.join("id:000001,sig:06")).expect("symlink");
+
+        let scan = collect_backend_crash_artifacts(&run_dir, &RunBackend::Aflpp);
+        assert_eq!(scan.artifacts.len(), 1);
+        assert!(scan.artifacts[0].path.ends_with("id:000001,sig:06"));
+
         let _ = fs::remove_dir_all(&run_dir);
     }
 
