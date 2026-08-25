@@ -68,6 +68,7 @@ struct RunStatusCounts {
     rejected: usize,
     retries: usize,
     job_errors: usize,
+    worker_errors: usize,
     backend_crash_artifacts: usize,
     backend_crashes_triaged: usize,
     backend_crash_triage_errors: usize,
@@ -270,6 +271,7 @@ pub(crate) fn run_fuzz_pipeline(
             rejected: s.rejected,
             retries: s.retries,
             job_errors: s.job_errors,
+            worker_errors: 0,
             backend_crash_artifacts: 0,
             backend_crashes_triaged: 0,
             backend_crash_triage_errors: 0,
@@ -451,18 +453,18 @@ fn run_engine_backend(
         .map(|plan| thread::spawn(move || run_engine_worker(plan)))
         .collect::<Vec<_>>();
 
-    for handle in handles {
-        let result = match handle.join() {
-            Ok(Ok(result)) => result,
-            Ok(Err(e)) => return Err(e),
-            Err(_) => return Err("backend engine worker thread panicked".to_string()),
-        };
-        match result.outcome {
-            EngineWorkerOutcome::Success => success += 1,
-            EngineWorkerOutcome::Failed => failed += 1,
-            EngineWorkerOutcome::Timeout => timeout += 1,
-        }
-    }
+    // Join every worker before deciding. Returning on the first error skipped crash
+    // ingestion, status.json and the metrics event for the whole block, and left the
+    // workers still running detached from the run that spawned them.
+    let results = handles
+        .into_iter()
+        .map(|handle| handle.join().map_err(|_| ()))
+        .collect::<Vec<_>>();
+    let totals = summarize_engine_workers(results);
+    success += totals.success;
+    failed += totals.failed;
+    timeout += totals.timeout;
+    let worker_errors = totals.worker_errors;
 
     let ingest =
         ingest_backend_crash_artifacts(app_paths, &run_dir, run_id, target, backend, timeout_sec);
@@ -480,6 +482,7 @@ fn run_engine_backend(
             rejected: 0,
             retries: 0,
             job_errors: 0,
+            worker_errors,
             backend_crash_artifacts: ingest.discovered,
             backend_crashes_triaged: ingest.triaged,
             backend_crash_triage_errors: ingest.errors,
@@ -499,6 +502,7 @@ fn run_engine_backend(
     println!("backend_crash_artifacts: {}", ingest.discovered);
     println!("backend_crashes_triaged: {}", ingest.triaged);
     println!("backend_crash_triage_errors: {}", ingest.errors);
+    println!("worker_errors: {worker_errors}");
     println!("backend_crash_scan_errors: {}", ingest.scan_errors);
     if let Some(manifest_path) = &ingest.manifest_path {
         println!("backend_crash_manifest: {}", manifest_path.display());
@@ -520,19 +524,69 @@ fn run_engine_backend(
         },
     )?;
 
-    if failed == 0 && timeout == 0 && ingest.scan_errors == 0 && !ingest.manifest_error {
+    if failed == 0
+        && timeout == 0
+        && worker_errors == 0
+        && ingest.scan_errors == 0
+        && !ingest.manifest_error
+    {
         Ok(())
     } else {
         Err(format!(
-            "backend '{}' engine command failed (failed={}, timeout={}, crash_scan_errors={}, manifest_error={}, run_dir={})",
+            "backend '{}' engine command failed (failed={}, timeout={}, worker_errors={}, crash_scan_errors={}, manifest_error={}, run_dir={})",
             run_backend_label(backend),
             failed,
             timeout,
+            worker_errors,
             ingest.scan_errors,
             ingest.manifest_error,
             run_dir.display()
         ))
     }
+}
+
+struct EngineWorkerTotals {
+    success: usize,
+    failed: usize,
+    timeout: usize,
+    worker_errors: usize,
+}
+
+/// Fold the joined worker results into block totals.
+///
+/// A worker that could not be started, or that panicked, is counted separately: it
+/// never ran the engine, so calling it a failed run would report a backend failure
+/// that did not happen.
+fn summarize_engine_workers(
+    results: Vec<Result<Result<EngineWorkerResult, String>, ()>>,
+) -> EngineWorkerTotals {
+    let mut totals = EngineWorkerTotals {
+        success: 0,
+        failed: 0,
+        timeout: 0,
+        worker_errors: 0,
+    };
+    for (index, result) in results.into_iter().enumerate() {
+        match result {
+            Ok(Ok(worker)) => match worker.outcome {
+                EngineWorkerOutcome::Success => totals.success += 1,
+                EngineWorkerOutcome::Failed => totals.failed += 1,
+                EngineWorkerOutcome::Timeout => totals.timeout += 1,
+            },
+            Ok(Err(e)) => {
+                eprintln!(
+                    "[run] warning: backend engine worker {} could not run: {e}",
+                    index + 1
+                );
+                totals.worker_errors += 1;
+            }
+            Err(()) => {
+                eprintln!("[run] warning: backend engine worker {} panicked", index + 1);
+                totals.worker_errors += 1;
+            }
+        }
+    }
+    totals
 }
 
 fn run_engine_worker(plan: EngineWorkerPlan) -> Result<EngineWorkerResult, String> {
@@ -1164,7 +1218,7 @@ fn write_run_status(
 ) -> Result<PathBuf, String> {
     let status_path = run_dir.join("status.json");
     let status_json = format!(
-        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"rejected\": {},\n  \"retries\": {},\n  \"job_errors\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {},\n  \"engine_mode\": \"{}\",\n  \"backend_crash_artifacts\": {},\n  \"backend_crashes_triaged\": {},\n  \"backend_crash_triage_errors\": {},\n  \"backend_crash_scan_errors\": {}\n}}\n",
+        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"rejected\": {},\n  \"retries\": {},\n  \"job_errors\": {},\n  \"worker_errors\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {},\n  \"engine_mode\": \"{}\",\n  \"backend_crash_artifacts\": {},\n  \"backend_crashes_triaged\": {},\n  \"backend_crash_triage_errors\": {},\n  \"backend_crash_scan_errors\": {}\n}}\n",
         run_id,
         target_label(target),
         run_backend_label(backend),
@@ -1175,6 +1229,7 @@ fn write_run_status(
         counts.rejected,
         counts.retries,
         counts.job_errors,
+        counts.worker_errors,
         workers,
         timeout_sec,
         restart_limit,
@@ -1319,6 +1374,7 @@ mod tests {
                 rejected: 0,
                 retries: 0,
                 job_errors: 0,
+                worker_errors: 0,
                 backend_crash_artifacts: 0,
                 backend_crashes_triaged: 0,
                 backend_crash_triage_errors: 0,
@@ -1455,6 +1511,7 @@ mod tests {
                 rejected: 0,
                 retries: 0,
                 job_errors: 1,
+                worker_errors: 0,
                 backend_crash_artifacts: 0,
                 backend_crashes_triaged: 0,
                 backend_crash_triage_errors: 0,
@@ -1470,6 +1527,70 @@ mod tests {
         let status = fs::read_to_string(&status_path).expect("read status");
         assert!(
             status.contains("\"job_errors\": 1"),
+            "status was: {status}"
+        );
+        let _ = fs::remove_dir_all(&run_dir);
+    }
+
+    // The engine-backend twin of A26: one worker whose bash could not be started
+    // returned Err out of the join loop, so ingest, status.json and the metrics event
+    // never ran for the block, and the workers still running were left unjoined.
+    #[test]
+    fn an_engine_worker_that_cannot_start_does_not_discard_the_other_workers() {
+        use super::{summarize_engine_workers, EngineWorkerOutcome, EngineWorkerResult};
+
+        let totals = summarize_engine_workers(vec![
+            Ok(Ok(EngineWorkerResult {
+                outcome: EngineWorkerOutcome::Success,
+            })),
+            Ok(Err("failed to execute backend engine command for worker 2".to_string())),
+            Ok(Ok(EngineWorkerResult {
+                outcome: EngineWorkerOutcome::Timeout,
+            })),
+            Err(()),
+        ]);
+
+        assert_eq!(totals.success, 1);
+        assert_eq!(totals.timeout, 1);
+        assert_eq!(totals.failed, 0, "a worker that never ran is not a failed run");
+        assert_eq!(totals.worker_errors, 2, "the error and the panic both count");
+    }
+
+    #[test]
+    fn run_status_records_engine_worker_errors() {
+        use super::{write_run_status, RunStatusCounts};
+
+        let run_dir = unique_temp_dir("engine-worker-errors-status");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        let status_path = write_run_status(
+            &run_dir,
+            11,
+            &TargetKind::Onnx,
+            &RunBackend::Libfuzzer,
+            RunStatusCounts {
+                total: 2,
+                success: 1,
+                failed: 0,
+                timeout: 0,
+                rejected: 0,
+                retries: 0,
+                job_errors: 0,
+                worker_errors: 1,
+                backend_crash_artifacts: 0,
+                backend_crashes_triaged: 0,
+                backend_crash_triage_errors: 0,
+                backend_crash_scan_errors: 0,
+            },
+            2,
+            30,
+            1,
+            "blackbox",
+        )
+        .expect("write status");
+
+        let status = fs::read_to_string(&status_path).expect("read status");
+        assert!(
+            status.contains("\"worker_errors\": 1"),
             "status was: {status}"
         );
         let _ = fs::remove_dir_all(&run_dir);
@@ -1538,6 +1659,7 @@ mod tests {
                 rejected: 0,
                 retries: 0,
                 job_errors: 0,
+                worker_errors: 0,
                 backend_crash_artifacts: 0,
                 backend_crashes_triaged: 0,
                 backend_crash_triage_errors: 0,
