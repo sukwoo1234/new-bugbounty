@@ -8,9 +8,20 @@ WORKDIR="${WORKDIR:-$PWD}"
 # file, so running it while a dashboard was up logged the operator out. Everything
 # it touches now lives in a throwaway tree.
 WORK="$(mktemp -d)"
+# Installed immediately: everything between here and the full cleanup below can
+# exit, and each of those paths used to leak the temp tree.
+trap 'rm -rf "$WORK"' EXIT
 DATA_DIR="${DATA_DIR:-$WORK/data}"
 SEEDS_DIR="${SEEDS_DIR:-$WORK/seeds}"
-LOG_DIR="${LOG_DIR:-$WORK/ui-check}"
+# The logs are the evidence for a failure, so they must OUTLIVE the throwaway tree.
+# Isolating the data dir is the point of R5; the logs do not need to be inside it.
+LOG_DIR="${LOG_DIR:-$(mktemp -d -t tool-ui-check-XXXXXX)}"
+case "$LOG_DIR" in
+  "$WORKDIR"/data|"$WORKDIR"/data/*)
+    echo "[FAIL] the check must not write logs into the operator data dir: $LOG_DIR" >&2
+    exit 1
+    ;;
+esac
 mkdir -p "$DATA_DIR" "$SEEDS_DIR/onnx" "$LOG_DIR" "$WORK/run"
 
 case "$DATA_DIR" in
@@ -22,7 +33,13 @@ esac
 
 # The token file lives under XDG_RUNTIME_DIR. Point it at the throwaway tree and
 # remember the operator's own file so the run can prove it left it alone.
-ORIG_TOKEN_FILE="${XDG_RUNTIME_DIR:-$HOME/.cache/tool}/tool-ui-token"
+# Mirrors token_file_path() in src/ui/server.rs exactly - the fallback file has a
+# different name, so re-deriving it loosely watched a path the tool never writes.
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+  ORIG_TOKEN_FILE="$XDG_RUNTIME_DIR/tool-ui-token"
+else
+  ORIG_TOKEN_FILE="$HOME/.cache/tool/ui-token"
+fi
 ORIG_TOKEN_SUM=""
 if [[ -f "$ORIG_TOKEN_FILE" ]]; then
   ORIG_TOKEN_SUM="$(sha256sum "$ORIG_TOKEN_FILE" | cut -d' ' -f1)"
@@ -31,9 +48,13 @@ export XDG_RUNTIME_DIR="$WORK/run"
 
 # Older runs of this check left a data/ui-check directory behind. Remember its
 # state so the run can prove it did not add to or modify it.
-ORIG_UI_CHECK_STAMP="absent"
-if [[ -e "$WORKDIR/data/ui-check" ]]; then
-  ORIG_UI_CHECK_STAMP="$(stat -c '%Y' "$WORKDIR/data/ui-check")"
+# A whole-tree stamp: a directory's own mtime does not change when a file inside it
+# is rewritten, so watching one subdirectory proved much less than the message said.
+DATA_TREE_STAMP_BEFORE="$WORK/data-tree-before.txt"
+if [[ -d "$WORKDIR/data" ]]; then
+  find "$WORKDIR/data" -maxdepth 3 -printf '%p\t%T@\t%s\n' 2>/dev/null | sort > "$DATA_TREE_STAMP_BEFORE" || true
+else
+  : > "$DATA_TREE_STAMP_BEFORE"
 fi
 
 # An ephemeral port, so a running campaign dashboard on 8787 is not in the way.
@@ -62,6 +83,7 @@ cleanup() {
     wait "$SERVER_PID" 2>/dev/null || true
   fi
   rm -rf "$WORK"
+  echo "[ui-check] logs kept at: $LOG_DIR" >&2
 }
 trap cleanup EXIT
 
@@ -69,10 +91,18 @@ cd "$WORKDIR"
 
 # Enough of a tree that the entity-detail assertions still assert something.
 printf 'seed' > "$SEEDS_DIR/onnx/seed.onnx"
-mkdir -p "$DATA_DIR/runs/run-1" "$DATA_DIR/triage/triage-1"
+# All four entity kinds: the detail routes were rewritten this stage, and without a
+# fixture for a kind the dashboard renders no link and the assertion below silently
+# skips - which is how reports and coverage stopped being checked at all.
+mkdir -p "$DATA_DIR/runs/run-1" "$DATA_DIR/triage/triage-1" \
+         "$DATA_DIR/reports/report-1" "$DATA_DIR/coverage/coverage-1"
 printf '{"run_id": "run-1", "total": 1, "success": 1}\n' > "$DATA_DIR/runs/run-1/status.json"
 printf '{"triage_id": "triage-1", "verdict": "not_reproduced", "attempts": []}\n' \
   > "$DATA_DIR/triage/triage-1/summary.json"
+printf '# Report report-1\n' > "$DATA_DIR/reports/report-1/report.md"
+printf '{"report_id": "report-1"}\n' > "$DATA_DIR/reports/report-1/meta.json"
+printf '{"coverage_id": "coverage-1", "coverage_kind": "proxy"}\n' \
+  > "$DATA_DIR/coverage/coverage-1/summary.json"
 
 cargo run --offline -- --data-dir "$DATA_DIR" --seeds-dir "$SEEDS_DIR" \
   ui-serve --bind "$BIND" >"$SERVER_LOG" 2>&1 &
@@ -254,10 +284,14 @@ triage_path="$(printf '%s' "$dash_html" | sed -n 's/.*href="\(\/*triage\/[^"]*\)
 report_path="$(printf '%s' "$dash_html" | sed -n 's/.*href="\(\/*report\/[^"]*\)".*/\1/p' | head -n 1)"
 coverage_path="$(printf '%s' "$dash_html" | sed -n 's/.*href="\(\/*coverage\/[^"]*\)".*/\1/p' | head -n 1)"
 
-[[ -n "$run_path" ]] && check_url "${BASE_URL}${run_path}"
-[[ -n "$triage_path" ]] && check_url "${BASE_URL}${triage_path}"
-[[ -n "$report_path" ]] && check_url "${BASE_URL}${report_path}"
-[[ -n "$coverage_path" ]] && check_url "${BASE_URL}${coverage_path}"
+for kind in run triage report coverage; do
+  eval "path=\"\${${kind}_path}\""
+  if [[ -z "$path" ]]; then
+    echo "[FAIL] the dashboard exposed no /${kind}/<id> link to check" | tee -a "$CHECK_LOG"
+    exit 1
+  fi
+  check_url "${BASE_URL}${path}"
+done
 
 # R5: the operator's own token file must be exactly as it was.
 if [[ -n "$ORIG_TOKEN_SUM" ]]; then
@@ -274,15 +308,18 @@ else
   echo "[OK] no operator token file was created" | tee -a "$CHECK_LOG"
 fi
 
-now_ui_check_stamp="absent"
-if [[ -e "$WORKDIR/data/ui-check" ]]; then
-  now_ui_check_stamp="$(stat -c '%Y' "$WORKDIR/data/ui-check")"
+DATA_TREE_STAMP_AFTER="$WORK/data-tree-after.txt"
+if [[ -d "$WORKDIR/data" ]]; then
+  find "$WORKDIR/data" -maxdepth 3 -printf '%p\t%T@\t%s\n' 2>/dev/null | sort > "$DATA_TREE_STAMP_AFTER" || true
+else
+  : > "$DATA_TREE_STAMP_AFTER"
 fi
-if [[ "$now_ui_check_stamp" != "$ORIG_UI_CHECK_STAMP" ]]; then
-  echo "[FAIL] the check wrote into the operator data dir" | tee -a "$CHECK_LOG"
+if ! diff -q "$DATA_TREE_STAMP_BEFORE" "$DATA_TREE_STAMP_AFTER" >/dev/null; then
+  echo "[FAIL] the check changed the operator data dir:" | tee -a "$CHECK_LOG"
+  diff "$DATA_TREE_STAMP_BEFORE" "$DATA_TREE_STAMP_AFTER" | head -n 20 | tee -a "$CHECK_LOG"
   exit 1
 fi
-echo "[OK] the operator data dir was not touched" | tee -a "$CHECK_LOG"
+echo "[OK] the operator data dir is unchanged (name, mtime and size, 3 levels deep)" | tee -a "$CHECK_LOG"
 
 echo "[ui-check] done"
 echo "server_log: $SERVER_LOG"
