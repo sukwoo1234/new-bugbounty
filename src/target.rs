@@ -6,7 +6,7 @@ use std::{
 
 use crate::common::{
     command_with_core_dump_off, download_file, download_file_name, first_line, has_ext,
-    sha256_file, validate_official_source, AppPaths,
+    is_core_dump_wrapper_exec_failure, sha256_file, validate_official_source, AppPaths,
 };
 use crate::json_utils::json_escape;
 
@@ -494,7 +494,11 @@ fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let lower = stderr.to_ascii_lowercase();
-                if lower.contains("failed to execute") && lower.contains("no such file") {
+                // A13: prlimit reports its own exec failure (127/126) instead of
+                // Err(NotFound); either way this candidate does not exist, so try the next.
+                if is_core_dump_wrapper_exec_failure(output.status.code(), &stderr)
+                    || (lower.contains("failed to execute") && lower.contains("no such file"))
+                {
                     continue;
                 }
                 if let Some(result) =
@@ -559,6 +563,15 @@ except Exception as e:
                 return result;
             }
             let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // A13: the interpreter never ran (prlimit could not exec it), so this is an
+            // unavailable probe, not an invoked loader.
+            if is_core_dump_wrapper_exec_failure(output.status.code(), &stderr) {
+                return LibraryConnectResult {
+                    step: format!("onnxruntime unavailable ({})", first_line(&stderr)),
+                    outcome: LibraryConnectOutcome::Unavailable,
+                };
+            }
             if output.status.code() == Some(3) {
                 LibraryConnectResult {
                     step: format!("onnxruntime unavailable ({})", first_line(&stdout)),
@@ -616,6 +629,14 @@ except Exception as e:
                 return result;
             }
             let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // A13: see onnx_library_connect - a wrapper exec failure means no probe ran.
+            if is_core_dump_wrapper_exec_failure(output.status.code(), &stderr) {
+                return LibraryConnectResult {
+                    step: format!("safetensors unavailable ({})", first_line(&stderr)),
+                    outcome: LibraryConnectOutcome::Unavailable,
+                };
+            }
             if output.status.code() == Some(3) {
                 LibraryConnectResult {
                     step: format!("safetensors unavailable ({})", first_line(&stdout)),
@@ -725,6 +746,15 @@ fn exit_signal(_status: &ExitStatus) -> Option<i32> {
 mod tests {
     use super::{crash_status_detail, exit_code_signal_name};
 
+    // cargo runs #[test]s in parallel threads and TOOL_PYTHON_BIN /
+    // TOOL_REQUIRE_LIBRARY_CONNECT are process-global, so the probe tests that
+    // mutate them must not overlap.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn detects_128_plus_signal_exit_codes() {
         assert_eq!(exit_code_signal_name(136), Some("SIGFPE"));
@@ -772,6 +802,7 @@ mod tests {
         use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
 
+        let _guard = env_lock();
         let dir = std::env::temp_dir().join(format!("tool-g1-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Stand-in for the onnxruntime probe: dies by SIGSEGV instead of loading.
@@ -837,5 +868,66 @@ mod tests {
 
         assert!(matches!(err, HarnessError::Benign(_)), "err was: {err:?}");
         assert_eq!(err.exit_code(), crate::EXIT_HARNESS_BENIGN);
+    }
+
+    // A13: with prlimit in front of the interpreter, a missing/non-executable
+    // interpreter comes back as a plain exit 127 instead of Err(NotFound), so the
+    // probe used to report "loader invoked" even though nothing ever ran.
+    #[cfg(unix)]
+    #[test]
+    fn missing_python_interpreter_is_unavailable_not_invoked() {
+        use super::{onnx_library_connect, safetensors_library_connect, LibraryConnectOutcome};
+
+        let _guard = env_lock();
+        let dir = std::env::temp_dir().join(format!("tool-a13-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("sample.onnx");
+        std::fs::write(&input, b"bytes").unwrap();
+
+        std::env::set_var("TOOL_PYTHON_BIN", "/nonexistent/tool-a13-python3");
+        let onnx = onnx_library_connect(&input);
+        let safetensors = safetensors_library_connect(&input);
+        std::env::remove_var("TOOL_PYTHON_BIN");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            matches!(onnx.outcome, LibraryConnectOutcome::Unavailable),
+            "onnx step was: {}",
+            onnx.step
+        );
+        assert!(
+            matches!(safetensors.outcome, LibraryConnectOutcome::Unavailable),
+            "safetensors step was: {}",
+            safetensors.step
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_library_connect_gate_fails_when_interpreter_is_missing() {
+        use super::{run_harness, HarnessError, TargetKind};
+
+        let _guard = env_lock();
+        let dir = std::env::temp_dir().join(format!("tool-a13-strict-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("sample.onnx");
+        std::fs::write(&input, b"bytes").unwrap();
+
+        std::env::set_var("TOOL_PYTHON_BIN", "/nonexistent/tool-a13-python3");
+        std::env::set_var("TOOL_REQUIRE_LIBRARY_CONNECT", "1");
+        std::env::remove_var("TOOL_ONNX_HARNESS_CMD");
+        let result = run_harness(&TargetKind::Onnx, &input);
+        std::env::remove_var("TOOL_REQUIRE_LIBRARY_CONNECT");
+        std::env::remove_var("TOOL_PYTHON_BIN");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let err = result.expect_err(
+            "the strict library-connect gate must fail when the probe never ran",
+        );
+        assert!(matches!(err, HarnessError::Benign(_)), "err was: {err:?}");
+        assert!(
+            err.to_string().contains("unavailable"),
+            "err was: {err}"
+        );
     }
 }

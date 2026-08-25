@@ -89,6 +89,14 @@ pub(crate) fn command_with_core_dump_off(program: &str) -> Command {
     cmd
 }
 
+// A13: command_with_core_dump_off runs the real program behind `prlimit`, which
+// execs successfully and then reports the failure itself. A missing or
+// non-executable program therefore arrives as a normal exit 127/126 instead of
+// Err(NotFound), so callers must recognise the wrapper's own failure sentinel.
+pub(crate) fn is_core_dump_wrapper_exec_failure(exit_code: Option<i32>, stderr: &str) -> bool {
+    matches!(exit_code, Some(126) | Some(127)) && stderr.contains("prlimit: failed to execute")
+}
+
 fn core_dump_off_env() -> String {
     let existing = std::env::var("ASAN_OPTIONS").unwrap_or_default();
     if existing.trim().is_empty() {
@@ -274,4 +282,39 @@ pub(crate) enum HarnessExecResult {
     Success(String),
     Failed(String),
     Timeout(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_core_dump_wrapper_exec_failure;
+
+    // A13: prlimit runs fine and reports the failure itself, so a missing or
+    // non-executable interpreter arrives as a plain exit 126/127 instead of
+    // Err(NotFound). Without this sentinel the probe is reported as "invoked".
+    #[test]
+    fn detects_prlimit_exec_failure_codes() {
+        assert!(is_core_dump_wrapper_exec_failure(
+            Some(127),
+            "prlimit: failed to execute /nonexistent/python3: No such file or directory\n"
+        ));
+        assert!(is_core_dump_wrapper_exec_failure(
+            Some(126),
+            "prlimit: failed to execute /etc/hostname: Permission denied\n"
+        ));
+    }
+
+    #[test]
+    fn ignores_program_own_exit_codes_and_output() {
+        // the program itself ran and exited 127/126 on its own
+        assert!(!is_core_dump_wrapper_exec_failure(
+            Some(127),
+            "load_fail: bad model\n"
+        ));
+        // wrapper message but a normal exit code (never produced by prlimit exec failure)
+        assert!(!is_core_dump_wrapper_exec_failure(
+            Some(2),
+            "prlimit: failed to execute /nonexistent/python3: No such file or directory\n"
+        ));
+        assert!(!is_core_dump_wrapper_exec_failure(None, ""));
+    }
 }
