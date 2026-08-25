@@ -101,6 +101,14 @@ for summary in "$TRIAGE_ROOT"/triage-*/summary.json; do
       end
   ')
 
+  # A31: attempts[]가 비면 "모든 시도가 크래시" 조건이 공허하게 참이 되어
+  # verdict=reproduced가 찍혔다. 근거 없는 크래시 주장이므로 재해석하지 않고 건너뛴다.
+  if [[ "$total" -eq 0 ]]; then
+    echo "[retriage] skip: no attempts to re-derive a verdict from: $summary" >&2
+    SKIPPED=$((SKIPPED + 1))
+    continue
+  fi
+
   # verdict 재계산 (triage.rs 새 로직과 동일)
   if [[ "$timeout_count" -gt 0 ]]; then
     verdict="timeout"
