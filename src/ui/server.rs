@@ -3,7 +3,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
@@ -224,6 +224,7 @@ fn handle_control_route(
     raw_path: &str,
 ) -> Result<(), String> {
     let _state = lock_state();
+    reap_children();
     match (method, raw_path.split('?').next().unwrap_or(raw_path)) {
         ("GET", "/control/status") => handle_control_status(app_paths, stream),
         ("POST", "/control/start") => handle_control_start(app_paths, stream, raw_path),
@@ -244,6 +245,7 @@ fn handle_replay_route(
     raw_path: &str,
 ) -> Result<(), String> {
     let _state = lock_state();
+    reap_children();
     match (method, raw_path.split('?').next().unwrap_or(raw_path)) {
         ("GET", "/replay/status") => handle_replay_status(app_paths, stream),
         ("POST", "/replay/start") => handle_replay_start(app_paths, stream, raw_path),
@@ -264,6 +266,7 @@ fn handle_target_route(
     raw_path: &str,
 ) -> Result<(), String> {
     let _state = lock_state();
+    reap_children();
     match (method, raw_path.split('?').next().unwrap_or(raw_path)) {
         ("GET", "/target/build/status") => handle_target_build_status(app_paths, stream),
         ("POST", "/target/build/start") => handle_target_build_start(app_paths, stream, raw_path),
@@ -282,7 +285,7 @@ fn handle_target_route(
 
 fn handle_control_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
     let state = read_control_state(app_paths)?;
-    let running = state.pid.map(is_process_alive).unwrap_or(false);
+    let running = running_job_pid(state.pid, state.pid_start).is_some();
     let mut body = String::new();
     body.push_str("{\"schema_version\":\"1.0\"");
     body.push_str(&format!(
@@ -312,7 +315,7 @@ fn handle_control_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result
 
 fn handle_replay_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
     let state = read_replay_state(app_paths)?;
-    let running = state.pid.map(is_process_alive).unwrap_or(false);
+    let running = running_job_pid(state.pid, state.pid_start).is_some();
     let summary_path = if running {
         String::new()
     } else {
@@ -356,12 +359,13 @@ fn handle_replay_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<
 
 fn handle_target_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
     let mut state = read_target_prepare_state(app_paths)?;
-    let running = state.pid.map(is_process_alive).unwrap_or(false);
+    let running = running_job_pid(state.pid, state.pid_start).is_some();
     if !running
         && state.pid.is_some()
         && matches!(state.last_result.as_str(), "running" | "starting")
     {
         state.pid = None;
+        state.pid_start = None;
         state.started_at = None;
         if log_contains(&state.log_file, "[prepare-target] done") {
             state.last_result = "success".to_string();
@@ -442,12 +446,13 @@ fn handle_target_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<
 
 fn handle_target_build_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
     let mut state = read_target_build_state(app_paths)?;
-    let running = state.pid.map(is_process_alive).unwrap_or(false);
+    let running = running_job_pid(state.pid, state.pid_start).is_some();
     if !running
         && state.pid.is_some()
         && matches!(state.last_result.as_str(), "running" | "starting")
     {
         state.pid = None;
+        state.pid_start = None;
         state.started_at = None;
         if log_contains(&state.log_file, "[target-build] done") {
             state.last_result = "success".to_string();
@@ -519,15 +524,13 @@ fn handle_replay_start(
     raw_path: &str,
 ) -> Result<(), String> {
     let current = read_replay_state(app_paths)?;
-    if let Some(pid) = current.pid {
-        if is_process_alive(pid) {
-            return write_response(
-                stream,
-                "409 Conflict",
-                "application/json; charset=utf-8",
-                "{\"error\":\"replay_already_running\"}",
-            );
-        }
+    if running_job_pid(current.pid, current.pid_start).is_some() {
+        return write_response(
+            stream,
+            "409 Conflict",
+            "application/json; charset=utf-8",
+            "{\"error\":\"replay_already_running\"}",
+        );
     }
 
     let input_value = extract_query_param(raw_path, "input").unwrap_or("");
@@ -601,9 +604,11 @@ fn handle_replay_start(
         .spawn()
         .map_err(|e| format!("failed to start replay triage: {e}"))?;
     let pid = child.id();
+    register_child(child);
 
     let state = ReplayState {
         pid: Some(pid),
+        pid_start: process_start_ticks(pid),
         started_at: Some(now_unix()),
         target: target.to_string(),
         input: input_path.display().to_string(),
@@ -626,15 +631,13 @@ fn handle_target_prepare(
     raw_path: &str,
 ) -> Result<(), String> {
     let current = read_target_prepare_state(app_paths)?;
-    if let Some(pid) = current.pid {
-        if is_process_alive(pid) {
-            return write_response(
-                stream,
-                "409 Conflict",
-                "application/json; charset=utf-8",
-                "{\"error\":\"target_prepare_already_running\"}",
-            );
-        }
+    if running_job_pid(current.pid, current.pid_start).is_some() {
+        return write_response(
+            stream,
+            "409 Conflict",
+            "application/json; charset=utf-8",
+            "{\"error\":\"target_prepare_already_running\"}",
+        );
     }
 
     let target = match extract_query_param(raw_path, "target").unwrap_or("onnx") {
@@ -705,9 +708,12 @@ fn handle_target_prepare(
     let child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn target prepare command: {e}"))?;
+    let pid = child.id();
+    register_child(child);
 
     let state = TargetPrepareState {
-        pid: Some(child.id()),
+        pid: Some(pid),
+        pid_start: process_start_ticks(pid),
         started_at: Some(now_unix()),
         target: target.to_string(),
         version,
@@ -720,7 +726,7 @@ fn handle_target_prepare(
 
     let body = format!(
         "{{\"ok\":true,\"pid\":{},\"target\":\"{}\",\"version\":\"{}\"}}",
-        child.id(),
+        pid,
         json_escape(target),
         json_escape(&state.version)
     );
@@ -733,15 +739,13 @@ fn handle_target_build_start(
     raw_path: &str,
 ) -> Result<(), String> {
     let current = read_target_build_state(app_paths)?;
-    if let Some(pid) = current.pid {
-        if is_process_alive(pid) {
-            return write_response(
-                stream,
-                "409 Conflict",
-                "application/json; charset=utf-8",
-                "{\"error\":\"target_build_already_running\"}",
-            );
-        }
+    if running_job_pid(current.pid, current.pid_start).is_some() {
+        return write_response(
+            stream,
+            "409 Conflict",
+            "application/json; charset=utf-8",
+            "{\"error\":\"target_build_already_running\"}",
+        );
     }
 
     let target = match extract_query_param(raw_path, "target").unwrap_or("gguf") {
@@ -802,9 +806,12 @@ fn handle_target_build_start(
     let child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn target build command: {e}"))?;
+    let pid = child.id();
+    register_child(child);
 
     let state = TargetBuildState {
-        pid: Some(child.id()),
+        pid: Some(pid),
+        pid_start: process_start_ticks(pid),
         started_at: Some(now_unix()),
         target: target.to_string(),
         version,
@@ -816,7 +823,7 @@ fn handle_target_build_start(
 
     let body = format!(
         "{{\"ok\":true,\"pid\":{},\"target\":\"{}\",\"version\":\"{}\"}}",
-        child.id(),
+        pid,
         json_escape(target),
         json_escape(&state.version)
     );
@@ -826,9 +833,9 @@ fn handle_target_build_start(
 fn handle_replay_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
     let mut state = read_replay_state(app_paths)?;
     let mut was_running = false;
-    if let Some(pid) = state.pid {
-        if is_process_alive(pid) {
-            was_running = true;
+    if let Some(pid) = running_job_pid(state.pid, state.pid_start) {
+        was_running = true;
+        {
             let status = Command::new("kill")
                 .arg("-TERM")
                 .arg(pid.to_string())
@@ -845,6 +852,7 @@ fn handle_replay_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<()
         }
     }
     state.pid = None;
+    state.pid_start = None;
     write_replay_state(app_paths, &state)?;
     let body = format!(
         "{{\"ok\":true,\"running\":false,\"stopped\":{}}}",
@@ -855,8 +863,8 @@ fn handle_replay_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<()
 
 fn handle_target_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
     let mut state = read_target_prepare_state(app_paths)?;
-    if let Some(pid) = state.pid {
-        if is_process_alive(pid) {
+    if let Some(pid) = running_job_pid(state.pid, state.pid_start) {
+        {
             let status = Command::new("kill")
                 .arg(pid.to_string())
                 .status()
@@ -872,6 +880,7 @@ fn handle_target_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<()
         }
     }
     state.pid = None;
+    state.pid_start = None;
     state.started_at = None;
     state.last_result = "stopped".to_string();
     state.last_message = "target prepare stopped".to_string();
@@ -885,8 +894,8 @@ fn handle_target_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<()
 
 fn handle_target_build_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
     let mut state = read_target_build_state(app_paths)?;
-    if let Some(pid) = state.pid {
-        if is_process_alive(pid) {
+    if let Some(pid) = running_job_pid(state.pid, state.pid_start) {
+        {
             let status = Command::new("kill")
                 .arg(pid.to_string())
                 .status()
@@ -902,6 +911,7 @@ fn handle_target_build_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Res
         }
     }
     state.pid = None;
+    state.pid_start = None;
     state.started_at = None;
     state.last_result = "stopped".to_string();
     state.last_message = "target build stopped".to_string();
@@ -919,15 +929,13 @@ fn handle_control_start(
     raw_path: &str,
 ) -> Result<(), String> {
     let current = read_control_state(app_paths)?;
-    if let Some(pid) = current.pid {
-        if is_process_alive(pid) {
-            return write_response(
-                stream,
-                "409 Conflict",
-                "application/json; charset=utf-8",
-                "{\"error\":\"already_running\"}",
-            );
-        }
+    if running_job_pid(current.pid, current.pid_start).is_some() {
+        return write_response(
+            stream,
+            "409 Conflict",
+            "application/json; charset=utf-8",
+            "{\"error\":\"already_running\"}",
+        );
     }
 
     let target = extract_query_param(raw_path, "target").unwrap_or("onnx");
@@ -1007,9 +1015,11 @@ fn handle_control_start(
         .spawn()
         .map_err(|e| format!("failed to start run loop script: {e}"))?;
     let pid = child.id();
+    register_child(child);
 
     let state = ControlState {
         pid: Some(pid),
+        pid_start: process_start_ticks(pid),
         started_at: Some(now_unix()),
         duration_seconds: duration_seconds.parse::<u64>().unwrap_or(3600),
         target: target.to_string(),
@@ -1030,9 +1040,9 @@ fn handle_control_start(
 fn handle_control_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
     let mut state = read_control_state(app_paths)?;
     let mut was_running = false;
-    if let Some(pid) = state.pid {
-        if is_process_alive(pid) {
-            was_running = true;
+    if let Some(pid) = running_job_pid(state.pid, state.pid_start) {
+        was_running = true;
+        {
             let status = Command::new("kill")
                 .arg("-TERM")
                 .arg(pid.to_string())
@@ -1049,6 +1059,7 @@ fn handle_control_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(
         }
     }
     state.pid = None;
+    state.pid_start = None;
     write_control_state(app_paths, &state)?;
     let body = format!(
         "{{\"ok\":true,\"running\":false,\"stopped\":{}}}",
@@ -1059,6 +1070,8 @@ fn handle_control_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(
 
 struct ControlState {
     pid: Option<u32>,
+    /// Start time of `pid`, so a recycled pid cannot pass for our job.
+    pid_start: Option<u64>,
     started_at: Option<u64>,
     duration_seconds: u64,
     target: String,
@@ -1068,6 +1081,8 @@ struct ControlState {
 
 struct ReplayState {
     pid: Option<u32>,
+    /// Start time of `pid`, so a recycled pid cannot pass for our job.
+    pid_start: Option<u64>,
     started_at: Option<u64>,
     target: String,
     input: String,
@@ -1076,6 +1091,8 @@ struct ReplayState {
 
 struct TargetPrepareState {
     pid: Option<u32>,
+    /// Start time of `pid`, so a recycled pid cannot pass for our job.
+    pid_start: Option<u64>,
     started_at: Option<u64>,
     target: String,
     version: String,
@@ -1087,6 +1104,8 @@ struct TargetPrepareState {
 
 struct TargetBuildState {
     pid: Option<u32>,
+    /// Start time of `pid`, so a recycled pid cannot pass for our job.
+    pid_start: Option<u64>,
     started_at: Option<u64>,
     target: String,
     version: String,
@@ -1100,6 +1119,7 @@ fn read_control_state(app_paths: &AppPaths) -> Result<ControlState, String> {
     if !state_path.exists() {
         return Ok(ControlState {
             pid: None,
+            pid_start: None,
             started_at: None,
             duration_seconds: 3600,
             target: "onnx".to_string(),
@@ -1120,6 +1140,7 @@ fn read_control_state(app_paths: &AppPaths) -> Result<ControlState, String> {
     })?;
     let mut out = ControlState {
         pid: None,
+        pid_start: None,
         started_at: None,
         duration_seconds: 3600,
         target: "onnx".to_string(),
@@ -1137,6 +1158,7 @@ fn read_control_state(app_paths: &AppPaths) -> Result<ControlState, String> {
         };
         match k {
             "pid" => out.pid = v.parse::<u32>().ok(),
+            "pid_start" => out.pid_start = v.parse::<u64>().ok(),
             "started_at" => out.started_at = v.parse::<u64>().ok(),
             "duration_seconds" => out.duration_seconds = v.parse::<u64>().unwrap_or(3600),
             "target" => out.target = decode_state_value(v),
@@ -1153,6 +1175,7 @@ fn read_replay_state(app_paths: &AppPaths) -> Result<ReplayState, String> {
     if !state_path.exists() {
         return Ok(ReplayState {
             pid: None,
+            pid_start: None,
             started_at: None,
             target: "onnx".to_string(),
             input: String::new(),
@@ -1172,6 +1195,7 @@ fn read_replay_state(app_paths: &AppPaths) -> Result<ReplayState, String> {
     })?;
     let mut out = ReplayState {
         pid: None,
+        pid_start: None,
         started_at: None,
         target: "onnx".to_string(),
         input: String::new(),
@@ -1188,6 +1212,7 @@ fn read_replay_state(app_paths: &AppPaths) -> Result<ReplayState, String> {
         };
         match k {
             "pid" => out.pid = v.parse::<u32>().ok(),
+            "pid_start" => out.pid_start = v.parse::<u64>().ok(),
             "started_at" => out.started_at = v.parse::<u64>().ok(),
             "target" => out.target = decode_state_value(v),
             "input" => out.input = decode_state_value(v),
@@ -1206,6 +1231,7 @@ fn read_target_prepare_state(app_paths: &AppPaths) -> Result<TargetPrepareState,
     if !state_path.exists() {
         return Ok(TargetPrepareState {
             pid: None,
+            pid_start: None,
             started_at: None,
             target: "onnx".to_string(),
             version: String::new(),
@@ -1228,6 +1254,7 @@ fn read_target_prepare_state(app_paths: &AppPaths) -> Result<TargetPrepareState,
     })?;
     let mut out = TargetPrepareState {
         pid: None,
+        pid_start: None,
         started_at: None,
         target: "onnx".to_string(),
         version: String::new(),
@@ -1247,6 +1274,7 @@ fn read_target_prepare_state(app_paths: &AppPaths) -> Result<TargetPrepareState,
         };
         match k {
             "pid" => out.pid = v.parse::<u32>().ok(),
+            "pid_start" => out.pid_start = v.parse::<u64>().ok(),
             "started_at" => out.started_at = v.parse::<u64>().ok(),
             "target" => out.target = decode_state_value(v),
             "version" => out.version = decode_state_value(v),
@@ -1268,6 +1296,7 @@ fn read_target_build_state(app_paths: &AppPaths) -> Result<TargetBuildState, Str
     if !state_path.exists() {
         return Ok(TargetBuildState {
             pid: None,
+            pid_start: None,
             started_at: None,
             target: "gguf".to_string(),
             version: String::new(),
@@ -1289,6 +1318,7 @@ fn read_target_build_state(app_paths: &AppPaths) -> Result<TargetBuildState, Str
     })?;
     let mut out = TargetBuildState {
         pid: None,
+        pid_start: None,
         started_at: None,
         target: "gguf".to_string(),
         version: String::new(),
@@ -1307,6 +1337,7 @@ fn read_target_build_state(app_paths: &AppPaths) -> Result<TargetBuildState, Str
         };
         match k {
             "pid" => out.pid = v.parse::<u32>().ok(),
+            "pid_start" => out.pid_start = v.parse::<u64>().ok(),
             "started_at" => out.started_at = v.parse::<u64>().ok(),
             "target" => out.target = decode_state_value(v),
             "version" => out.version = decode_state_value(v),
@@ -1319,6 +1350,15 @@ fn read_target_build_state(app_paths: &AppPaths) -> Result<TargetBuildState, Str
     Ok(out)
 }
 
+/// A truncating write leaves the file empty for a moment; a crash there reads back as "no job"
+/// and orphans a running one. Write beside the file and rename over it instead.
+fn write_state_file(path: &Path, body: &str) -> Result<(), String> {
+    let tmp = path.with_extension("state.tmp");
+    fs::write(&tmp, body).map_err(|e| format!("failed to write state '{}': {e}", tmp.display()))?;
+    fs::rename(&tmp, path)
+        .map_err(|e| format!("failed to move state into place '{}': {e}", path.display()))
+}
+
 fn write_control_state(app_paths: &AppPaths, state: &ControlState) -> Result<(), String> {
     let control_dir = app_paths.data_dir.join("ui-control");
     fs::create_dir_all(&control_dir).map_err(|e| {
@@ -1329,22 +1369,19 @@ fn write_control_state(app_paths: &AppPaths, state: &ControlState) -> Result<(),
     })?;
     let state_path = control_dir.join("control.state");
     let pid_text = state.pid.map(|v| v.to_string()).unwrap_or_default();
+    let pid_start_text = state.pid_start.map(|v| v.to_string()).unwrap_or_default();
     let started_at_text = state.started_at.map(|v| v.to_string()).unwrap_or_default();
     let body = format!(
-        "pid={}\nstarted_at={}\nduration_seconds={}\ntarget={}\nbackend={}\nlog_file={}\n",
+        "pid={}\npid_start={}\nstarted_at={}\nduration_seconds={}\ntarget={}\nbackend={}\nlog_file={}\n",
         pid_text,
+        pid_start_text,
         started_at_text,
         state.duration_seconds,
         encode_state_value(&state.target),
         encode_state_value(&state.backend),
         encode_state_value(&state.log_file)
     );
-    fs::write(&state_path, body).map_err(|e| {
-        format!(
-            "failed to write control state '{}': {e}",
-            state_path.display()
-        )
-    })
+    write_state_file(&state_path, &body)
 }
 
 fn write_replay_state(app_paths: &AppPaths, state: &ReplayState) -> Result<(), String> {
@@ -1357,21 +1394,18 @@ fn write_replay_state(app_paths: &AppPaths, state: &ReplayState) -> Result<(), S
     })?;
     let state_path = replay_dir.join("replay.state");
     let pid_text = state.pid.map(|v| v.to_string()).unwrap_or_default();
+    let pid_start_text = state.pid_start.map(|v| v.to_string()).unwrap_or_default();
     let started_at_text = state.started_at.map(|v| v.to_string()).unwrap_or_default();
     let body = format!(
-        "pid={}\nstarted_at={}\ntarget={}\ninput={}\nlog_file={}\n",
+        "pid={}\npid_start={}\nstarted_at={}\ntarget={}\ninput={}\nlog_file={}\n",
         pid_text,
+        pid_start_text,
         started_at_text,
         encode_state_value(&state.target),
         encode_state_value(&state.input),
         encode_state_value(&state.log_file)
     );
-    fs::write(&state_path, body).map_err(|e| {
-        format!(
-            "failed to write replay state '{}': {e}",
-            state_path.display()
-        )
-    })
+    write_state_file(&state_path, &body)
 }
 
 fn write_target_prepare_state(
@@ -1387,10 +1421,12 @@ fn write_target_prepare_state(
     })?;
     let state_path = target_dir.join("prepare-target.state");
     let pid_text = state.pid.map(|v| v.to_string()).unwrap_or_default();
+    let pid_start_text = state.pid_start.map(|v| v.to_string()).unwrap_or_default();
     let started_at_text = state.started_at.map(|v| v.to_string()).unwrap_or_default();
     let body = format!(
-        "pid={}\nstarted_at={}\ntarget={}\nversion={}\nsource_url={}\nlog_file={}\nlast_result={}\nlast_message={}\n",
+        "pid={}\npid_start={}\nstarted_at={}\ntarget={}\nversion={}\nsource_url={}\nlog_file={}\nlast_result={}\nlast_message={}\n",
         pid_text,
+        pid_start_text,
         started_at_text,
         encode_state_value(&state.target),
         encode_state_value(&state.version),
@@ -1399,12 +1435,7 @@ fn write_target_prepare_state(
         encode_state_value(&state.last_result),
         encode_state_value(&state.last_message)
     );
-    fs::write(&state_path, body).map_err(|e| {
-        format!(
-            "failed to write target prepare state '{}': {e}",
-            state_path.display()
-        )
-    })
+    write_state_file(&state_path, &body)
 }
 
 fn write_target_build_state(app_paths: &AppPaths, state: &TargetBuildState) -> Result<(), String> {
@@ -1417,10 +1448,12 @@ fn write_target_build_state(app_paths: &AppPaths, state: &TargetBuildState) -> R
     })?;
     let state_path = target_dir.join("target-build.state");
     let pid_text = state.pid.map(|v| v.to_string()).unwrap_or_default();
+    let pid_start_text = state.pid_start.map(|v| v.to_string()).unwrap_or_default();
     let started_at_text = state.started_at.map(|v| v.to_string()).unwrap_or_default();
     let body = format!(
-        "pid={}\nstarted_at={}\ntarget={}\nversion={}\nlog_file={}\nlast_result={}\nlast_message={}\n",
+        "pid={}\npid_start={}\nstarted_at={}\ntarget={}\nversion={}\nlog_file={}\nlast_result={}\nlast_message={}\n",
         pid_text,
+        pid_start_text,
         started_at_text,
         encode_state_value(&state.target),
         encode_state_value(&state.version),
@@ -1428,12 +1461,7 @@ fn write_target_build_state(app_paths: &AppPaths, state: &TargetBuildState) -> R
         encode_state_value(&state.last_result),
         encode_state_value(&state.last_message)
     );
-    fs::write(&state_path, body).map_err(|e| {
-        format!(
-            "failed to write target build state '{}': {e}",
-            state_path.display()
-        )
-    })
+    write_state_file(&state_path, &body)
 }
 
 fn extract_replay_summary_path(log_file: &str) -> Option<String> {
@@ -1523,7 +1551,70 @@ fn tool_binary_path() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|e| format!("failed to resolve current executable: {e}"))
 }
 
+/// R2: every job the dashboard starts was spawned and then forgotten, so an exited child stayed
+/// a zombie. Keeping the handles lets the server reap them, which is also what frees the pid.
+static SPAWNED_CHILDREN: Mutex<Vec<Child>> = Mutex::new(Vec::new());
+
+fn register_child(child: Child) {
+    let mut children = SPAWNED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
+    children.push(child);
+}
+
+fn reap_children() {
+    let mut children = SPAWNED_CHILDREN.lock().unwrap_or_else(|e| e.into_inner());
+    children.retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
+}
+
+/// Field 22 of /proc/<pid>/stat: the process start time in clock ticks since boot. It is unique
+/// per process for the life of the boot, so it tells a recycled pid from the job we started.
+fn process_start_ticks(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rfind(')')?;
+    // The fields after the command name start at field 3 (state), so start time is the 20th.
+    stat[after_comm + 1..]
+        .split_whitespace()
+        .nth(19)?
+        .parse::<u64>()
+        .ok()
+}
+
+/// The pid of the job a state file describes - but only when that process is still running and is
+/// still the same process we started. A state file with no recorded start time predates this
+/// check, so it cannot prove anything and is treated as "no job": reported as not running, and
+/// never signalled.
+fn running_job_pid(pid: Option<u32>, pid_start: Option<u64>) -> Option<u32> {
+    let pid = pid?;
+    let recorded = pid_start?;
+    if process_start_ticks(pid) != Some(recorded) {
+        return None;
+    }
+    if !is_process_alive(pid) {
+        return None;
+    }
+    Some(pid)
+}
+
+/// The state letter of /proc/<pid>/stat. The command name sits in parentheses and may itself
+/// contain spaces and parentheses, so the fields after it are found from the LAST ')'.
+fn process_state(pid: u32) -> Option<char> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rfind(')')?;
+    stat[after_comm + 1..]
+        .split_whitespace()
+        .next()?
+        .chars()
+        .next()
+}
+
+/// R2: `kill -0` succeeds for a zombie, so an exited-but-unreaped job read as still running and
+/// the dashboard never left "running". A zombie has exited; only a real state counts as alive.
 fn is_process_alive(pid: u32) -> bool {
+    if Path::new("/proc").is_dir() {
+        return match process_state(pid) {
+            Some(state) => state != 'Z',
+            None => false,
+        };
+    }
     Command::new("kill")
         .arg("-0")
         .arg(pid.to_string())
@@ -1877,13 +1968,15 @@ fn write_response(
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_count_or_default, decode_state_value, encode_state_value, is_safe_query_value,
-        is_safe_source_url, is_safe_version, parse_request_head, positive_timeout_sec_or_default,
-        read_request_head, resolve_replay_input,
+        bounded_count_or_default, decode_state_value, encode_state_value, is_process_alive,
+        is_safe_query_value, is_safe_source_url, is_safe_version, parse_request_head,
+        positive_timeout_sec_or_default, process_start_ticks, process_state, read_request_head,
+        reap_children, register_child, resolve_replay_input, running_job_pid,
     };
     use crate::common::{now_unix_millis, AppPaths};
     use std::fs;
     use std::path::PathBuf;
+    use std::process::Command;
 
     fn unique_tmp_dir(label: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
@@ -2019,6 +2112,61 @@ mod tests {
         assert_eq!(bounded_count_or_default(Some("--data-dir"), 64, "2"), "2");
         assert_eq!(bounded_count_or_default(Some(""), 64, "2"), "2");
         assert_eq!(bounded_count_or_default(None, 64, "2"), "2");
+    }
+
+    // R2: the server never wait()s the children it spawns, so an exited child stays a zombie -
+    // and `kill -0` reports a zombie as alive, which froze replay/prepare/build at "running"
+    // forever. A zombie is a dead process; the registry then reaps it for real.
+    #[test]
+    fn an_unreaped_child_that_has_exited_is_not_alive() {
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+
+        let mut became_zombie = false;
+        for _ in 0..200 {
+            if process_state(pid) == Some('Z') {
+                became_zombie = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(became_zombie, "the child never turned into a zombie");
+        assert!(
+            !is_process_alive(pid),
+            "a zombie is an exited process, not a running one"
+        );
+
+        register_child(child);
+        reap_children();
+        assert!(
+            process_state(pid).is_none(),
+            "the registry must reap the child so the pid is released"
+        );
+    }
+
+    // Pid numbers are reused, and a state file outlives the server, so "the recorded pid is
+    // alive" is not the same as "our job is still running" - without an identity check
+    // /control/stop is a SIGTERM aimed at whatever now holds that number.
+    #[test]
+    fn a_recycled_pid_is_not_the_job_we_started() {
+        let me = std::process::id();
+        let ticks = process_start_ticks(me).expect("own start ticks");
+        assert_eq!(running_job_pid(Some(me), Some(ticks)), Some(me));
+        assert_eq!(
+            running_job_pid(Some(me), Some(ticks + 1)),
+            None,
+            "a different process now holds that pid"
+        );
+        assert_eq!(
+            running_job_pid(Some(me), None),
+            None,
+            "a state file with no recorded start time cannot prove the pid is ours"
+        );
+        assert_eq!(running_job_pid(None, Some(ticks)), None);
     }
 
     // A14: replay/start only checked exists()+is_file(), so `tool triage` could be pointed at any
