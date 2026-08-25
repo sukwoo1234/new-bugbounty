@@ -544,15 +544,9 @@ fn handle_replay_start(
     if !is_safe_query_value(&decoded_input) {
         return bad_request(stream, "invalid_input");
     }
-    let input_path = PathBuf::from(&decoded_input);
-    if !input_path.exists() || !input_path.is_file() {
-        return write_response(
-            stream,
-            "400 Bad Request",
-            "application/json; charset=utf-8",
-            "{\"error\":\"invalid_input\"}",
-        );
-    }
+    let Some(input_path) = resolve_replay_input(app_paths, &decoded_input) else {
+        return bad_request(stream, "invalid_input");
+    };
 
     let target = match extract_query_param(raw_path, "target").unwrap_or("onnx") {
         "onnx" | "gguf" | "safetensors" => {
@@ -1817,6 +1811,21 @@ fn from_hex(c: u8) -> Option<u8> {
     }
 }
 
+/// A14: replay/start used to accept any path that existed and was a file, so `tool triage` could
+/// be aimed at anything the server could read. Crash inputs the dashboard offers live under the
+/// data dir and corpus entries under the seeds dir; a PoC kept anywhere else is replayed with the
+/// CLI, which is not reachable from a web page.
+fn resolve_replay_input(app_paths: &AppPaths, requested: &str) -> Option<PathBuf> {
+    for root in [&app_paths.data_dir, &app_paths.seeds_dir] {
+        if let Ok(resolved) = resolve_safe_data_path(root, requested) {
+            if resolved.is_file() {
+                return Some(resolved);
+            }
+        }
+    }
+    None
+}
+
 fn resolve_safe_data_path(data_dir: &Path, requested: &str) -> Result<PathBuf, String> {
     let data_canon = fs::canonicalize(data_dir).map_err(|e| {
         format!(
@@ -1870,8 +1879,18 @@ mod tests {
     use super::{
         bounded_count_or_default, decode_state_value, encode_state_value, is_safe_query_value,
         is_safe_source_url, is_safe_version, parse_request_head, positive_timeout_sec_or_default,
-        read_request_head,
+        read_request_head, resolve_replay_input,
     };
+    use crate::common::{now_unix_millis, AppPaths};
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn unique_tmp_dir(label: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("tool_ui_{}_{}", label, now_unix_millis()));
+        fs::create_dir_all(&p).expect("create tmp dir");
+        p
+    }
 
     // A4: the old server did one 4 KiB read() and looked only at the first line, so a request
     // whose head arrived in several TCP segments lost its headers. The head has to be read
@@ -2000,6 +2019,53 @@ mod tests {
         assert_eq!(bounded_count_or_default(Some("--data-dir"), 64, "2"), "2");
         assert_eq!(bounded_count_or_default(Some(""), 64, "2"), "2");
         assert_eq!(bounded_count_or_default(None, 64, "2"), "2");
+    }
+
+    // A14: replay/start only checked exists()+is_file(), so `tool triage` could be pointed at any
+    // file the server could read. The dashboard's own replay button sends a path under the data
+    // dir, so confining it there (and to the seeds dir) keeps that flow working.
+    #[test]
+    fn replay_input_is_confined_to_the_data_and_seeds_directories() {
+        let root = unique_tmp_dir("a14");
+        let data_dir = root.join("data");
+        let seeds_dir = root.join("seeds");
+        let outside_dir = root.join("outside");
+        for dir in [&data_dir, &seeds_dir, &outside_dir] {
+            fs::create_dir_all(dir).expect("create dir");
+        }
+        let inside = data_dir.join("crash.onnx");
+        fs::write(&inside, b"x").expect("write inside");
+        let seed = seeds_dir.join("seed.onnx");
+        fs::write(&seed, b"x").expect("write seed");
+        let outside = outside_dir.join("secret");
+        fs::write(&outside, b"x").expect("write outside");
+        let link = data_dir.join("link");
+        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
+
+        let app_paths = AppPaths {
+            data_dir: data_dir.clone(),
+            seeds_dir: seeds_dir.clone(),
+        };
+
+        assert!(resolve_replay_input(&app_paths, &inside.display().to_string()).is_some());
+        assert!(resolve_replay_input(&app_paths, &seed.display().to_string()).is_some());
+        assert!(resolve_replay_input(&app_paths, &outside.display().to_string()).is_none());
+        assert!(
+            resolve_replay_input(&app_paths, &link.display().to_string()).is_none(),
+            "a symlink inside the data dir must not lead outside it"
+        );
+        assert!(resolve_replay_input(&app_paths, "/etc/passwd").is_none());
+        assert!(resolve_replay_input(
+            &app_paths,
+            &data_dir.join("../outside/secret").display().to_string()
+        )
+        .is_none());
+        assert!(
+            resolve_replay_input(&app_paths, &data_dir.display().to_string()).is_none(),
+            "a directory is not a replayable input"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

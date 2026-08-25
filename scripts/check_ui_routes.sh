@@ -91,6 +91,8 @@ check_rejected_inputs() {
     "source_url must be http(s)"
   check_status 400 POST "${BASE_URL}/target/build/start?target=onnx&version=..%2F..%2F..%2Ftmp%2Fpwn" \
     "A16 traversal in build version"
+  check_status 400 POST "${BASE_URL}/replay/start?target=onnx&input=%2Fetc%2Fpasswd" \
+    "A14 replay input outside the data dir"
   local state="$WORKDIR/data/ui-target/prepare-target.state"
   if [[ -f "$state" ]] && grep -qx 'pid=1234' "$state"; then
     echo "[FAIL] A2 injected a pid line into $state" | tee -a "$CHECK_LOG"
