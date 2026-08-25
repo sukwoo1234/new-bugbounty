@@ -11,9 +11,12 @@ crash-*
 미래내일/
 *-seeds.tar.gz
 
+__pycache__/
+
 # internal/private docs
 AGENTS.md
 .github/
+.claude/
 docs/
 docs/dev-todo.md
 docs/rules.md
