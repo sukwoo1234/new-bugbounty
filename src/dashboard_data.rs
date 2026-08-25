@@ -46,6 +46,10 @@ pub(crate) struct DashboardSnapshot {
     pub(crate) total_crashes: String,
     pub(crate) triage_summary_count: String,
     pub(crate) global_error_rate_5m: String,
+    // The engine backends count workers, not inputs, so they get their own
+    // counters rather than diluting the per-input ones.
+    pub(crate) backend_worker_runs_per_hour: String,
+    pub(crate) backend_worker_errors_5m: String,
     pub(crate) latest_valid_triage: String,
     pub(crate) latest_valid_input: String,
     pub(crate) latest_valid_signature: String,
@@ -342,6 +346,8 @@ pub(crate) fn collect_dashboard_snapshot(
     let mut total_crashes = "0".to_string();
     let mut triage_summary_count = "0".to_string();
     let mut global_error_rate_5m = "0.0".to_string();
+    let mut backend_worker_runs_per_hour = "0".to_string();
+    let mut backend_worker_errors_5m = "0".to_string();
     let metrics_exists = metrics_path.exists();
     if metrics_exists {
         let metrics = fs::read_to_string(&metrics_path)
@@ -370,6 +376,12 @@ pub(crate) fn collect_dashboard_snapshot(
             .unwrap_or_else(|| "0".to_string());
         triage_summary_count = extract_json_number_literal(&metrics, "triage_summary_count")
             .unwrap_or_else(|| "0".to_string());
+        backend_worker_runs_per_hour =
+            extract_json_number_literal(&metrics, "backend_worker_runs_per_hour")
+                .unwrap_or_else(|| "0".to_string());
+        backend_worker_errors_5m =
+            extract_json_number_literal(&metrics, "backend_worker_errors_5m")
+                .unwrap_or_else(|| "0".to_string());
         global_error_rate_5m = extract_json_number_literal(&metrics, "global_error_rate_5m")
             .unwrap_or_else(|| "0.0".to_string());
     }
@@ -476,6 +488,8 @@ pub(crate) fn collect_dashboard_snapshot(
         total_crashes,
         triage_summary_count,
         global_error_rate_5m,
+        backend_worker_runs_per_hour,
+        backend_worker_errors_5m,
         latest_valid_triage,
         latest_valid_input,
         latest_valid_signature,

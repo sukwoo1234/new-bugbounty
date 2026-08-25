@@ -9,6 +9,14 @@ use std::{
 use crate::common::{now_unix, now_unix_millis, AppPaths};
 use crate::json_utils::{extract_json_string_literal, extract_json_u64_field};
 
+/// A per-input local-harness run: one event unit is one input the library saw.
+pub(crate) const KIND_RUN: &str = "run";
+/// An engine-backend block: one event unit is one worker, not one input.
+pub(crate) const KIND_RUN_BACKEND: &str = "run-backend";
+/// A triage of one crash artifact: one unit is one reproduction attempt, and its
+/// `errors` counts attempts that DID crash - the outcome triage is looking for.
+pub(crate) const KIND_TRIAGE: &str = "triage";
+
 pub(crate) struct MetricEvent {
     pub(crate) ts: u64,
     pub(crate) kind: &'static str,
@@ -114,9 +122,16 @@ fn build_metrics_snapshot(
     let mut library_session_ok_1h = 0u64;
     let mut total_5m = 0u64;
     let mut errors_5m = 0u64;
+    let mut backend_worker_runs_1h = 0u64;
+    let mut backend_worker_errors_5m = 0u64;
 
     for line in content.lines() {
         let ts = extract_json_u64_field(line, "ts").unwrap_or(0);
+        // A8/A21/A27: the units differ per kind - inputs for a local run, workers for
+        // an engine block, reproduction attempts for a triage - so they cannot share
+        // a denominator. An event written before this split carries kind="run" for
+        // an engine block, so historical windows stay mixed; this is a forward fix.
+        let kind = extract_json_string_literal(line, "kind").unwrap_or_default();
         let total = extract_json_u64_field(line, "total").unwrap_or(0);
         let errors = extract_json_u64_field(line, "errors").unwrap_or(0);
         let successful_runs_proxy = extract_json_u64_field(line, "successful_runs_proxy")
@@ -125,15 +140,35 @@ fn build_metrics_snapshot(
         let library_session_ok =
             extract_json_u64_field(line, "library_session_ok").unwrap_or(0);
         let new_crashes = extract_json_u64_field(line, "new_crashes").unwrap_or(0);
-        if now_ts.saturating_sub(ts) <= 3600 {
-            successful_runs_proxy_1h += successful_runs_proxy;
+        let within_hour = now_ts.saturating_sub(ts) <= 3600;
+        let within_5m = now_ts.saturating_sub(ts) <= 300;
+        if within_hour {
             new_crashes_1h += new_crashes;
-            total_1h += total;
-            library_session_ok_1h += library_session_ok;
         }
-        if now_ts.saturating_sub(ts) <= 300 {
-            total_5m += total;
-            errors_5m += errors;
+        match kind.as_str() {
+            KIND_RUN_BACKEND => {
+                if within_hour {
+                    backend_worker_runs_1h += successful_runs_proxy;
+                }
+                if within_5m {
+                    backend_worker_errors_5m += errors;
+                }
+            }
+            KIND_TRIAGE => {}
+            // Anything else is a per-input local run. Events written before the
+            // kinds were separated say "run" for both, which is the pre-existing
+            // behaviour rather than a new one.
+            _ => {
+                if within_hour {
+                    successful_runs_proxy_1h += successful_runs_proxy;
+                    total_1h += total;
+                    library_session_ok_1h += library_session_ok;
+                }
+                if within_5m {
+                    total_5m += total;
+                    errors_5m += errors;
+                }
+            }
         }
     }
 
@@ -168,7 +203,7 @@ fn build_metrics_snapshot(
     };
 
     Ok(format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"metrics\": {{\n    \"successful_runs_per_hour_proxy\": {},\n    \"library_connect_rate_proxy\": {},\n    \"library_connect_rate_proxy_status\": \"{}\",\n    \"library_connect_rate_proxy_source\": \"session_ok_over_total_1h\",\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"triage_summary_scan\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {:.4}\n  }}\n}}\n",
+        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"metrics\": {{\n    \"successful_runs_per_hour_proxy\": {},\n    \"library_connect_rate_proxy\": {},\n    \"library_connect_rate_proxy_status\": \"{}\",\n    \"library_connect_rate_proxy_source\": \"session_ok_over_local_run_total_1h\",\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"triage_summary_scan\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {:.4},\n    \"backend_worker_runs_per_hour\": {},\n    \"backend_worker_errors_5m\": {}\n  }}\n}}\n",
         now_ts,
         successful_runs_proxy_1h,
         lib_rate_literal,
@@ -179,7 +214,9 @@ fn build_metrics_snapshot(
         triage_ratio.valid_crashes,
         triage_ratio.total_crashes,
         triage_ratio.summary_count,
-        error_rate_5m
+        error_rate_5m,
+        backend_worker_runs_1h,
+        backend_worker_errors_5m
     ))
 }
 
@@ -234,6 +271,63 @@ fn calculate_valid_crash_ratio_from_triage(triage_root: &Path) -> Result<TriageC
 
 #[cfg(test)]
 mod tests {
+    // A8/A21/A27: the snapshot summed `total` and `errors` across every event kind,
+    // but only a local-harness run ever probes the library, and only a local run
+    // counts inputs. A triage event counts attempts and reports a REPRODUCED crash
+    // as an error - the desired outcome - while an engine-backend event counts
+    // workers. So the connect rate was diluted by events that never probed, and the
+    // error rate rose when triage succeeded.
+    #[test]
+    fn per_input_metrics_count_local_runs_only() {
+        let data = unique_tmp_data_dir("metrics_kind_split");
+        let seeds = data.join("seeds");
+        fs::create_dir_all(&seeds).expect("create seeds dir");
+        let events_path = data.join("metrics").join("events.jsonl");
+        fs::create_dir_all(events_path.parent().expect("parent")).expect("create metrics dir");
+
+        let ts = 1_700_000_000u64;
+        let lines = [
+            format!("{{\"ts\":{ts},\"kind\":\"run\",\"total\":10,\"errors\":4,\"successful_runs_proxy\":6,\"library_session_ok\":3,\"new_crashes\":0,\"valid_crashes\":0,\"total_crashes\":0}}"),
+            format!("{{\"ts\":{ts},\"kind\":\"triage\",\"total\":20,\"errors\":20,\"successful_runs_proxy\":0,\"library_session_ok\":0,\"new_crashes\":1,\"valid_crashes\":1,\"total_crashes\":1}}"),
+            format!("{{\"ts\":{ts},\"kind\":\"run-backend\",\"total\":4,\"errors\":1,\"successful_runs_proxy\":3,\"library_session_ok\":0,\"new_crashes\":0,\"valid_crashes\":0,\"total_crashes\":0}}"),
+        ];
+        fs::write(&events_path, lines.join("\n") + "\n").expect("write events");
+
+        let app_paths = AppPaths {
+            data_dir: data.clone(),
+            seeds_dir: seeds,
+        };
+        let snapshot =
+            build_metrics_snapshot(&app_paths, &events_path, ts).expect("build snapshot");
+
+        // 3 of the 10 inputs the library actually saw, not 3 of 34.
+        assert!(
+            snapshot.contains("\"library_connect_rate_proxy\": 0.3000"),
+            "snapshot was: {snapshot}"
+        );
+        // 4 of 10 local inputs failed; triage reproducing a crash is not an error.
+        assert!(
+            snapshot.contains("\"global_error_rate_5m\": 0.4000"),
+            "snapshot was: {snapshot}"
+        );
+        assert!(
+            snapshot.contains("\"successful_runs_per_hour_proxy\": 6"),
+            "snapshot was: {snapshot}"
+        );
+        // The backend arm keeps its own counters, in its own unit, so its dashboard
+        // reads "3 workers finished" rather than "nothing is running".
+        assert!(
+            snapshot.contains("\"backend_worker_runs_per_hour\": 3"),
+            "snapshot was: {snapshot}"
+        );
+        assert!(
+            snapshot.contains("\"backend_worker_errors_5m\": 1"),
+            "snapshot was: {snapshot}"
+        );
+
+        let _ = fs::remove_dir_all(&data);
+    }
+
     use super::*;
     use crate::common::{now_unix_millis, AppPaths};
     use std::path::PathBuf;

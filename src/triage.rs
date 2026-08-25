@@ -266,7 +266,7 @@ pub(crate) fn run_triage_pipeline(
         app_paths,
         MetricEvent {
             ts: now_unix(),
-            kind: "triage",
+            kind: crate::metrics::KIND_TRIAGE,
             total: attempts.len() as u64,
             errors: (crashed_count + timeout_count) as u64,
             successful_runs_proxy: 0,

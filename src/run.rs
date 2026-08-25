@@ -300,7 +300,7 @@ pub(crate) fn run_fuzz_pipeline(
         app_paths,
         MetricEvent {
             ts: now_unix(),
-            kind: "run",
+            kind: metrics::KIND_RUN,
             // A job that never ran is not a trial: keeping it in `total` would dilute
             // library_connect_rate_proxy with inputs the library never saw.
             total: s.total.saturating_sub(s.job_errors) as u64,
@@ -519,7 +519,9 @@ fn run_engine_backend(
         app_paths,
         MetricEvent {
             ts: now_unix(),
-            kind: "run",
+            // A27: one unit here is a worker, not an input. Sharing the local run's
+            // kind put worker counts into a per-input denominator.
+            kind: metrics::KIND_RUN_BACKEND,
             total: workers as u64,
             errors: (failed + timeout) as u64,
             successful_runs_proxy: success as u64,

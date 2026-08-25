@@ -212,6 +212,11 @@ VALID_CRASH_RATIO="$(jq -r 'if (.metrics.valid_crash_ratio_status // "legacy_unv
 VALID_CRASH_RATIO_SOURCE="$(jq -r '.metrics.valid_crash_ratio_source // "legacy_event_log"' "$OUT_DIR/metrics-latest.json")"
 SUCCESSFUL_RUNS_PER_HOUR_PROXY="$(jq -r '.metrics.successful_runs_per_hour_proxy // .metrics.new_paths_per_hour // 0' "$OUT_DIR/metrics-latest.json")"
 GLOBAL_ERROR_RATE_5M="$(jq -r '.metrics.global_error_rate_5m // 0' "$OUT_DIR/metrics-latest.json")"
+# A27: an engine-backend block counts workers, not inputs, so it has its own
+# counters. On an aflpp/libfuzzer arm the per-input rows above read 0 by design -
+# that is "not this arm's unit", not "nothing happened".
+BACKEND_WORKER_RUNS_PER_HOUR="$(jq -r '.metrics.backend_worker_runs_per_hour // "not_available"' "$OUT_DIR/metrics-latest.json")"
+BACKEND_WORKER_ERRORS_5M="$(jq -r '.metrics.backend_worker_errors_5m // "not_available"' "$OUT_DIR/metrics-latest.json")"
 
 TRIAGE_INDEX="$OUT_DIR/triage-index.tsv"
 {
@@ -334,6 +339,8 @@ cat > "$OUT_DIR/summary.md" <<EOF
 | unique_signature_count | ${UNIQUE_SIGNATURE_COUNT} |
 | successful_runs_per_hour_proxy | ${SUCCESSFUL_RUNS_PER_HOUR_PROXY} |
 | global_error_rate_5m | ${GLOBAL_ERROR_RATE_5M} |
+| backend_worker_runs_per_hour | ${BACKEND_WORKER_RUNS_PER_HOUR} |
+| backend_worker_errors_5m | ${BACKEND_WORKER_ERRORS_5M} |
 
 ## Caveat
 - \`successful_runs_per_hour_proxy\` is a success-count proxy metric, not true edge/path coverage.
