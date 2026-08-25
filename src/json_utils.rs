@@ -7,6 +7,11 @@ pub(crate) fn json_escape(input: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            // A19: RFC 8259 requires every U+0000..U+001F to be escaped. The short
+            // forms above stay so output that is already valid is byte-identical;
+            // the rest would otherwise make jq, python and the browser refuse the
+            // whole file. DEL (0x7f) is legal unescaped and is left alone.
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
             _ => out.push(ch),
         }
     }
@@ -165,7 +170,7 @@ fn parse_json_string_literal_at(input: &str, quote_index: usize) -> Option<(Stri
 
     let mut out = String::new();
     let mut escaped = false;
-    for (offset, ch) in chars {
+    while let Some((offset, ch)) = chars.next() {
         if escaped {
             match ch {
                 '"' => out.push('"'),
@@ -173,6 +178,22 @@ fn parse_json_string_literal_at(input: &str, quote_index: usize) -> Option<(Stri
                 'n' => out.push('\n'),
                 'r' => out.push('\r'),
                 't' => out.push('\t'),
+                'b' => out.push('\u{8}'),
+                'f' => out.push('\u{c}'),
+                // What json_escape now writes, and what jq and python's json.dump
+                // write for any control byte or non-ASCII character. Without this a
+                // \u001b read back out of summary.json becomes the text "u001b".
+                'u' => {
+                    let mut hex = String::new();
+                    for _ in 0..4 {
+                        let (_, digit) = chars.next()?;
+                        hex.push(digit);
+                    }
+                    let value = u32::from_str_radix(&hex, 16).ok()?;
+                    // Surrogate halves are never emitted by this crate; a lone one
+                    // becomes U+FFFD rather than desynchronising the scan.
+                    out.push(char::from_u32(value).unwrap_or('\u{fffd}'));
+                }
                 _ => out.push(ch),
             }
             escaped = false;
@@ -185,4 +206,55 @@ fn parse_json_string_literal_at(input: &str, quote_index: usize) -> Option<(Stri
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_json_string_literal, json_escape};
+
+    // A19: RFC 8259 requires every U+0000..U+001F to be escaped. The tool's own
+    // mutator can flip an ONNX node-name byte to a control character, onnxruntime
+    // echoes that name into its error text, and triage keeps it - so an unescaped
+    // ESC lands in summary.json and jq/python refuse to parse the file.
+    #[test]
+    fn control_characters_are_escaped_so_the_json_stays_parseable() {
+        let escaped = json_escape("node\u{1b}[31m\u{0}name");
+        assert_eq!(escaped, "node\\u001b[31m\\u0000name");
+    }
+
+    #[test]
+    fn the_short_escape_forms_are_kept_so_existing_output_is_unchanged() {
+        assert_eq!(json_escape("a\nb\rc\td\"e\\f"), "a\\nb\\rc\\td\\\"e\\\\f");
+    }
+
+    // The reader has to understand what the writer now emits, or a control byte
+    // would round-trip through report.rs as the literal text "u001b".
+    #[test]
+    fn the_reader_decodes_the_escapes_the_writer_emits() {
+        let body = format!("{{\"crash_summary\": \"{}\"}}", json_escape("x\u{1b}[31my"));
+        assert_eq!(
+            extract_json_string_literal(&body, "crash_summary").as_deref(),
+            Some("x\u{1b}[31my")
+        );
+    }
+
+    #[test]
+    fn the_reader_decodes_unicode_escapes_written_by_jq_and_python() {
+        // jq and python's json.dump write \uXXXX for control bytes and non-ASCII.
+        let body = "{\"path\": \"\\ud55c\\uae00\\u0008\\u000c\"}";
+        assert_eq!(
+            extract_json_string_literal(body, "path").as_deref(),
+            Some("\u{d55c}\u{ae00}\u{8}\u{c}")
+        );
+    }
+
+    #[test]
+    fn a_lone_surrogate_does_not_desynchronise_the_reader() {
+        let body = "{\"a\": \"x\\ud800y\", \"b\": \"ok\"}";
+        assert_eq!(
+            extract_json_string_literal(body, "a").as_deref(),
+            Some("x\u{fffd}y")
+        );
+        assert_eq!(extract_json_string_literal(body, "b").as_deref(), Some("ok"));
+    }
 }
