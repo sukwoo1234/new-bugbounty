@@ -226,7 +226,33 @@ fn read_varint_in(bytes: &[u8], start: usize, end: usize) -> Option<(u64, usize)
     None
 }
 
+/// What `tool mutate` applies when no operator is named.
+///
+/// G5: the structure-aware six were the default and `aggressive` - the one that
+/// plants the values that actually break loaders (0, -1, i32::MAX, huge) - was
+/// opt-in, so how hard a campaign pushed depended on which script launched it and
+/// nothing in the output said which set had run. The tool's job is finding bugs,
+/// so it now pushes by default.
+///
+/// The experiment scripts that compare mutation strategies name their operators
+/// explicitly (scripts/coverage_experiment.py, scripts/run_onnx_abc_week.sh), so
+/// the published "structure-aware 6-operator" arm still means the same six.
 pub(crate) const DEFAULT_OPERATORS: &[&str] = &[
+    shape::NAME,
+    dtype::NAME,
+    name::NAME,
+    attribute::NAME,
+    initializer_metadata::NAME,
+    graph_metadata::NAME,
+    aggressive::NAME,
+];
+
+/// The six structure-aware operators the poster and paper compare against a
+/// byte-level baseline. Kept beside the default set so a change to the default
+/// cannot silently redefine that arm - the test below is what pins it.
+/// `scripts/coverage_experiment.py` names the same six on its own side.
+#[cfg(test)]
+pub(crate) const STRUCTURE_AWARE_OPERATORS: &[&str] = &[
     shape::NAME,
     dtype::NAME,
     name::NAME,
@@ -565,10 +591,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn aggressive_is_known_but_not_default() {
+    fn aggressive_is_in_the_default_set() {
         let requested = vec!["aggressive".to_string()];
         let resolved = validate_operators(&requested).expect("known operator accepted");
         assert_eq!(resolved, vec![aggressive::NAME]);
-        assert!(!DEFAULT_OPERATORS.contains(&aggressive::NAME));
+        assert!(
+            DEFAULT_OPERATORS.contains(&aggressive::NAME),
+            "the default set is the crash-hunting set"
+        );
+    }
+
+    // The published comparison names an arm of exactly six structure-aware
+    // operators. Changing the default must not silently redefine it.
+    #[test]
+    fn the_structure_aware_arm_stays_the_published_six() {
+        assert_eq!(
+            STRUCTURE_AWARE_OPERATORS,
+            &[
+                shape::NAME,
+                dtype::NAME,
+                name::NAME,
+                attribute::NAME,
+                initializer_metadata::NAME,
+                graph_metadata::NAME,
+            ]
+        );
+        assert!(!STRUCTURE_AWARE_OPERATORS.contains(&aggressive::NAME));
+        for op in STRUCTURE_AWARE_OPERATORS {
+            assert!(KNOWN_OPERATORS.contains(op), "{op} is not a known operator");
+        }
     }
 }

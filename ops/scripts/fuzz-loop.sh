@@ -56,7 +56,10 @@ last_iter=$(ls -1 "${MUTATED_ROOT}" 2>/dev/null \
     | sort -n \
     | tail -1)
 iter=$((10#${last_iter:-0}))
-log "starting fuzz-loop (resume from iter=${iter}, target=${TARGET}, backend=${BACKEND}, workers=${WORKERS}, mutate_operators=${MUTATE_OPERATORS:-default})"
+# G5: "default" is the crash-hunting set, which includes `aggressive`. Say which
+# set is running so a campaign's stress level can be read off its own log rather
+# than inferred from which script launched it.
+log "starting fuzz-loop (resume from iter=${iter}, target=${TARGET}, backend=${BACKEND}, workers=${WORKERS}, mutate_operators=${MUTATE_OPERATORS:-default (crash-hunting set, includes aggressive)})"
 
 while :; do
     if [ "${stop_requested}" = "1" ]; then

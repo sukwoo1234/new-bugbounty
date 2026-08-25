@@ -81,8 +81,23 @@ def compile_harness(workdir: Path) -> Path:
     return out
 
 
+# The published comparison's "structure-aware 6-operator" arm. Named here rather
+# than left to the tool's default set: the default is the crash-hunting set and
+# includes `aggressive`, so relying on it would silently redefine this arm and make
+# the poster and paper numbers unreproducible.
+STRUCTURE_AWARE = ["shape", "dtype", "name", "attribute",
+                   "initializer_metadata", "graph_metadata"]
+
+# Which single operator each byte-level arm runs, for the record written beside it.
+ARM_OPERATOR = {"B0": "byte_flip", "B1_05x": "havoc", "B1_1x": "havoc", "B1_2x": "havoc"}
+
+
 def gen_batch(seed: Path, tmp: Path, operator, n_target, budget=None):
-    """Return list of (path, bytes). Refill + dedup + deterministic --seed."""
+    """Return list of (path, bytes). Refill + dedup + deterministic --seed.
+
+    `operator` may be a single operator name, a list of names, or None for the
+    tool's default set.
+    """
     tmp.mkdir(parents=True, exist_ok=True)
     seen, outs, k = set(), [], 0
     env = dict(os.environ)
@@ -92,8 +107,8 @@ def gen_batch(seed: Path, tmp: Path, operator, n_target, budget=None):
         op_path = tmp / f"m{k:05}.onnx"
         cmd = [str(TOOL), "mutate", "--target", "onnx", "--input", str(seed),
                "--out", str(op_path), "--seed", str(k)]
-        if operator:
-            cmd += ["--operator", operator]
+        for op in ([operator] if isinstance(operator, str) else (operator or [])):
+            cmd += ["--operator", op]
         k += 1
         r = sh(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if r.returncode != 0 or not op_path.exists():
@@ -206,10 +221,11 @@ def main():
         gtmp = work / sid / "gen"
 
         # --- generate arms (S first to get b_S) ---
-        s_out = gen_batch(seed, gtmp / "S", None, N_TARGET)
+        s_out = gen_batch(seed, gtmp / "S", STRUCTURE_AWARE, N_TARGET)
         b_s = int(statistics.median([byte_dist(seed_bytes, b) for _, b in s_out])) if s_out else 1
         b_s = max(1, b_s)
         arms = {"S": s_out}
+
         if WITH_B0:
             arms["B0"] = gen_batch(seed, gtmp / "B0", "byte_flip", N_TARGET)
         arms["B1_1x"] = gen_batch(seed, gtmp / "B1_1x", "havoc", N_TARGET, budget=b_s)
@@ -232,8 +248,10 @@ def main():
             adir.mkdir(parents=True, exist_ok=True)
             files = [p for p, _ in outs]
             recs = cover(files, work / sid / f"cov_{name}", harness, UNIVERSE, adir / "union.bin")
+            operators = STRUCTURE_AWARE if name == "S" else [ARM_OPERATOR.get(name, "")]
             (adir / "records.json").write_text(json.dumps(
-                {"arm": name, "n": len(files), "records": recs}, indent=2))
+                {"arm": name, "n": len(files), "operators": operators,
+                 "records": recs}, indent=2))
             seed_entry["arms"][name] = {"n": len(files),
                                         "union_covered": popcount(adir / "union.bin")}
         seed_entry["seed_covered"] = popcount(sdir / "seed.bin")

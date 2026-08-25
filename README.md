@@ -42,6 +42,19 @@
 - `tool run`, `tool triage`, `tool report`
 - 결과 조회: `list`, `show <id>`, `export <id>`
 
+## 변이 연산자 기본값 (`tool mutate`)
+
+`--operator`를 주지 않으면 **크래시 헌팅 세트**가 돌아간다: 구조 인지 6종
+(`shape`, `dtype`, `name`, `attribute`, `initializer_metadata`, `graph_metadata`)
+**+ `aggressive`**. `aggressive`는 0 / -1 / `i32::MAX` / 거대값처럼 로더를 실제로 부수는 값을
+꽂는 연산자다. 툴의 목적이 버그를 찾는 것이므로 기본이 이쪽이다.
+
+- **실험을 재현할 때는 연산자를 반드시 명시할 것.** 포스터·논문의 "구조 인지 6-operator" 팔은
+  위 6종만을 뜻한다. `scripts/coverage_experiment.py`(`STRUCTURE_AWARE`)와
+  `scripts/run_onnx_abc_week.sh`(`MUTATE_OPERATORS`)는 이미 명시적으로 고정돼 있으므로,
+  기본값이 바뀌어도 그 팔의 의미는 그대로다.
+- 어떤 세트로 돌았는지는 `fuzz-loop` 로그와 캠페인 manifest의 `mutate_operators`에 남는다.
+
 ## 기본 경로
 - 데이터: `./data`
 - 시드: `./seeds`
