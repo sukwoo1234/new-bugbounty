@@ -10,6 +10,13 @@ namespace {
 
 std::atomic<unsigned long long> g_seq{0};
 
+// G3: `tool harness` exit codes (kept in sync with EXIT_HARNESS_* in src/main.rs).
+// 4 means the target library crashed - the finding. 9 means the harness rejected the
+// input before the library ran (missing input, precheck reject, probe unavailable);
+// aborting on that would file every rejected mutant as a libFuzzer crash artifact.
+constexpr int kToolHarnessLibraryCrashExit = 4;
+constexpr int kToolHarnessBenignExit = 9;
+
 std::string env_or(const char* key, const char* fallback) {
   const char* v = std::getenv(key);
   if (v && *v) return std::string(v);
@@ -56,7 +63,16 @@ extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, size_t size) {
   if (WIFSIGNALED(rc)) {
     std::raise(WTERMSIG(rc));
   }
-  if (!WIFEXITED(rc) || WEXITSTATUS(rc) != 0) {
+  if (!WIFEXITED(rc)) {
+    std::abort();
+  }
+  const int status = WEXITSTATUS(rc);
+  if (status == kToolHarnessBenignExit) {
+    return 0;
+  }
+  // Everything else that is non-zero - kToolHarnessLibraryCrashExit, a shell-reported
+  // 128+signal, an unknown code - stays a finding, so a real crash is never dropped.
+  if (status != 0) {
     std::abort();
   }
   return 0;

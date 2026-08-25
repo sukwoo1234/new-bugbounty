@@ -87,6 +87,9 @@ run_loop fuzz-loop-aflpp.sh
 assert_contains "WARN"
 assert_contains "aflpp_mode=blackbox_n"
 assert_contains "afl-fuzz -n "
+# G3: in black-box mode AFL++ only sees signals, so a library crash (tool exit 4) is
+# invisible unless the exit code is declared a crash.
+assert_contains "AFL_CRASH_EXITCODE=4"
 
 log "aflpp: REQUIRE_INSTRUMENTED=1 must fail instead of falling back"
 run_loop fuzz-loop-aflpp.sh REQUIRE_INSTRUMENTED=1
