@@ -1,6 +1,12 @@
-use std::{fs, fs::OpenOptions, io::Write, path::Path};
+use std::{
+    fs,
+    fs::OpenOptions,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
-use crate::common::{now_unix, AppPaths};
+use crate::common::{now_unix, now_unix_millis, AppPaths};
 use crate::json_utils::{extract_json_string_literal, extract_json_u64_field};
 
 pub(crate) struct MetricEvent {
@@ -49,17 +55,50 @@ pub(crate) fn record_metrics_event(app_paths: &AppPaths, event: MetricEvent) -> 
     let snapshot = build_metrics_snapshot(app_paths, &events_path, now_unix())?;
     let snapshot_path = metrics_dir.join("latest.json");
     // atomic write: temp 파일에 먼저 쓰고 rename으로 교체해서 partial 파일 상태 방지
-    let tmp_path = metrics_dir.join("latest.json.tmp");
-    fs::write(&tmp_path, snapshot)
-        .map_err(|e| format!("failed to write temp '{}': {e}", tmp_path.display()))?;
-    fs::rename(&tmp_path, &snapshot_path).map_err(|e| {
-        format!(
+    let tmp_path = snapshot_tmp_path(&metrics_dir);
+    if let Err(e) = fs::write(&tmp_path, snapshot) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!(
+            "failed to write temp '{}': {e}",
+            tmp_path.display()
+        ));
+    }
+    if let Err(e) = fs::rename(&tmp_path, &snapshot_path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!(
             "failed to rename '{}' -> '{}': {e}",
             tmp_path.display(),
             snapshot_path.display()
-        )
-    })?;
+        ));
+    }
     Ok(())
+}
+
+/// A temp path no other writer will pick.
+///
+/// A23: the fixed `latest.json.tmp` was shared by every process against one data
+/// dir, so two concurrent writers could rename a half-written snapshot into place.
+/// The rename itself stays last-writer-wins, which is the intended snapshot
+/// semantics.
+fn snapshot_tmp_path(metrics_dir: &Path) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    metrics_dir.join(format!(
+        "latest.json.{}-{}-{}.tmp",
+        std::process::id(),
+        now_unix_millis(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// Record an event, reporting a failure instead of propagating it.
+///
+/// The callers reach this only after the work is finished and its artifact is on
+/// disk. Failing the command there reports "the run failed" for what is really a
+/// bookkeeping problem, and campaign loops read that exit code.
+pub(crate) fn record_metrics_event_best_effort(app_paths: &AppPaths, event: MetricEvent) {
+    if let Err(e) = record_metrics_event(app_paths, event) {
+        eprintln!("[metrics] warning: failed to record event: {e}");
+    }
 }
 
 fn build_metrics_snapshot(
@@ -204,6 +243,64 @@ mod tests {
         p.push(format!("v1_{}_{}", label, now_unix_millis()));
         fs::create_dir_all(&p).expect("create tmp data dir");
         p
+    }
+
+    // A23: every process wrote through the same latest.json.tmp, so two writers
+    // against one data dir could rename a half-written snapshot into place.
+    #[test]
+    fn snapshot_tmp_path_is_unique_per_call() {
+        let dir = unique_tmp_data_dir("snapshot_tmp_unique").join("metrics");
+        let first = snapshot_tmp_path(&dir);
+        let second = snapshot_tmp_path(&dir);
+
+        assert_ne!(first, second, "two writers must not share a temp file");
+        for path in [&first, &second] {
+            assert_eq!(path.parent(), Some(dir.as_path()));
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .expect("temp file name");
+            assert!(name.starts_with("latest.json."), "name was {name}");
+            assert!(name.ends_with(".tmp"), "name was {name}");
+        }
+    }
+
+    // A finished run had already written status.json; a metrics-side failure used to
+    // turn that into a non-zero exit, which reads as "the block failed".
+    #[test]
+    fn a_metrics_failure_is_reported_without_failing_the_command() {
+        let data = unique_tmp_data_dir("metrics_best_effort");
+        let seeds = data.join("seeds");
+        fs::create_dir_all(&seeds).expect("create seeds dir");
+        // A regular file where the metrics directory has to go: every write fails.
+        fs::write(data.join("metrics"), b"not a directory").expect("write blocker");
+        let app_paths = AppPaths {
+            data_dir: data.clone(),
+            seeds_dir: seeds,
+        };
+
+        assert!(
+            record_metrics_event(&app_paths, sample_event()).is_err(),
+            "the underlying write must still report the failure"
+        );
+        // What run and triage call: it reports and returns instead of failing.
+        record_metrics_event_best_effort(&app_paths, sample_event());
+
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    fn sample_event() -> MetricEvent {
+        MetricEvent {
+            ts: 1_700_000_000,
+            kind: "run",
+            total: 1,
+            errors: 0,
+            successful_runs_proxy: 1,
+            library_session_ok: 1,
+            new_crashes: 0,
+            valid_crashes: 0,
+            total_crashes: 0,
+        }
     }
 
     // Coverage V1 audit fixture: metrics snapshot JSON must emit the
