@@ -433,7 +433,9 @@ fn build_submission_draft(
     let poc_sha = poc_sha_or_fallback(poc, input_sha256);
     let stack_text = markdown_list(stack_lines);
     let crash_evidence = crash_report_excerpt(crash_report);
+    let evidence_fence = markdown_fence(&crash_evidence);
     let repro_input_escaped = shell_escape_single_quoted(repro_input);
+    let repro_fence = markdown_fence(&repro_input_escaped);
     let crash_kind = &triage_crash.crash_kind;
     let sanitizer = &triage_crash.sanitizer;
     let signal = &triage_crash.signal;
@@ -443,7 +445,7 @@ fn build_submission_draft(
     let severity_confidence = severity.confidence;
     let severity_reason = severity.reason;
     format!(
-        "# Submission Draft\n\n## Target\n\n`{target}`\n\n## Title\n\n{title}\n\n## External PoC URL\n\nPASTE_PUBLIC_OR_PRIVATE_POC_URL_HERE\n\n## Summary\n\nA crafted `{target}` input triggers a reproduced native `{crash}` while being processed by the target loader/parser/runtime path.\n\nThis is a target-neutral draft. Fill target-specific API calls, package versions, validation behavior, and impact details before submission.\n\n## Affected Input\n\n- Target: `{target}`\n- Source input: `{input}`\n- Source SHA256: `{input_sha256}`\n- Collected PoC: `{poc_path}`\n- Collected PoC SHA256: `{poc_sha}`\n\n## Environment\n\nFill these with the exact environment used for the final reproduction:\n\n- OS/architecture: `uname -a`\n- Target/library version: `FILL_ME`\n- Build or package source: `FILL_ME`\n- Sanitizer/debug build: `FILL_ME`\n\n## Validation Notes\n\nRecord target-specific validation results here. Do not claim format-valid, checker-valid, sandbox impact, or exploitability status until directly verified on the final PoC.\n\n- Parser/checker result: `FILL_ME`\n- Loader/runtime result: `FILL_ME`\n- Inference/execution result, if applicable: `FILL_ME`\n\n## Reproduction Steps\n\n1. Use the collected PoC when available: `{poc_path}`.\n2. Run project triage:\n\n```bash\ntool triage --target {target} --input '{repro_input_escaped}' --repro-retries {repro_retries} --timeout-sec {timeout_sec}\n```\n\n3. Add the minimal target-specific loader/parser command here:\n\n```bash\n# FILL_ME: target-specific reproduction command\n```\n\n## Expected Result\n\nThe loader/parser/runtime should reject malformed input with a managed error and should not terminate the host process.\n\n## Actual Result\n\n- Verdict: `reproduced`\n- Crash kind: `{crash_kind}`\n- Sanitizer: `{sanitizer}`\n- Signal: `{signal}`\n- Normalized signature: `{normalized_signature}`\n\n## Security Impact\n\nThis is a denial-of-service candidate for systems that process untrusted `{target}` files. Manual impact confirmation is required before submission. No arbitrary code execution is claimed in this draft.\n\n## Suggested Severity\n\n- Suggested severity: `{suggested_severity}`\n- Suggested CVSS vector: `{suggested_cvss_vector}`\n- Confidence: `{severity_confidence}`\n- Reason: `{severity_reason}`\n\n## Crash Evidence\n\n```text\n{crash_evidence}\n```\n\n## Stack Top3\n\n{stack_text}\n\n## Submission Checklist\n\n- Replace the PoC URL placeholder.\n- Fill exact target/library versions and OS details.\n- Add a minimal target-specific reproduction command.\n- Confirm validation behavior on the final PoC.\n- Keep claims limited to the reproduced crash path and observed impact.\n"
+        "# Submission Draft\n\n## Target\n\n`{target}`\n\n## Title\n\n{title}\n\n## External PoC URL\n\nPASTE_PUBLIC_OR_PRIVATE_POC_URL_HERE\n\n## Summary\n\nA crafted `{target}` input triggers a reproduced native `{crash}` while being processed by the target loader/parser/runtime path.\n\nThis is a target-neutral draft. Fill target-specific API calls, package versions, validation behavior, and impact details before submission.\n\n## Affected Input\n\n- Target: `{target}`\n- Source input: `{input}`\n- Source SHA256: `{input_sha256}`\n- Collected PoC: `{poc_path}`\n- Collected PoC SHA256: `{poc_sha}`\n\n## Environment\n\nFill these with the exact environment used for the final reproduction:\n\n- OS/architecture: `uname -a`\n- Target/library version: `FILL_ME`\n- Build or package source: `FILL_ME`\n- Sanitizer/debug build: `FILL_ME`\n\n## Validation Notes\n\nRecord target-specific validation results here. Do not claim format-valid, checker-valid, sandbox impact, or exploitability status until directly verified on the final PoC.\n\n- Parser/checker result: `FILL_ME`\n- Loader/runtime result: `FILL_ME`\n- Inference/execution result, if applicable: `FILL_ME`\n\n## Reproduction Steps\n\n1. Use the collected PoC when available: `{poc_path}`.\n2. Run project triage:\n\n{repro_fence}bash\ntool triage --target {target} --input '{repro_input_escaped}' --repro-retries {repro_retries} --timeout-sec {timeout_sec}\n{repro_fence}\n\n3. Add the minimal target-specific loader/parser command here:\n\n```bash\n# FILL_ME: target-specific reproduction command\n```\n\n## Expected Result\n\nThe loader/parser/runtime should reject malformed input with a managed error and should not terminate the host process.\n\n## Actual Result\n\n- Verdict: `reproduced`\n- Crash kind: `{crash_kind}`\n- Sanitizer: `{sanitizer}`\n- Signal: `{signal}`\n- Normalized signature: `{normalized_signature}`\n\n## Security Impact\n\nThis is a denial-of-service candidate for systems that process untrusted `{target}` files. Manual impact confirmation is required before submission. No arbitrary code execution is claimed in this draft.\n\n## Suggested Severity\n\n- Suggested severity: `{suggested_severity}`\n- Suggested CVSS vector: `{suggested_cvss_vector}`\n- Confidence: `{severity_confidence}`\n- Reason: `{severity_reason}`\n\n## Crash Evidence\n\n{evidence_fence}text\n{crash_evidence}\n{evidence_fence}\n\n## Stack Top3\n\n{stack_text}\n\n## Submission Checklist\n\n- Replace the PoC URL placeholder.\n- Fill exact target/library versions and OS details.\n- Add a minimal target-specific reproduction command.\n- Confirm validation behavior on the final PoC.\n- Keep claims limited to the reproduced crash path and observed impact.\n"
     )
 }
 
@@ -493,6 +495,27 @@ fn markdown_list(lines: &[String]) -> String {
         .map(|line| format!("- {line}"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A fence long enough to hold `content` in one block.
+///
+/// A20: crash evidence is raw bytes from the library under test. A line inside it
+/// that contains three backticks closed the block early, so everything after it
+/// rendered as markdown on whatever platform the operator pasted the draft into -
+/// an attacker-steered submission report. Markdown allows a longer fence, so the
+/// evidence is preserved byte for byte instead of being mangled.
+fn markdown_fence(content: &str) -> String {
+    let mut longest = 0usize;
+    let mut run = 0usize;
+    for c in content.chars() {
+        if c == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    "`".repeat(longest.saturating_add(1).max(3))
 }
 
 fn crash_report_excerpt(crash_report: &str) -> String {
@@ -1525,6 +1548,31 @@ fn record_manual_review(
 
 #[cfg(test)]
 mod tests {
+    // A20: crash evidence is raw output from the library under test. A closing
+    // fence inside it used to end the code block early, so the rest of the draft
+    // rendered as markdown wherever the operator pasted it.
+    #[test]
+    fn crash_evidence_stays_inside_its_own_fence() {
+        use super::markdown_fence;
+
+        let evidence = "boom\n```\n# attacker heading\n";
+        let fence = markdown_fence(evidence);
+        assert!(
+            fence.len() > 3,
+            "a fence of {} backticks cannot hold evidence containing three",
+            fence.len()
+        );
+        assert!(!evidence.contains(&fence), "the evidence can still close the block");
+    }
+
+    #[test]
+    fn ordinary_evidence_keeps_the_usual_three_backtick_fence() {
+        use super::markdown_fence;
+
+        assert_eq!(super::markdown_fence("plain crash output"), "```");
+        assert_eq!(markdown_fence("one ` backtick"), "```");
+    }
+
     use super::{
         build_submission_draft, extract_triage_crash_fields, extract_triage_deep_fields,
         single_line_excerpt, PocCollection, SeveritySuggestion,
