@@ -42,6 +42,7 @@ struct DeepTriageMetadata {
     replay_commands: Vec<String>,
 }
 
+#[derive(Debug)]
 enum TriageResult {
     Clean,
     Crashed,
@@ -560,16 +561,28 @@ fn execute_triage_subprocess(
     let exit_code = out.status.code();
     let signal = exit_signal(&out.status);
 
-    let result = classify_harness_exit(out.status.success(), exit_code, timed_out);
+    let result = classify_harness_exit(out.status.success(), exit_code, timed_out).map_err(|e| {
+        // the harness reports the reason on stderr, so skip the empty stdout line
+        let detail = merged
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("no output");
+        format!("{e}: {detail}")
+    })?;
 
     // OOM 137 triage 분기(DoS vs 인프라): v1은 infra_oom 힌트를 붙여 후속 triage/report에서 구분 가능하게 남긴다.
     if exit_code == Some(137) {
         merged = format!("infra_oom:exit_137\n{}", merged);
     }
-    // G3: a benign harness-side rejection is not a crash, but it must stay visible in
-    // the attempt log so "clean" is not mistaken for "the library loaded the input".
-    if exit_code == Some(i32::from(crate::EXIT_HARNESS_BENIGN)) {
-        merged = format!("harness_error:exit_{}\n{}", crate::EXIT_HARNESS_BENIGN, merged);
+    // G3: a rejected input is not a crash, but it must stay visible in the attempt log
+    // so "clean" is not mistaken for "the library loaded this input".
+    if exit_code == Some(i32::from(crate::EXIT_HARNESS_INPUT_REJECTED)) {
+        merged = format!(
+            "harness_error:exit_{}\n{}",
+            crate::EXIT_HARNESS_INPUT_REJECTED,
+            merged
+        );
     }
 
     Ok(TriageExecResult {
@@ -580,21 +593,30 @@ fn execute_triage_subprocess(
     })
 }
 
-// G3: map a harness process exit to a triage verdict. Only the benign harness exit
-// code is carved out of "crashed"; every other non-zero exit and every signal death
+// G3: map a harness process exit to a triage verdict. Only the two non-finding exit
+// codes are carved out of "crashed"; every other non-zero exit and every signal death
 // (which has no exit code at all) stays Crashed, so a real crash is never dropped
-// (regression guard for the crash-propagation fix, commit 0a0b475).
-fn classify_harness_exit(success: bool, exit_code: Option<i32>, timed_out: bool) -> TriageResult {
+// (regression guard for the crash-propagation fix, commit 0a0b475). An unavailable
+// harness is an error rather than a verdict: reporting a host that cannot run the
+// library as "clean" would make a broken environment look like a non-crashing input.
+fn classify_harness_exit(
+    success: bool,
+    exit_code: Option<i32>,
+    timed_out: bool,
+) -> Result<TriageResult, String> {
     if timed_out {
-        return TriageResult::Timeout;
+        return Ok(TriageResult::Timeout);
     }
     if success {
-        return TriageResult::Clean;
+        return Ok(TriageResult::Clean);
     }
-    if exit_code == Some(i32::from(crate::EXIT_HARNESS_BENIGN)) {
-        return TriageResult::Clean;
+    if exit_code == Some(i32::from(crate::EXIT_HARNESS_UNAVAILABLE)) {
+        return Err("harness could not run the target library".to_string());
     }
-    TriageResult::Crashed
+    if exit_code == Some(i32::from(crate::EXIT_HARNESS_INPUT_REJECTED)) {
+        return Ok(TriageResult::Clean);
+    }
+    Ok(TriageResult::Crashed)
 }
 
 struct ParsedCrashLog {
@@ -1790,28 +1812,48 @@ onnxruntimeerror: invalid model graph\n",
                 Some(i32::from(crate::EXIT_HARNESS_LIBRARY_CRASH)),
                 false
             ),
-            TriageResult::Crashed
+            Ok(TriageResult::Crashed)
         ));
         assert!(matches!(
             classify_harness_exit(false, None, false),
-            TriageResult::Crashed
+            Ok(TriageResult::Crashed)
         ));
         assert!(matches!(
             classify_harness_exit(false, Some(139), false),
-            TriageResult::Crashed
+            Ok(TriageResult::Crashed)
         ));
         assert!(matches!(
-            classify_harness_exit(false, Some(i32::from(crate::EXIT_HARNESS_BENIGN)), false),
-            TriageResult::Clean
+            classify_harness_exit(
+                false,
+                Some(i32::from(crate::EXIT_HARNESS_INPUT_REJECTED)),
+                false
+            ),
+            Ok(TriageResult::Clean)
         ));
         assert!(matches!(
             classify_harness_exit(true, Some(0), false),
-            TriageResult::Clean
+            Ok(TriageResult::Clean)
         ));
         assert!(matches!(
             classify_harness_exit(false, Some(124), true),
-            TriageResult::Timeout
+            Ok(TriageResult::Timeout)
         ));
+    }
+
+    // Review follow-up: "the library never ran" (strict connect gate, unrunnable external
+    // harness) must not read as "this input did not crash" - that hides a broken host
+    // behind a not_reproduced verdict.
+    #[test]
+    fn unavailable_harness_is_an_error_not_a_clean_attempt() {
+        use super::classify_harness_exit;
+
+        let err = classify_harness_exit(
+            false,
+            Some(i32::from(crate::EXIT_HARNESS_UNAVAILABLE)),
+            false,
+        )
+        .expect_err("an unavailable harness must fail triage loudly");
+        assert!(err.contains("could not run"), "err was: {err}");
     }
 
     fn crashed_attempt_without_runtime_evidence(attempt_number: u32) -> TriageAttempt {

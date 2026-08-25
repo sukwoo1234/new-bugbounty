@@ -77,6 +77,7 @@ pub(crate) fn run_coverage_job(
     let mut success = 0usize;
     let mut failed = 0usize;
     let mut timeout = 0usize;
+    let mut rejected = 0usize;
 
     for (i, input) in inputs.iter().enumerate() {
         let job = RunJob {
@@ -90,13 +91,15 @@ pub(crate) fn run_coverage_job(
             HarnessExecResult::Success(_) => success += 1,
             HarnessExecResult::Failed(_) => failed += 1,
             HarnessExecResult::Timeout(_) => timeout += 1,
+            // G3: this input never reached the library, so it is not a coverage failure
+            HarnessExecResult::Rejected(_) => rejected += 1,
         }
     }
 
-    let total = success + failed + timeout;
+    let total = success + failed + timeout + rejected;
     let summary_path = coverage_dir.join("summary.json");
     let summary = format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"coverage_id\": \"{}\",\n  \"target\": \"{}\",\n  \"corpus_dir\": \"{}\",\n  \"timeout_sec\": {},\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"coverage_proxy\": {{\n    \"success_ratio\": {:.4}\n  }},\n  \"generated_at\": {}\n}}\n",
+        "{{\n  \"schema_version\": \"1.0\",\n  \"coverage_id\": \"{}\",\n  \"target\": \"{}\",\n  \"corpus_dir\": \"{}\",\n  \"timeout_sec\": {},\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"rejected\": {},\n  \"coverage_proxy\": {{\n    \"success_ratio\": {:.4}\n  }},\n  \"generated_at\": {}\n}}\n",
         coverage_id,
         target_label(target),
         json_escape(&corpus_dir.display().to_string()),
@@ -105,6 +108,7 @@ pub(crate) fn run_coverage_job(
         success,
         failed,
         timeout,
+        rejected,
         if total == 0 {
             0.0
         } else {

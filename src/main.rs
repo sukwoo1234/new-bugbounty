@@ -36,11 +36,15 @@ const E_REPORT_PIPELINE: &str = "E5001";
 const E_UI_SERVER: &str = "E6001";
 
 // G3: `tool harness` exit codes. 4 means the target library really crashed (the
-// finding); EXIT_HARNESS_BENIGN means the harness rejected the input before the
-// library ran (missing input, precheck reject, probe unavailable). `run`, `triage`
-// and the engine drivers key off this split, so the two must never share a code.
+// finding). The other two are not findings and must never share a code with it:
+// EXIT_HARNESS_INPUT_REJECTED means this input never reached the library (missing
+// file, precheck reject), and EXIT_HARNESS_UNAVAILABLE means the harness itself could
+// not run (library probe unavailable under the strict gate, external harness that
+// cannot be executed) - a broken host, not a property of the input. `run`, `triage`
+// and the engine drivers all key off this split.
 pub(crate) const EXIT_HARNESS_LIBRARY_CRASH: u8 = 4;
-pub(crate) const EXIT_HARNESS_BENIGN: u8 = 9;
+pub(crate) const EXIT_HARNESS_INPUT_REJECTED: u8 = 9;
+pub(crate) const EXIT_HARNESS_UNAVAILABLE: u8 = 10;
 
 #[derive(Parser)]
 #[command(name = "tool", version, about = "Bug bounty fuzzing platform CLI")]

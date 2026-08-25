@@ -48,6 +48,7 @@ struct RunStats {
     success: usize,
     failed: usize,
     timeout: usize,
+    rejected: usize,
     retries: usize,
     library_session_ok: usize,
 }
@@ -57,6 +58,7 @@ struct RunStatusCounts {
     success: usize,
     failed: usize,
     timeout: usize,
+    rejected: usize,
     retries: usize,
     backend_crash_artifacts: usize,
     backend_crashes_triaged: usize,
@@ -225,20 +227,13 @@ pub(crate) fn run_fuzz_pipeline(
                 if is_session_ok {
                     s.library_session_ok += 1;
                 }
-                let persist_reproducer = match result {
-                    HarnessExecResult::Success(_) => {
-                        s.success += 1;
-                        false
-                    }
-                    HarnessExecResult::Failed(_) => {
-                        s.failed += 1;
-                        true
-                    }
-                    HarnessExecResult::Timeout(_) => {
-                        s.timeout += 1;
-                        true
-                    }
-                };
+                match result {
+                    HarnessExecResult::Success(_) => s.success += 1,
+                    HarnessExecResult::Failed(_) => s.failed += 1,
+                    HarnessExecResult::Timeout(_) => s.timeout += 1,
+                    HarnessExecResult::Rejected(_) => s.rejected += 1,
+                }
+                let persist_reproducer = is_reproducer(&result);
                 drop(s);
                 if persist_reproducer {
                     if let Err(e) = persist_crash_input(&crash_inputs_dir, job.id, &job.input) {
@@ -274,6 +269,7 @@ pub(crate) fn run_fuzz_pipeline(
             success: s.success,
             failed: s.failed,
             timeout: s.timeout,
+            rejected: s.rejected,
             retries: s.retries,
             backend_crash_artifacts: 0,
             backend_crashes_triaged: 0,
@@ -289,6 +285,7 @@ pub(crate) fn run_fuzz_pipeline(
     println!("success: {}", s.success);
     println!("failed: {}", s.failed);
     println!("timeout: {}", s.timeout);
+    println!("rejected: {}", s.rejected);
     println!("retries: {}", s.retries);
     println!("status: {}", status_path.display());
 
@@ -411,6 +408,7 @@ fn run_engine_backend(
             success,
             failed,
             timeout,
+            rejected: 0,
             retries: 0,
             backend_crash_artifacts: ingest.discovered,
             backend_crashes_triaged: ingest.triaged,
@@ -817,10 +815,10 @@ fn run_job_with_retry(
             execute_harness_subprocess(job, target, timeout_sec, timeout_available)?;
         last_session_ok = is_session_ok;
         write_job_log(logs_dir, job, attempt, &result)?;
-        match result {
-            HarnessExecResult::Success(_) => return Ok((result, retries_used, is_session_ok)),
-            other => last = other,
+        if !should_retry(&result) {
+            return Ok((result, retries_used, is_session_ok));
         }
+        last = result;
         if attempt < attempts {
             retries_used += 1;
         }
@@ -900,13 +898,50 @@ pub(crate) fn execute_harness_subprocess(
         first_line(&stderr)
     );
 
+    Ok((
+        harness_exec_result(out.status.success(), out.status.code(), timed_out, summary),
+        is_session_ok,
+    ))
+}
+
+// G3: the run pipeline keys off the same exit-code split as triage and the engine
+// drivers. Only the rejected-input code is carved out; an unavailable harness stays a
+// failed job (a strict-gate host problem shows up as every job failing), and every other
+// non-zero exit and every signal death stays Failed so a real crash is never dropped.
+fn harness_exec_result(
+    success: bool,
+    exit_code: Option<i32>,
+    timed_out: bool,
+    summary: String,
+) -> HarnessExecResult {
     if timed_out {
-        return Ok((HarnessExecResult::Timeout(summary), is_session_ok));
+        return HarnessExecResult::Timeout(summary);
     }
-    if out.status.success() {
-        return Ok((HarnessExecResult::Success(summary), is_session_ok));
+    if success {
+        return HarnessExecResult::Success(summary);
     }
-    Ok((HarnessExecResult::Failed(summary), is_session_ok))
+    if exit_code == Some(i32::from(crate::EXIT_HARNESS_INPUT_REJECTED)) {
+        return HarnessExecResult::Rejected(summary);
+    }
+    HarnessExecResult::Failed(summary)
+}
+
+// Only a crash or a hang can differ between attempts. A success needs no retry and a
+// rejected input is deterministic, so retrying it just burns the restart budget.
+fn should_retry(result: &HarnessExecResult) -> bool {
+    matches!(
+        result,
+        HarnessExecResult::Failed(_) | HarnessExecResult::Timeout(_)
+    )
+}
+
+// A10: only a crash or a hang leaves a reproducer worth keeping; an input the harness
+// rejected never reached the library, so persisting it just fills the crash dir.
+fn is_reproducer(result: &HarnessExecResult) -> bool {
+    matches!(
+        result,
+        HarnessExecResult::Failed(_) | HarnessExecResult::Timeout(_)
+    )
 }
 
 pub(crate) fn write_job_log(
@@ -926,6 +961,7 @@ pub(crate) fn write_job_log(
         HarnessExecResult::Success(s) => ("success", s.as_str()),
         HarnessExecResult::Failed(s) => ("failed", s.as_str()),
         HarnessExecResult::Timeout(s) => ("timeout", s.as_str()),
+        HarnessExecResult::Rejected(s) => ("rejected", s.as_str()),
     };
     let body = format!(
         "job_id: {}\ninput: {}\nattempt: {}\nresult: {}\n{}\n",
@@ -991,7 +1027,7 @@ fn write_run_status(
 ) -> Result<PathBuf, String> {
     let status_path = run_dir.join("status.json");
     let status_json = format!(
-        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"retries\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {},\n  \"engine_mode\": \"{}\",\n  \"backend_crash_artifacts\": {},\n  \"backend_crashes_triaged\": {},\n  \"backend_crash_triage_errors\": {}\n}}\n",
+        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"rejected\": {},\n  \"retries\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {},\n  \"engine_mode\": \"{}\",\n  \"backend_crash_artifacts\": {},\n  \"backend_crashes_triaged\": {},\n  \"backend_crash_triage_errors\": {}\n}}\n",
         run_id,
         target_label(target),
         run_backend_label(backend),
@@ -999,6 +1035,7 @@ fn write_run_status(
         counts.success,
         counts.failed,
         counts.timeout,
+        counts.rejected,
         counts.retries,
         workers,
         timeout_sec,
@@ -1025,6 +1062,68 @@ mod tests {
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    // Review follow-up: the run pipeline must key off the same exit-code split as triage
+    // and the engine drivers - a rejected input is not a failed job and has no reproducer.
+    #[test]
+    fn harness_exec_result_separates_rejected_inputs_from_crashes() {
+        use super::harness_exec_result;
+        use crate::common::HarnessExecResult;
+
+        let summary = || "stdout: ; stderr: ".to_string();
+        assert!(matches!(
+            harness_exec_result(true, Some(0), false, summary()),
+            HarnessExecResult::Success(_)
+        ));
+        assert!(matches!(
+            harness_exec_result(
+                false,
+                Some(i32::from(crate::EXIT_HARNESS_LIBRARY_CRASH)),
+                false,
+                summary()
+            ),
+            HarnessExecResult::Failed(_)
+        ));
+        assert!(matches!(
+            harness_exec_result(false, None, false, summary()),
+            HarnessExecResult::Failed(_)
+        ));
+        assert!(matches!(
+            harness_exec_result(
+                false,
+                Some(i32::from(crate::EXIT_HARNESS_INPUT_REJECTED)),
+                false,
+                summary()
+            ),
+            HarnessExecResult::Rejected(_)
+        ));
+        assert!(matches!(
+            harness_exec_result(false, Some(124), true, summary()),
+            HarnessExecResult::Timeout(_)
+        ));
+    }
+
+    #[test]
+    fn rejected_inputs_are_not_retried() {
+        use super::should_retry;
+        use crate::common::HarnessExecResult;
+
+        assert!(should_retry(&HarnessExecResult::Failed(String::new())));
+        assert!(should_retry(&HarnessExecResult::Timeout(String::new())));
+        assert!(!should_retry(&HarnessExecResult::Success(String::new())));
+        assert!(!should_retry(&HarnessExecResult::Rejected(String::new())));
+    }
+
+    #[test]
+    fn only_crashes_and_hangs_are_kept_as_reproducers() {
+        use super::is_reproducer;
+        use crate::common::HarnessExecResult;
+
+        assert!(is_reproducer(&HarnessExecResult::Failed(String::new())));
+        assert!(is_reproducer(&HarnessExecResult::Timeout(String::new())));
+        assert!(!is_reproducer(&HarnessExecResult::Success(String::new())));
+        assert!(!is_reproducer(&HarnessExecResult::Rejected(String::new())));
+    }
 
     // G2/G4: the engine loops decide whether a run is really native/instrumented or a
     // black-box fallback; the run status must carry that label so a black-box arm can
@@ -1078,6 +1177,7 @@ mod tests {
                 success: 1,
                 failed: 0,
                 timeout: 0,
+                rejected: 0,
                 retries: 0,
                 backend_crash_artifacts: 0,
                 backend_crashes_triaged: 0,

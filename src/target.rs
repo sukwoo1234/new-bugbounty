@@ -220,21 +220,23 @@ pub(crate) fn prepare_target(
     Ok(())
 }
 
-/// G3: why a harness invocation failed. A real library crash is the finding we fuzz
-/// for; a benign harness-side rejection (missing input, precheck reject, probe
-/// unavailable) is not. They exit with different codes so `run`/`triage` and the
-/// engine drivers can tell them apart instead of counting rejections as crashes.
+/// G3: why a harness invocation failed. Only a real library crash is the finding we
+/// fuzz for; an input the harness rejected before the library ran, and a harness that
+/// could not run at all, are not. Each exits with its own code so `run`/`triage` and
+/// the engine drivers can tell a finding from a rejected input from a broken host.
 #[derive(Debug)]
 pub(crate) enum HarnessError {
     LibraryCrash(String),
-    Benign(String),
+    InputRejected(String),
+    Unavailable(String),
 }
 
 impl HarnessError {
     pub(crate) fn exit_code(&self) -> u8 {
         match self {
             HarnessError::LibraryCrash(_) => crate::EXIT_HARNESS_LIBRARY_CRASH,
-            HarnessError::Benign(_) => crate::EXIT_HARNESS_BENIGN,
+            HarnessError::InputRejected(_) => crate::EXIT_HARNESS_INPUT_REJECTED,
+            HarnessError::Unavailable(_) => crate::EXIT_HARNESS_UNAVAILABLE,
         }
     }
 }
@@ -242,33 +244,37 @@ impl HarnessError {
 impl std::fmt::Display for HarnessError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HarnessError::LibraryCrash(msg) | HarnessError::Benign(msg) => write!(f, "{msg}"),
+            HarnessError::LibraryCrash(msg)
+            | HarnessError::InputRejected(msg)
+            | HarnessError::Unavailable(msg) => write!(f, "{msg}"),
         }
     }
 }
 
 pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), HarnessError> {
     if !input.exists() {
-        return Err(HarnessError::Benign(format!(
+        return Err(HarnessError::InputRejected(format!(
             "input not found: {}",
             input.display()
         )));
     }
     if !input.is_file() {
-        return Err(HarnessError::Benign(format!(
+        return Err(HarnessError::InputRejected(format!(
             "input is not a file: {}",
             input.display()
         )));
     }
 
     let bytes = fs::read(input).map_err(|e| {
-        HarnessError::Benign(format!("failed to read input '{}': {e}", input.display()))
+        HarnessError::InputRejected(format!("failed to read input '{}': {e}", input.display()))
     })?;
 
     let parser_step = match target {
-        TargetKind::Gguf => gguf_precheck(&bytes).map_err(HarnessError::Benign)?,
-        TargetKind::Onnx => onnx_precheck(&bytes).map_err(HarnessError::Benign)?,
-        TargetKind::Safetensors => safetensors_precheck(&bytes).map_err(HarnessError::Benign)?,
+        TargetKind::Gguf => gguf_precheck(&bytes).map_err(HarnessError::InputRejected)?,
+        TargetKind::Onnx => onnx_precheck(&bytes).map_err(HarnessError::InputRejected)?,
+        TargetKind::Safetensors => {
+            safetensors_precheck(&bytes).map_err(HarnessError::InputRejected)?
+        }
     };
 
     let core_path_step = match target {
@@ -286,7 +292,7 @@ pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), Harne
         .unwrap_or(false);
     if strict_connect && matches!(library_connect.outcome, LibraryConnectOutcome::Unavailable) {
         // Environment problem, not a finding: the library never ran.
-        return Err(HarnessError::Benign(format!(
+        return Err(HarnessError::Unavailable(format!(
             "library connect required but unavailable: {}",
             library_connect.step
         )));
@@ -297,9 +303,7 @@ pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), Harne
     let external_step = if library_crashed {
         "skipped because library_connect crashed".to_string()
     } else {
-        // A failing external harness stays a crash: sanitizers report findings through
-        // a plain non-zero exit (ASAN exitcode=1), so downgrading it would lose crashes.
-        maybe_run_external_harness(target, input).map_err(HarnessError::LibraryCrash)?
+        maybe_run_external_harness(target, input)?
     };
     let report = HarnessReport {
         target: target_label(target),
@@ -344,7 +348,7 @@ fn render_meta_json(meta: &TargetMeta) -> String {
     )
 }
 
-fn maybe_run_external_harness(target: &TargetKind, input: &Path) -> Result<String, String> {
+fn maybe_run_external_harness(target: &TargetKind, input: &Path) -> Result<String, HarnessError> {
     let env_key = match target {
         TargetKind::Gguf => "TOOL_GGUF_HARNESS_CMD",
         TargetKind::Onnx => "TOOL_ONNX_HARNESS_CMD",
@@ -367,18 +371,32 @@ fn maybe_run_external_harness(target: &TargetKind, input: &Path) -> Result<Strin
     let mut args = parts.into_iter().map(str::to_string).collect::<Vec<_>>();
     args.push(input.display().to_string());
 
-    let status = command_with_core_dump_off(cmd)
+    let output = command_with_core_dump_off(cmd)
         .args(&args)
-        .status()
-        .map_err(|e| format!("external harness command failed: {e}"))?;
+        .output()
+        .map_err(|e| HarnessError::Unavailable(format!("{env_key} could not be executed: {e}")))?;
 
-    if status.success() {
+    if output.status.success() {
         return Ok(format!("{env_key} executed successfully"));
     }
 
-    Err(format!(
-        "{env_key} executed but failed with status {status}"
-    ))
+    // A13-class: the harness binary itself could not be executed (prlimit reports that as
+    // a plain 126/127), which is a broken configuration rather than a library crash.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if is_core_dump_wrapper_exec_failure(output.status.code(), &stderr) {
+        return Err(HarnessError::Unavailable(format!(
+            "{env_key} could not be executed ({})",
+            first_line(&stderr)
+        )));
+    }
+
+    // Anything else stays a crash: sanitizers report findings through a plain non-zero
+    // exit (ASAN exitcode=1), so downgrading here would lose crashes.
+    Err(HarnessError::LibraryCrash(format!(
+        "{env_key} executed but failed with status {} ({})",
+        output.status,
+        first_line(&stderr)
+    )))
 }
 
 // --- Format-specific prechecks ---
@@ -848,8 +866,11 @@ mod tests {
 
         let err = run_harness(&TargetKind::Onnx, &missing)
             .expect_err("a missing input must make run_harness return Err");
-        assert!(matches!(err, HarnessError::Benign(_)), "err was: {err:?}");
-        assert_eq!(err.exit_code(), crate::EXIT_HARNESS_BENIGN);
+        assert!(
+            matches!(err, HarnessError::InputRejected(_)),
+            "err was: {err:?}"
+        );
+        assert_eq!(err.exit_code(), crate::EXIT_HARNESS_INPUT_REJECTED);
     }
 
     #[test]
@@ -866,8 +887,11 @@ mod tests {
             .expect_err("a precheck-rejected input must make run_harness return Err");
         let _ = std::fs::remove_dir_all(&dir);
 
-        assert!(matches!(err, HarnessError::Benign(_)), "err was: {err:?}");
-        assert_eq!(err.exit_code(), crate::EXIT_HARNESS_BENIGN);
+        assert!(
+            matches!(err, HarnessError::InputRejected(_)),
+            "err was: {err:?}"
+        );
+        assert_eq!(err.exit_code(), crate::EXIT_HARNESS_INPUT_REJECTED);
     }
 
     // A13: with prlimit in front of the interpreter, a missing/non-executable
@@ -902,6 +926,33 @@ mod tests {
         );
     }
 
+    // Review follow-up: an external harness that cannot be executed is an environment
+    // problem, not a crash; reporting it as a library crash files a finding for a typo.
+    #[cfg(unix)]
+    #[test]
+    fn unrunnable_external_harness_is_unavailable_not_a_crash() {
+        use super::{run_harness, HarnessError, TargetKind};
+
+        let _guard = env_lock();
+        let dir = std::env::temp_dir().join(format!("tool-ext-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("sample.onnx");
+        std::fs::write(&input, b"bytes").unwrap();
+
+        std::env::set_var("TOOL_ONNX_HARNESS_CMD", "/nonexistent/tool-external-harness");
+        std::env::remove_var("TOOL_REQUIRE_LIBRARY_CONNECT");
+        let result = run_harness(&TargetKind::Onnx, &input);
+        std::env::remove_var("TOOL_ONNX_HARNESS_CMD");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let err = result.expect_err("an unrunnable external harness must fail the harness run");
+        assert!(
+            matches!(err, HarnessError::Unavailable(_)),
+            "err was: {err:?}"
+        );
+        assert_eq!(err.exit_code(), crate::EXIT_HARNESS_UNAVAILABLE);
+    }
+
     #[cfg(unix)]
     #[test]
     fn strict_library_connect_gate_fails_when_interpreter_is_missing() {
@@ -924,7 +975,11 @@ mod tests {
         let err = result.expect_err(
             "the strict library-connect gate must fail when the probe never ran",
         );
-        assert!(matches!(err, HarnessError::Benign(_)), "err was: {err:?}");
+        assert!(
+            matches!(err, HarnessError::Unavailable(_)),
+            "err was: {err:?}"
+        );
+        assert_eq!(err.exit_code(), crate::EXIT_HARNESS_UNAVAILABLE);
         assert!(
             err.to_string().contains("unavailable"),
             "err was: {err}"

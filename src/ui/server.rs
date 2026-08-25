@@ -450,7 +450,7 @@ fn handle_replay_start(
         }
     };
     let repro_retries = extract_query_param(raw_path, "repro_retries").unwrap_or("3");
-    let timeout_sec = extract_query_param(raw_path, "timeout_sec").unwrap_or("30");
+    let timeout_sec = positive_timeout_sec_or_default(extract_query_param(raw_path, "timeout_sec"));
 
     let replay_dir = app_paths.data_dir.join("ui-replay");
     fs::create_dir_all(&replay_dir).map_err(|e| {
@@ -809,7 +809,7 @@ fn handle_control_start(
     let backend = extract_query_param(raw_path, "backend").unwrap_or("local-harness");
     let duration_seconds = extract_query_param(raw_path, "duration_seconds").unwrap_or("3600");
     let workers = extract_query_param(raw_path, "workers").unwrap_or("2");
-    let timeout_sec = extract_query_param(raw_path, "timeout_sec").unwrap_or("30");
+    let timeout_sec = positive_timeout_sec_or_default(extract_query_param(raw_path, "timeout_sec"));
     let restart_limit = extract_query_param(raw_path, "restart_limit").unwrap_or("1");
 
     if !matches!(target, "onnx" | "gguf" | "safetensors") {
@@ -1510,6 +1510,16 @@ fn handle_asset_view(stream: &mut TcpStream, asset_name: &str) -> Result<(), Str
     write_response(stream, "200 OK", content_type, &body)
 }
 
+// A29: `timeout_sec=0` means "no time limit" to the shell wrapper and is rejected by the
+// run/triage pipelines, so a query value that is not a positive integer falls back to the
+// documented default instead of spawning a job that can only fail.
+fn positive_timeout_sec_or_default(raw: Option<&str>) -> &str {
+    match raw {
+        Some(value) if value.parse::<u64>().is_ok_and(|seconds| seconds >= 1) => value,
+        _ => "30",
+    }
+}
+
 fn extract_query_param<'a>(path: &'a str, key: &str) -> Option<&'a str> {
     let query = path.split_once('?')?.1;
     for part in query.split('&') {
@@ -1602,3 +1612,22 @@ fn write_response(
         .write_all(response.as_bytes())
         .map_err(|e| format!("failed to write response: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::positive_timeout_sec_or_default;
+
+    // A29: 0 (and anything unparseable) means "no time limit" downstream and is now
+    // rejected by the pipelines, so the UI must not hand it on.
+    #[test]
+    fn non_positive_timeout_query_falls_back_to_the_default() {
+        assert_eq!(positive_timeout_sec_or_default(Some("45")), "45");
+        assert_eq!(positive_timeout_sec_or_default(Some("1")), "1");
+        assert_eq!(positive_timeout_sec_or_default(Some("0")), "30");
+        assert_eq!(positive_timeout_sec_or_default(Some("-5")), "30");
+        assert_eq!(positive_timeout_sec_or_default(Some("abc")), "30");
+        assert_eq!(positive_timeout_sec_or_default(Some("")), "30");
+        assert_eq!(positive_timeout_sec_or_default(None), "30");
+    }
+}
+

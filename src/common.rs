@@ -152,6 +152,11 @@ fn run_to_deadline(
             break status;
         }
         if started.elapsed() >= deadline {
+            // a child that exited inside the last poll window finished on its own; its
+            // real status (a crash, say) must not be relabelled as a timeout
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
             timed_out = true;
             let _ = child.kill();
             break child.wait()?;
@@ -372,6 +377,9 @@ pub(crate) enum HarnessExecResult {
     Success(String),
     Failed(String),
     Timeout(String),
+    // G3: the harness rejected this input before the library ran. Not a failed job and
+    // not a reproducer - keeping it in `failed` inflates the crash-side counters.
+    Rejected(String),
 }
 
 #[cfg(test)]
