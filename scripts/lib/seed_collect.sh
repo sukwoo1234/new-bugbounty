@@ -14,6 +14,19 @@ collect_seed_files() {
   local ext="$3"
   mkdir -p "$raw_dir"
 
+  # The walk's exit status has to be checked. A `find | while` pipeline propagated
+  # it under `set -o pipefail`; a `while ... < <(find)` process substitution does
+  # not, so a subdirectory the archive restored unreadable would yield a silently
+  # partial corpus and a success return - the same silent seed loss this function
+  # exists to prevent.
+  local listing
+  listing="$(mktemp)" || return 1
+  if ! find "$stage_dir" -type f -name "*.${ext}" -print0 > "$listing"; then
+    rm -f "$listing"
+    echo "[seed-collect] failed to walk '$stage_dir'" >&2
+    return 1
+  fi
+
   local f rel flat dest
   while IFS= read -r -d '' f; do
     rel="${f#"$stage_dir"/}"
@@ -28,7 +41,8 @@ collect_seed_files() {
       dest="$raw_dir/$(seed_collect_digest "$rel")_$(basename -- "$f")"
     fi
     cp "$f" "$dest"
-  done < <(find "$stage_dir" -type f -name "*.${ext}" -print0)
+  done < "$listing"
+  rm -f "$listing"
 }
 
 seed_collect_digest() {

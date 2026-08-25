@@ -57,4 +57,28 @@ log "ok: every collected name still ends in .onnx"
 [[ ! -e "$raw/notes.txt" ]] || fail "a non-matching extension was collected"
 log "ok: non-matching extensions are left behind"
 
+# Review follow-up: the extraction moved the walk into a process substitution,
+# whose exit status bash never collects - so a directory the archive restored
+# without read permission produced a silently partial corpus and exit 0. That is
+# the same silent seed loss this check exists to prevent.
+locked_stage="$WORK/locked-stage"
+locked_raw="$WORK/locked-raw"
+mkdir -p "$locked_stage/ok" "$locked_stage/denied"
+printf 'OK' > "$locked_stage/ok/a.onnx"
+printf 'DENIED' > "$locked_stage/denied/b.onnx"
+chmod 000 "$locked_stage/denied"
+
+if find "$locked_stage" -type f -name '*.onnx' >/dev/null 2>&1; then
+  # Running as root, where the mode is not enforced.
+  log "skip: unreadable-directory case (running as root)"
+else
+  set +e
+  collect_seed_files "$locked_stage" "$locked_raw" "onnx"
+  rc=$?
+  set -e
+  chmod 755 "$locked_stage/denied"
+  [[ "$rc" -ne 0 ]] || fail "a directory that could not be walked was reported as success"
+  log "ok: an unreadable subdirectory fails the collection instead of truncating it"
+fi
+
 log "all checks passed"
