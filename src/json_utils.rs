@@ -161,6 +161,15 @@ pub(crate) fn extract_first_signature_top1(json: &str) -> Option<String> {
     extract_first_signature_top3_list(json).into_iter().next()
 }
 
+fn read_hex4(chars: &mut std::str::CharIndices) -> Option<u32> {
+    let mut hex = String::with_capacity(4);
+    for _ in 0..4 {
+        let (_, digit) = chars.next()?;
+        hex.push(digit);
+    }
+    u32::from_str_radix(&hex, 16).ok()
+}
+
 fn parse_json_string_literal_at(input: &str, quote_index: usize) -> Option<(String, usize)> {
     let mut chars = input[quote_index..].char_indices();
     let (_, first) = chars.next()?;
@@ -184,15 +193,30 @@ fn parse_json_string_literal_at(input: &str, quote_index: usize) -> Option<(Stri
                 // write for any control byte or non-ASCII character. Without this a
                 // \u001b read back out of summary.json becomes the text "u001b".
                 'u' => {
-                    let mut hex = String::new();
-                    for _ in 0..4 {
-                        let (_, digit) = chars.next()?;
-                        hex.push(digit);
-                    }
-                    let value = u32::from_str_radix(&hex, 16).ok()?;
-                    // Surrogate halves are never emitted by this crate; a lone one
-                    // becomes U+FFFD rather than desynchronising the scan.
-                    out.push(char::from_u32(value).unwrap_or('\u{fffd}'));
+                    let value = read_hex4(&mut chars)?;
+                    // python's json.dump (ensure_ascii, the default) writes a
+                    // character outside the BMP as a surrogate PAIR, so the two
+                    // halves have to be recombined - decoding each on its own turns
+                    // an emoji or a rare CJK glyph into two replacement characters.
+                    let decoded = if (0xd800..0xdc00).contains(&value) {
+                        let mut lookahead = chars.clone();
+                        match (lookahead.next(), lookahead.next()) {
+                            (Some((_, '\\')), Some((_, 'u'))) => match read_hex4(&mut lookahead) {
+                                Some(low) if (0xdc00..0xe000).contains(&low) => {
+                                    chars = lookahead;
+                                    let combined =
+                                        0x1_0000 + ((value - 0xd800) << 10) + (low - 0xdc00);
+                                    char::from_u32(combined).unwrap_or('\u{fffd}')
+                                }
+                                _ => '\u{fffd}',
+                            },
+                            _ => '\u{fffd}',
+                        }
+                    } else {
+                        // A lone half becomes U+FFFD rather than desynchronising.
+                        char::from_u32(value).unwrap_or('\u{fffd}')
+                    };
+                    out.push(decoded);
                 }
                 _ => out.push(ch),
             }
@@ -245,6 +269,17 @@ mod tests {
         assert_eq!(
             extract_json_string_literal(body, "path").as_deref(),
             Some("\u{d55c}\u{ae00}\u{8}\u{c}")
+        );
+    }
+
+    // python's json.dump writes a non-BMP character as a surrogate pair by default,
+    // and this crate reads back files that scripts/run_coverage_onnx.sh writes that way.
+    #[test]
+    fn the_reader_recombines_a_surrogate_pair() {
+        let body = "{\"path\": \"a\\ud83d\\ude00b\"}";
+        assert_eq!(
+            extract_json_string_literal(body, "path").as_deref(),
+            Some("a\u{1f600}b")
         );
     }
 

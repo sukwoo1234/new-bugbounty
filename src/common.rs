@@ -516,12 +516,21 @@ mod tests {
             .to_string();
         // Give the group kill a moment to be reaped.
         std::thread::sleep(std::time::Duration::from_millis(200));
-        let alive = Command::new("kill")
-            .arg("-0")
-            .arg(&pid)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        // /proc rather than kill(1): a missing kill binary would make this test pass
+        // without testing anything.
+        let proc_entry = std::path::PathBuf::from("/proc").join(&pid);
+        assert!(
+            proc_entry.parent().is_some_and(|p| p.exists()),
+            "this test needs procfs"
+        );
+        let alive = proc_entry.exists()
+            && !std::fs::read_to_string(proc_entry.join("stat"))
+                .unwrap_or_default()
+                .rsplit(')')
+                .next()
+                .unwrap_or("")
+                .trim_start()
+                .starts_with('Z');
         if alive {
             let _ = Command::new("kill").arg("-KILL").arg(&pid).status();
         }
