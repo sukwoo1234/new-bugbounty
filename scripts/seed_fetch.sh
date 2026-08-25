@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=lib/seed_collect.sh
+. "$SCRIPT_DIR/lib/seed_collect.sh"
+
 usage() {
   cat <<'EOF'
 usage: seed_fetch.sh --target <onnx|gguf|safetensors> --url <https_url> [--sha256 <hex>] [--out-dir <dir>] [--tmp-dir <dir>] [--no-sync]
@@ -129,10 +133,7 @@ case "$URL" in
 esac
 
 RAW_DIR="$TMP_DIR/raw"
-mkdir -p "$RAW_DIR"
-find "$STAGE_DIR" -type f -name "*.${EXT}" -print0 | while IFS= read -r -d '' f; do
-  cp "$f" "$RAW_DIR/"
-done
+collect_seed_files "$STAGE_DIR" "$RAW_DIR" "$EXT"
 
 RAW_COUNT="$(find "$RAW_DIR" -maxdepth 1 -type f -name "*.${EXT}" | wc -l | tr -d ' ')"
 echo "[seed-fetch] collected raw ${EXT} files: $RAW_COUNT"
