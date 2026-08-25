@@ -531,14 +531,14 @@ fn execute_triage_subprocess(
         c.arg(&exe);
         c
     } else {
-        command_with_core_dump_off(&exe.display().to_string())
+        command_with_core_dump_off(&exe)
     };
 
     cmd.arg("harness")
         .arg("--target")
         .arg(target_label(target))
         .arg("--input")
-        .arg(input.display().to_string())
+        .arg(input)
         .env("OMP_NUM_THREADS", "1")
         .env("MKL_NUM_THREADS", "1")
         .env("OPENBLAS_NUM_THREADS", "1")

@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
@@ -80,7 +81,8 @@ pub(crate) fn command_exists(cmd: &str) -> bool {
     Command::new(cmd).arg("--version").output().is_ok()
 }
 
-pub(crate) fn command_with_core_dump_off(program: &str) -> Command {
+pub(crate) fn command_with_core_dump_off(program: impl AsRef<OsStr>) -> Command {
+    let program = program.as_ref();
     let mut cmd = if command_exists("prlimit") {
         let mut c = Command::new("prlimit");
         c.arg("--core=0").arg("--").arg(program);

@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
     process::{ExitStatus, Output},
@@ -439,8 +440,11 @@ fn maybe_run_external_harness(target: &TargetKind, input: &Path) -> Result<Strin
     }
 
     let cmd = parts.remove(0);
-    let mut args = parts;
-    args.push(input.display().to_string());
+    // A35: the input path is passed as an OsStr. display().to_string() replaces a
+    // non-UTF-8 byte with U+FFFD, so the child opened a path that does not exist
+    // and reported the seed as not a model file.
+    let mut args = parts.into_iter().map(OsString::from).collect::<Vec<_>>();
+    args.push(input.as_os_str().to_os_string());
 
     let output = command_with_core_dump_off(&cmd)
         .args(&args)
@@ -552,21 +556,22 @@ fn read_le_u64(bytes: &[u8]) -> Result<u64, String> {
 
 fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
     let mut candidates = Vec::new();
-    if let Ok(custom) = std::env::var("TOOL_LLAMA_CLI_BIN") {
-        if !custom.trim().is_empty() {
+    if let Some(custom) = std::env::var_os("TOOL_LLAMA_CLI_BIN") {
+        if !custom.is_empty() {
             let custom_path = PathBuf::from(custom);
             if let Some(bin_dir) = custom_path.parent() {
-                candidates.push(bin_dir.join("llama-gguf-hash").display().to_string());
+                candidates.push(bin_dir.join("llama-gguf-hash").into_os_string());
             }
         }
     }
-    candidates.push("llama-gguf-hash".to_string());
-    candidates.push("tools/llama.cpp/build/bin/llama-gguf-hash".to_string());
-    candidates.push("./tools/llama.cpp/build/bin/llama-gguf-hash".to_string());
+    candidates.push(OsString::from("llama-gguf-hash"));
+    candidates.push(OsString::from("tools/llama.cpp/build/bin/llama-gguf-hash"));
+    candidates.push(OsString::from("./tools/llama.cpp/build/bin/llama-gguf-hash"));
 
     for cmd in candidates {
         let result = command_with_core_dump_off(&cmd)
-            .args(["--sha256", &input.display().to_string()])
+            .arg("--sha256")
+            .arg(input)
             .output();
 
         match result {
@@ -574,7 +579,8 @@ fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 return LibraryConnectResult {
                     step: format!(
-                        "llama.cpp parser connected ({cmd}: {})",
+                        "llama.cpp parser connected ({}: {})",
+                        cmd.to_string_lossy(),
                         first_line(&stdout)
                     ),
                     outcome: LibraryConnectOutcome::SessionOk,
@@ -637,7 +643,9 @@ except Exception as e:
 "#;
     let python_bin = detect_python_bin();
     match command_with_core_dump_off(&python_bin)
-        .args(["-c", code, &input.display().to_string()])
+        .arg("-c")
+        .arg(code)
+        .arg(input)
         .output()
     {
         Ok(output) if output.status.success() => {
@@ -674,7 +682,10 @@ except Exception as e:
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => LibraryConnectResult {
-            step: format!("onnxruntime unavailable ({python_bin} not installed)"),
+            step: format!(
+                "onnxruntime unavailable ({} not installed)",
+                python_bin.to_string_lossy()
+            ),
             outcome: LibraryConnectOutcome::Unavailable,
         },
         Err(e) => LibraryConnectResult {
@@ -703,7 +714,9 @@ except Exception as e:
 "#;
     let python_bin = detect_python_bin();
     match command_with_core_dump_off(&python_bin)
-        .args(["-c", code, &input.display().to_string()])
+        .arg("-c")
+        .arg(code)
+        .arg(input)
         .output()
     {
         Ok(output) if output.status.success() => {
@@ -739,7 +752,10 @@ except Exception as e:
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => LibraryConnectResult {
-            step: format!("safetensors unavailable ({python_bin} not installed)"),
+            step: format!(
+                "safetensors unavailable ({} not installed)",
+                python_bin.to_string_lossy()
+            ),
             outcome: LibraryConnectOutcome::Unavailable,
         },
         Err(e) => LibraryConnectResult {
@@ -749,19 +765,19 @@ except Exception as e:
     }
 }
 
-fn detect_python_bin() -> String {
-    if let Ok(custom) = std::env::var("TOOL_PYTHON_BIN") {
-        if !custom.trim().is_empty() {
+fn detect_python_bin() -> OsString {
+    if let Some(custom) = std::env::var_os("TOOL_PYTHON_BIN") {
+        if !custom.is_empty() {
             return custom;
         }
     }
 
     let venv_python = Path::new(".venv/bin/python3");
     if venv_python.exists() {
-        return venv_python.display().to_string();
+        return venv_python.as_os_str().to_os_string();
     }
 
-    "python3".to_string()
+    OsString::from("python3")
 }
 
 fn crashed_connect_result(
@@ -833,6 +849,51 @@ fn exit_signal(_status: &ExitStatus) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    // A35: a non-UTF-8 input path was handed to child processes through
+    // display().to_string(), which substitutes U+FFFD. The child then opened a
+    // path that does not exist and reported "not a model file", so a real seed was
+    // silently classified as rejected instead of being tested.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_input_path_reaches_the_probe_unmangled() {
+        use super::{onnx_library_connect, LibraryConnectOutcome};
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = env_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "tool-a35-{}-{}",
+            std::process::id(),
+            crate::common::now_unix_millis()
+        ));
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        let input = dir.join(OsStr::from_bytes(b"seed\xffx.onnx"));
+        std::fs::write(&input, b"not really onnx").expect("write input");
+
+        let stub = dir.join("python-stub.sh");
+        std::fs::write(
+            &stub,
+            "#!/usr/bin/env bash\n[ -e \"$3\" ] && echo 'session_ok:inputs=1' || exit 2\n",
+        )
+        .expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        std::env::set_var("TOOL_PYTHON_BIN", &stub);
+        let result = onnx_library_connect(&input);
+        std::env::remove_var("TOOL_PYTHON_BIN");
+
+        assert!(
+            matches!(result.outcome, LibraryConnectOutcome::SessionOk),
+            "the probe did not see the file: {} / {:?}",
+            result.step,
+            result.outcome.as_str()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // A33: the external harness command line was tokenized with split_whitespace(),
     // so a quoted program path containing a space was cut in half. The harness then
     // looked permanently unavailable, and when the mangled prefix happened to

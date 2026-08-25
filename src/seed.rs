@@ -223,12 +223,12 @@ fn unique_dest_path(dest_dir: &Path, src: &Path, ext: &str) -> Result<PathBuf, S
 
 fn seed_harness_validate(target: &TargetKind, input: &Path) -> Result<bool, String> {
     let exe = std::env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
-    let out = command_with_core_dump_off(&exe.display().to_string())
+    let out = command_with_core_dump_off(&exe)
         .arg("harness")
         .arg("--target")
         .arg(target_label(target))
         .arg("--input")
-        .arg(input.display().to_string())
+        .arg(input)
         .output()
         .map_err(|e| {
             format!(

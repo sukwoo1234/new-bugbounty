@@ -1051,7 +1051,6 @@ pub(crate) fn execute_harness_subprocess(
 ) -> Result<(HarnessExecResult, bool), String> {
     let exe = std::env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
     let target_name = target_label(target).to_string();
-    let input = job.input.display().to_string();
 
     let mut cmd = if timeout_available {
         let mut c = command_with_core_dump_off("timeout");
@@ -1059,13 +1058,13 @@ pub(crate) fn execute_harness_subprocess(
         c.arg(&exe);
         c
     } else {
-        command_with_core_dump_off(&exe.display().to_string())
+        command_with_core_dump_off(&exe)
     };
     cmd.arg("harness")
         .arg("--target")
         .arg(&target_name)
         .arg("--input")
-        .arg(&input)
+        .arg(&job.input)
         .env("OMP_NUM_THREADS", "1")
         .env("MKL_NUM_THREADS", "1")
         .env("OPENBLAS_NUM_THREADS", "1")
