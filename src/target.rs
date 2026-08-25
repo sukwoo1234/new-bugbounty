@@ -812,13 +812,41 @@ fn detect_python_bin() -> OsString {
             return custom;
         }
     }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    detect_python_bin_from(std::env::current_exe().ok().as_deref(), &cwd)
+}
 
-    let venv_python = Path::new(".venv/bin/python3");
-    if venv_python.exists() {
-        return venv_python.as_os_str().to_os_string();
+/// A36: the probe only ever looked for `.venv/bin/python3` relative to the process
+/// working directory, so a `tool` invoked from anywhere else - a systemd unit, a
+/// campaign script, a triage re-exec from a run directory - silently fell back to
+/// the system python3, which has no onnxruntime. Under the strict connect gate
+/// that turns every input into a harness-unavailable exit.
+fn detect_python_bin_from(exe: Option<&Path>, cwd: &Path) -> OsString {
+    if let Some(python) = venv_python_under(cwd) {
+        return python.into_os_string();
     }
-
+    if let Some(exe) = exe {
+        // Only a directory that actually looks like this project: adopting any
+        // .venv above the binary could bind the probe to an unrelated environment.
+        for root in exe.ancestors().skip(1).take(3) {
+            if !is_project_root(root) {
+                continue;
+            }
+            if let Some(python) = venv_python_under(root) {
+                return python.into_os_string();
+            }
+        }
+    }
     OsString::from("python3")
+}
+
+fn venv_python_under(root: &Path) -> Option<PathBuf> {
+    let candidate = root.join(".venv").join("bin").join("python3");
+    candidate.exists().then_some(candidate)
+}
+
+fn is_project_root(root: &Path) -> bool {
+    root.join("Cargo.toml").is_file() || root.join("seeds").is_dir()
 }
 
 fn crashed_connect_result(
@@ -890,6 +918,89 @@ fn exit_signal(_status: &ExitStatus) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    // A36: the probe looked for .venv/bin/python3 relative to the process working
+    // directory, so running the tool from anywhere but the project root silently
+    // fell back to the system python3 - which has no onnxruntime. With the strict
+    // connect gate on, that turns every input into a harness-unavailable exit.
+    #[test]
+    fn the_venv_interpreter_is_found_from_the_executable_not_only_the_cwd() {
+        use super::detect_python_bin_from;
+
+        let root = std::env::temp_dir().join(format!(
+            "tool-a36-{}-{}",
+            std::process::id(),
+            crate::common::now_unix_millis()
+        ));
+        let project = root.join("proj");
+        let venv = project.join(".venv").join("bin");
+        let exe_dir = project.join("target").join("release");
+        std::fs::create_dir_all(&venv).expect("create venv");
+        std::fs::create_dir_all(&exe_dir).expect("create exe dir");
+        std::fs::write(project.join("Cargo.toml"), "[package]").expect("write marker");
+        std::fs::write(venv.join("python3"), "#!/bin/sh\n").expect("write python");
+        let exe = exe_dir.join("tool");
+        std::fs::write(&exe, "").expect("write exe");
+
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("create elsewhere");
+
+        assert_eq!(
+            detect_python_bin_from(Some(&exe), &elsewhere),
+            venv.join("python3").into_os_string(),
+            "the interpreter next to the binary was not found"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unrelated_venv_in_a_parent_directory_is_not_used() {
+        use super::detect_python_bin_from;
+
+        let root = std::env::temp_dir().join(format!(
+            "tool-a36-unrelated-{}-{}",
+            std::process::id(),
+            crate::common::now_unix_millis()
+        ));
+        // A .venv with no project marker beside it: someone else's environment.
+        let venv = root.join("home").join(".venv").join("bin");
+        let exe_dir = root.join("home").join("bin");
+        std::fs::create_dir_all(&venv).expect("create venv");
+        std::fs::create_dir_all(&exe_dir).expect("create exe dir");
+        std::fs::write(venv.join("python3"), "#!/bin/sh\n").expect("write python");
+        let exe = exe_dir.join("tool");
+        std::fs::write(&exe, "").expect("write exe");
+
+        assert_eq!(
+            detect_python_bin_from(Some(&exe), &root),
+            std::ffi::OsString::from("python3"),
+            "an unrelated virtualenv must not be adopted"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_venv_in_the_working_directory_still_wins() {
+        use super::detect_python_bin_from;
+
+        let root = std::env::temp_dir().join(format!(
+            "tool-a36-cwd-{}-{}",
+            std::process::id(),
+            crate::common::now_unix_millis()
+        ));
+        let venv = root.join(".venv").join("bin");
+        std::fs::create_dir_all(&venv).expect("create venv");
+        std::fs::write(venv.join("python3"), "#!/bin/sh\n").expect("write python");
+
+        assert_eq!(
+            detect_python_bin_from(None, &root),
+            venv.join("python3").into_os_string()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     // A34: a candidate that exists but cannot be executed returned Unavailable for
     // the whole probe, so a stale TOOL_LLAMA_CLI_BIN hid a perfectly good
     // llama-gguf-hash further down the list. The strict gate then fails every GGUF

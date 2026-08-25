@@ -100,6 +100,23 @@ bash scripts/setup_fuzz_host.sh --no-docker
 - `build-essential`, `pkg-config`
 - `curl`, `git`, `jq`, `tmux`, `python3`, `python3-pip`
 
+### 파이썬 인터프리터 선택
+
+ONNX/safetensors 라이브러리 프로브는 파이썬을 통해 실제 라이브러리를 부른다. 어느
+인터프리터를 쓸지는 다음 순서로 정해진다.
+
+1. `TOOL_PYTHON_BIN` (설정돼 있으면 그대로 사용)
+2. 현재 작업 디렉터리의 `.venv/bin/python3`
+3. 실행 중인 `tool` 바이너리 위쪽 3단계 안에서 찾은 프로젝트 루트(= `Cargo.toml`
+   또는 `seeds/`가 있는 디렉터리)의 `.venv/bin/python3`
+4. `python3`
+
+3번이 있는 이유: 프로젝트 루트가 아닌 곳에서 `tool`을 실행해도(systemd 유닛, 캠페인
+스크립트, run 디렉터리에서의 triage 재실행) venv를 계속 찾게 하기 위해서다. 관계없는
+`.venv`를 잘못 집어오지 않도록 프로젝트 루트 표식이 함께 있을 때만 채택한다.
+`TOOL_REQUIRE_LIBRARY_CONNECT=1`로 돌릴 때 이 선택이 틀리면 모든 입력이
+harness-unavailable로 떨어지므로, 확실히 하려면 `TOOL_PYTHON_BIN`을 지정한다.
+
 설치 후 확인:
 
 ```bash
