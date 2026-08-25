@@ -66,6 +66,29 @@ check_url "${BASE_URL}/replay/status"
 check_url "${BASE_URL}/target/status"
 check_url "${BASE_URL}/target/build/status"
 
+# A4: a client that opens the socket and sends nothing used to block the single-threaded
+# accept loop, denying every other request until it went away.
+check_stalled_client_does_not_block() {
+  local host="${BIND%:*}"
+  local port="${BIND##*:}"
+  if ! exec 9<>"/dev/tcp/${host}/${port}" 2>/dev/null; then
+    echo "[FAIL] could not open a stalled connection to ${BIND}" | tee -a "$CHECK_LOG"
+    return 1
+  fi
+  local rc=0
+  if curl -fsS --max-time 5 "${BASE_URL}/healthz" >/dev/null 2>&1; then
+    echo "[OK] stalled client does not block the dashboard" | tee -a "$CHECK_LOG"
+  else
+    echo "[FAIL] a client that sends nothing blocked the dashboard" | tee -a "$CHECK_LOG"
+    rc=1
+  fi
+  exec 9<&-
+  exec 9>&-
+  return "$rc"
+}
+
+check_stalled_client_does_not_block
+
 dash_html="$(curl -fsS "${BASE_URL}/dashboard.html")"
 run_path="$(printf '%s' "$dash_html" | sed -n 's/.*href="\(\/*run\/[^"]*\)".*/\1/p' | head -n 1)"
 triage_path="$(printf '%s' "$dash_html" | sed -n 's/.*href="\(\/*triage\/[^"]*\)".*/\1/p' | head -n 1)"

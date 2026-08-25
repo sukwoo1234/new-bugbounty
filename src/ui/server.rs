@@ -4,11 +4,40 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::common::AppPaths;
 use crate::dashboard_data::collect_dashboard_snapshot;
 use crate::json_utils::{html_escape, json_escape, url_encode};
+
+/// A4: a client that opens the socket and then goes quiet must not be able to hold a slot
+/// forever, and a slow reader must not wedge a writer.
+const READ_TIMEOUT_SECS: u64 = 15;
+const WRITE_TIMEOUT_SECS: u64 = 30;
+/// Connections are handled on their own threads, so the number of them in flight is capped
+/// rather than left to the peer.
+const MAX_IN_FLIGHT_CONNECTIONS: usize = 64;
+
+/// Serialises every handler that reads or writes the UI state files or spawns a job. Only the
+/// read-only views (dashboard, file, entity) run concurrently, which is what A4 needs: one
+/// stalled or slow request no longer blocks the rest of the dashboard.
+static STATE_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_state() -> MutexGuard<'static, ()> {
+    STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Releases its slot even if the connection thread unwinds.
+struct InFlightGuard(Arc<AtomicUsize>);
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 pub(crate) fn run_ui_server(app_paths: &AppPaths, bind: &str) -> Result<(), String> {
     let listener = TcpListener::bind(bind).map_err(|e| format!("failed to bind '{bind}': {e}"))?;
@@ -16,6 +45,9 @@ pub(crate) fn run_ui_server(app_paths: &AppPaths, bind: &str) -> Result<(), Stri
     println!(
         "[ui] endpoints: /healthz, /dashboard.json, /dashboard.html, /file?path=..., /control/status, /replay/status, /target/status, /target/build/status"
     );
+
+    let paths = Arc::new(app_paths.clone());
+    let in_flight = Arc::new(AtomicUsize::new(0));
 
     for stream in listener.incoming() {
         let mut stream = match stream {
@@ -25,26 +57,103 @@ pub(crate) fn run_ui_server(app_paths: &AppPaths, bind: &str) -> Result<(), Stri
                 continue;
             }
         };
-        if let Err(e) = handle_connection(app_paths, &mut stream) {
-            eprintln!("[ui] request error: {e}");
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECS)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(WRITE_TIMEOUT_SECS)));
+
+        if in_flight.load(Ordering::SeqCst) >= MAX_IN_FLIGHT_CONNECTIONS {
+            let _ = write_response(
+                &mut stream,
+                "503 Service Unavailable",
+                "text/plain; charset=utf-8",
+                "too many connections\n",
+            );
+            continue;
+        }
+        in_flight.fetch_add(1, Ordering::SeqCst);
+        let guard = InFlightGuard(Arc::clone(&in_flight));
+        let paths = Arc::clone(&paths);
+        if let Err(e) = thread::Builder::new()
+            .name("ui-conn".to_string())
+            .spawn(move || {
+                let _guard = guard;
+                if let Err(e) = handle_connection(&paths, &mut stream) {
+                    eprintln!("[ui] request error: {e}");
+                }
+            })
+        {
+            eprintln!("[ui] failed to spawn connection thread: {e}");
         }
     }
     Ok(())
 }
 
-fn handle_connection(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
-    let mut buf = [0u8; 4096];
-    let read = stream
-        .read(&mut buf)
-        .map_err(|e| format!("failed to read request: {e}"))?;
-    if read == 0 {
-        return Ok(());
+/// A4: the request head has to be read in full before anything is decided from it, so that a
+/// head split across TCP segments does not lose its headers, and it has to be bounded so that a
+/// client that never sends the blank line cannot make the server buffer without limit.
+const MAX_REQUEST_HEAD_BYTES: usize = 32 * 1024;
+
+struct RequestHead {
+    method: String,
+    path: String,
+}
+
+/// `Ok(None)` means the peer closed without sending a byte - a browser preconnect, not an
+/// error worth logging.
+fn read_request_head<R: Read>(reader: &mut R, max_bytes: usize) -> Result<Option<String>, String> {
+    let mut head = Vec::new();
+    let mut buf = [0u8; 1024];
+    loop {
+        if head_terminator(&head).is_some() {
+            break;
+        }
+        if head.len() >= max_bytes {
+            return Err(format!("request head exceeds {max_bytes} bytes"));
+        }
+        let read = reader
+            .read(&mut buf)
+            .map_err(|e| format!("failed to read request: {e}"))?;
+        if read == 0 {
+            if head.is_empty() {
+                return Ok(None);
+            }
+            return Err("request head ended before the blank line".to_string());
+        }
+        head.extend_from_slice(&buf[..read]);
     }
-    let request = String::from_utf8_lossy(&buf[..read]);
-    let first_line = request.lines().next().unwrap_or_default();
+    let end = head_terminator(&head).unwrap_or(head.len());
+    Ok(Some(String::from_utf8_lossy(&head[..end]).into_owned()))
+}
+
+/// Returns the offset just past the blank line that ends the head, accepting both CRLF and the
+/// bare-LF form some clients send.
+fn head_terminator(head: &[u8]) -> Option<usize> {
+    let crlf = head.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
+    let lf = head.windows(2).position(|w| w == b"\n\n").map(|i| i + 2);
+    match (crlf, lf) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+fn parse_request_head(head: &str) -> Option<RequestHead> {
+    let first_line = head.lines().next()?;
     let mut parts = first_line.split_whitespace();
-    let method = parts.next().unwrap_or_default();
-    let raw_path = parts.next().unwrap_or("/");
+    let method = parts.next().unwrap_or_default().to_string();
+    let path = parts.next().unwrap_or("/").to_string();
+    Some(RequestHead { method, path })
+}
+
+fn handle_connection(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
+    let Some(head) = read_request_head(stream, MAX_REQUEST_HEAD_BYTES)? else {
+        return Ok(());
+    };
+    let Some(request) = parse_request_head(&head) else {
+        return Ok(());
+    };
+    let method = request.method.as_str();
+    let raw_path = request.path.as_str();
 
     if raw_path.starts_with("/control/") {
         return handle_control_route(app_paths, stream, method, raw_path);
@@ -111,6 +220,7 @@ fn handle_control_route(
     method: &str,
     raw_path: &str,
 ) -> Result<(), String> {
+    let _state = lock_state();
     match (method, raw_path.split('?').next().unwrap_or(raw_path)) {
         ("GET", "/control/status") => handle_control_status(app_paths, stream),
         ("POST", "/control/start") => handle_control_start(app_paths, stream, raw_path),
@@ -130,6 +240,7 @@ fn handle_replay_route(
     method: &str,
     raw_path: &str,
 ) -> Result<(), String> {
+    let _state = lock_state();
     match (method, raw_path.split('?').next().unwrap_or(raw_path)) {
         ("GET", "/replay/status") => handle_replay_status(app_paths, stream),
         ("POST", "/replay/start") => handle_replay_start(app_paths, stream, raw_path),
@@ -149,6 +260,7 @@ fn handle_target_route(
     method: &str,
     raw_path: &str,
 ) -> Result<(), String> {
+    let _state = lock_state();
     match (method, raw_path.split('?').next().unwrap_or(raw_path)) {
         ("GET", "/target/build/status") => handle_target_build_status(app_paths, stream),
         ("POST", "/target/build/start") => handle_target_build_start(app_paths, stream, raw_path),
@@ -1615,7 +1727,69 @@ fn write_response(
 
 #[cfg(test)]
 mod tests {
-    use super::positive_timeout_sec_or_default;
+    use super::{parse_request_head, positive_timeout_sec_or_default, read_request_head};
+
+    // A4: the old server did one 4 KiB read() and looked only at the first line, so a request
+    // whose head arrived in several TCP segments lost its headers. The head has to be read
+    // until the blank line before anything may be decided from it.
+    #[test]
+    fn request_head_is_read_until_the_blank_line_even_across_reads() {
+        struct Chunked(Vec<&'static [u8]>);
+        impl std::io::Read for Chunked {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0.is_empty() {
+                    return Ok(0);
+                }
+                let chunk = self.0.remove(0);
+                buf[..chunk.len()].copy_from_slice(chunk);
+                Ok(chunk.len())
+            }
+        }
+        let mut reader = Chunked(vec![
+            b"POST /control/start?target=onnx HTT",
+            b"P/1.1\r\nHost: 127.0.0.1:8787\r\nX-Tool-",
+            b"Token: abc\r\n\r\n",
+        ]);
+        let head = read_request_head(&mut reader, 32 * 1024)
+            .expect("head")
+            .expect("head present");
+        assert!(head.ends_with("\r\n\r\n"), "head was {head:?}");
+        let parsed = parse_request_head(&head).expect("parsed");
+        assert_eq!(parsed.method, "POST");
+        assert_eq!(parsed.path, "/control/start?target=onnx");
+    }
+
+    #[test]
+    fn a_head_without_a_blank_line_is_an_error_not_a_silent_truncation() {
+        let mut reader: &[u8] = b"GET /healthz HTTP/1.1\r\nHost: x\r\n";
+        assert!(read_request_head(&mut reader, 32 * 1024).is_err());
+    }
+
+    // A browser preconnect opens the socket and closes it again; that is not a request error.
+    #[test]
+    fn a_connection_that_sends_nothing_is_not_an_error() {
+        let mut reader: &[u8] = b"";
+        assert_eq!(read_request_head(&mut reader, 32 * 1024), Ok(None));
+    }
+
+    // A4: an oversized head must be refused rather than buffered without bound.
+    #[test]
+    fn an_oversized_request_head_is_refused() {
+        let mut long = String::from("GET / HTTP/1.1\r\n");
+        for i in 0..500 {
+            long.push_str(&format!("X-Pad-{i}: {}\r\n", "a".repeat(64)));
+        }
+        long.push_str("\r\n");
+        let mut reader = long.as_bytes();
+        assert!(read_request_head(&mut reader, 4096).is_err());
+    }
+
+    #[test]
+    fn a_request_line_without_a_path_falls_back_to_root() {
+        let parsed = parse_request_head("GET\r\n\r\n").expect("parsed");
+        assert_eq!(parsed.method, "GET");
+        assert_eq!(parsed.path, "/");
+    }
 
     // A29: 0 (and anything unparseable) means "no time limit" downstream and is now
     // rejected by the pipelines, so the UI must not hand it on.

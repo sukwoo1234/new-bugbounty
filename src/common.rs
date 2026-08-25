@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[derive(Clone)]
 pub(crate) struct AppPaths {
     pub(crate) data_dir: PathBuf,
     pub(crate) seeds_dir: PathBuf,
