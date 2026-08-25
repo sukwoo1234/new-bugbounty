@@ -633,6 +633,15 @@ fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
                     last_error = first_line(&stderr).to_string();
                     continue;
                 }
+                if is_gguf_parser_rejection(&output.status, &stderr) {
+                    return LibraryConnectResult {
+                        step: format!(
+                            "llama.cpp parser rejected the file ({})",
+                            first_line(&stderr)
+                        ),
+                        outcome: LibraryConnectOutcome::Invoked,
+                    };
+                }
                 if let Some(result) =
                     crashed_connect_result("llama.cpp parser", "invocation", &output)
                 {
@@ -849,6 +858,48 @@ fn is_project_root(root: &Path) -> bool {
     root.join("Cargo.toml").is_file() || root.join("seeds").is_dir()
 }
 
+/// Whether the probe died because llama.cpp's parser cleanly refused the file.
+///
+/// The probe binary is llama.cpp's gguf-hash example, which does not NULL-check
+/// gguf_init_from_file (tools/llama.cpp/examples/gguf-hash/gguf-hash.cpp:329). The
+/// parser returns NULL on every rejection path and the example then dereferences
+/// it, so a structurally broken file - which is most of what the mutator produces -
+/// segfaulted and was reported as a library crash. That made the GGUF crash oracle
+/// a false-positive factory.
+///
+/// The carve-out is deliberately narrow: llama.cpp logs the rejection and then
+/// frees attacker-controlled structures, and a fault in THAT cleanup is a real
+/// finding. So it only applies to a plain SIGSEGV with the parser's own marker and
+/// no sanitizer report or assertion in the output.
+///
+/// The durable fix is a native GGUF harness that checks the return value itself;
+/// it is the first Phase 2 item.
+fn is_gguf_parser_rejection(status: &ExitStatus, stderr: &str) -> bool {
+    const REJECTION_MARKER: &str = "gguf_init_from_file_impl: ";
+    // Anything that says "a memory-safety tool noticed something" outranks the marker.
+    const CRASH_MARKERS: &[&str] = &[
+        "AddressSanitizer",
+        "UndefinedBehaviorSanitizer",
+        "LeakSanitizer",
+        "MemorySanitizer",
+        "ThreadSanitizer",
+        "runtime error:",
+        "SUMMARY:",
+        "GGML_ASSERT",
+        "GGML_ABORT",
+    ];
+
+    if exit_signal(status) != Some(SIGSEGV) {
+        return false;
+    }
+    if !stderr.contains(REJECTION_MARKER) {
+        return false;
+    }
+    !CRASH_MARKERS.iter().any(|marker| stderr.contains(marker))
+}
+
+const SIGSEGV: i32 = 11;
+
 fn crashed_connect_result(
     component: &str,
     action: &str,
@@ -918,6 +969,204 @@ fn exit_signal(_status: &ExitStatus) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    fn gguf_probe_dir(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "tool-{label}-{}-{}",
+            std::process::id(),
+            crate::common::now_unix_millis()
+        ))
+    }
+
+    // Install a stub llama-gguf-hash and run the gguf probe against a 24-byte input
+    // that passes gguf_precheck. `body` is the stub's shell body.
+    #[cfg(unix)]
+    fn gguf_probe_with_stub(label: &str, body: &str) -> super::LibraryConnectResult {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = gguf_probe_dir(label);
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("create bin dir");
+        let stub = bin.join("llama-gguf-hash");
+        std::fs::write(&stub, format!("#!/bin/sh\n{body}\n")).expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let mut gguf = Vec::new();
+        gguf.extend_from_slice(b"GGUF");
+        gguf.extend_from_slice(&3u32.to_le_bytes());
+        gguf.extend_from_slice(&1u64.to_le_bytes());
+        gguf.extend_from_slice(&0u64.to_le_bytes());
+        let input = dir.join("sample.gguf");
+        std::fs::write(&input, &gguf).expect("write input");
+
+        std::env::set_var("TOOL_LLAMA_CLI_BIN", bin.join("llama-cli"));
+        let result = super::gguf_library_connect(&input);
+        std::env::remove_var("TOOL_LLAMA_CLI_BIN");
+        let _ = std::fs::remove_dir_all(&dir);
+        result
+    }
+
+    // The probe binary is llama.cpp's gguf-hash example, which does not NULL-check
+    // gguf_init_from_file (gguf-hash.cpp:329). Every file the parser rejects makes
+    // the example null-deref, so a structurally broken mutant - which is most of
+    // what the mutator produces - was reported as a library crash. The crash oracle
+    // for GGUF was a false-positive factory.
+    #[cfg(unix)]
+    #[test]
+    fn a_gguf_file_the_parser_cleanly_rejects_is_not_a_library_crash() {
+        use super::LibraryConnectOutcome;
+
+        let _guard = env_lock();
+        let result = gguf_probe_with_stub(
+            "gguf-reject",
+            "echo 'gguf_init_from_file_impl: failed to read tensor info' >&2\nkill -SEGV \"$$\"",
+        );
+
+        assert!(
+            matches!(result.outcome, LibraryConnectOutcome::Invoked),
+            "a clean parser rejection was reported as {}: {}",
+            result.outcome.as_str(),
+            result.step
+        );
+        assert!(
+            result.step.contains("rejected"),
+            "step should say the parser rejected the file: {}",
+            result.step
+        );
+    }
+
+    // The carve-out must not widen. A signal death with no rejection marker is the
+    // finding this project exists to catch.
+    #[cfg(unix)]
+    #[test]
+    fn a_gguf_signal_death_without_a_rejection_marker_is_still_a_library_crash() {
+        use super::LibraryConnectOutcome;
+
+        let _guard = env_lock();
+        let result = gguf_probe_with_stub("gguf-crash", "kill -SEGV \"$$\"");
+
+        assert!(
+            matches!(result.outcome, LibraryConnectOutcome::Crashed),
+            "a real crash was downgraded to {}: {}",
+            result.outcome.as_str(),
+            result.step
+        );
+    }
+
+    // llama.cpp logs the rejection and then frees attacker-controlled structures.
+    // A fault in that cleanup is a real memory-safety bug, and a sanitizer report
+    // or an abort says so even though the rejection marker is present.
+    #[cfg(unix)]
+    #[test]
+    fn a_sanitizer_report_after_a_rejection_marker_is_still_a_library_crash() {
+        use super::LibraryConnectOutcome;
+
+        let _guard = env_lock();
+        let result = gguf_probe_with_stub(
+            "gguf-asan",
+            "echo 'gguf_init_from_file_impl: failed to read tensor info' >&2\n\
+             echo '==1==ERROR: AddressSanitizer: heap-use-after-free' >&2\nkill -SEGV \"$$\"",
+        );
+
+        assert!(
+            matches!(result.outcome, LibraryConnectOutcome::Crashed),
+            "a sanitizer report was swallowed as {}: {}",
+            result.outcome.as_str(),
+            result.step
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_gguf_abort_after_a_rejection_marker_is_still_a_library_crash() {
+        use super::LibraryConnectOutcome;
+
+        let _guard = env_lock();
+        let result = gguf_probe_with_stub(
+            "gguf-abort",
+            "echo 'gguf_init_from_file_impl: failed to read tensor info' >&2\nkill -ABRT \"$$\"",
+        );
+
+        assert!(
+            matches!(result.outcome, LibraryConnectOutcome::Crashed),
+            "an abort was swallowed as {}: {}",
+            result.outcome.as_str(),
+            result.step
+        );
+    }
+
+    // G6: the crash-propagation fix was only ever proven on ONNX. Everything below
+    // run_harness is format-independent, so what actually needs proving per format
+    // is that a signal-killed probe reaches HarnessError::LibraryCrash.
+    #[cfg(unix)]
+    #[test]
+    fn a_gguf_signal_killed_probe_reaches_the_library_crash_exit_code() {
+        use super::{run_harness, TargetKind};
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = env_lock();
+        let dir = gguf_probe_dir("g6-gguf");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("create bin dir");
+        let stub = bin.join("llama-gguf-hash");
+        std::fs::write(&stub, "#!/bin/sh\nkill -SEGV \"$$\"\n").expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let mut gguf = Vec::new();
+        gguf.extend_from_slice(b"GGUF");
+        gguf.extend_from_slice(&3u32.to_le_bytes());
+        gguf.extend_from_slice(&1u64.to_le_bytes());
+        gguf.extend_from_slice(&0u64.to_le_bytes());
+        let input = dir.join("sample.gguf");
+        std::fs::write(&input, &gguf).expect("write input");
+
+        std::env::set_var("TOOL_LLAMA_CLI_BIN", bin.join("llama-cli"));
+        std::env::remove_var("TOOL_GGUF_HARNESS_CMD");
+        let result = run_harness(&TargetKind::Gguf, &input);
+        std::env::remove_var("TOOL_LLAMA_CLI_BIN");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let err = result.expect_err("a signal-killed gguf probe must not be Ok");
+        assert!(
+            matches!(err, super::HarnessError::LibraryCrash(_)),
+            "err was: {err:?}"
+        );
+        assert_eq!(err.exit_code(), crate::EXIT_HARNESS_LIBRARY_CRASH);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_safetensors_signal_killed_probe_reaches_the_library_crash_exit_code() {
+        use super::{run_harness, TargetKind};
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = env_lock();
+        let dir = gguf_probe_dir("g6-safetensors");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let stub = dir.join("segv_python.sh");
+        std::fs::write(&stub, "#!/bin/sh\nkill -SEGV \"$$\"\n").expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let header = br#"{"a":1}"#;
+        let mut body = (header.len() as u64).to_le_bytes().to_vec();
+        body.extend_from_slice(header);
+        let input = dir.join("sample.safetensors");
+        std::fs::write(&input, &body).expect("write input");
+
+        std::env::set_var("TOOL_PYTHON_BIN", &stub);
+        std::env::remove_var("TOOL_SAFETENSORS_HARNESS_CMD");
+        let result = run_harness(&TargetKind::Safetensors, &input);
+        std::env::remove_var("TOOL_PYTHON_BIN");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let err = result.expect_err("a signal-killed safetensors probe must not be Ok");
+        assert!(
+            matches!(err, super::HarnessError::LibraryCrash(_)),
+            "err was: {err:?}"
+        );
+        assert_eq!(err.exit_code(), crate::EXIT_HARNESS_LIBRARY_CRASH);
+    }
+
     // A36: the probe looked for .venv/bin/python3 relative to the process working
     // directory, so running the tool from anywhere but the project root silently
     // fell back to the system python3 - which has no onnxruntime. With the strict
