@@ -623,7 +623,14 @@ fn parse_crash_log(
     let sanitizer = extract_sanitizer(output);
     let signal = extract_signal(output, exit_code, signal_number);
     let timeout = result_label == "timeout" || contains_timeout(output);
-    let infra_oom = exit_code == Some(137) || contains_oom(output);
+    // G3: a kernel/cgroup OOM kill reaches triage as SIGKILL, not as exit_code 137 and
+    // not as OOM text - the library subprocess dies instantly without printing and the
+    // kernel logs "Out of memory: Killed process" to dmesg, while the tool itself exits 4.
+    // Faulting code never raises SIGKILL, so a non-timeout SIGKILL is infrastructure, not
+    // a library bug. Timeouts are excluded because the timeout killer is the only
+    // in-pipeline SIGKILL producer.
+    let infra_oom =
+        exit_code == Some(137) || contains_oom(output) || (!timeout && signal == "SIGKILL");
     let crash_kind = classify_crash_kind(output, &sanitizer, &signal, timeout, infra_oom);
     let crash_summary = extract_crash_summary(output, &crash_kind);
     let top_frames = extract_top_frames(output);
@@ -749,11 +756,37 @@ fn extract_signal(output: &str, exit_code: Option<i32>, signal_number: Option<i3
         || lower.contains("signal: 8")
     {
         "SIGFPE".to_string()
+    } else if crash_line_reports_signal(output, &["sigkill", "signal: 9"]) {
+        "SIGKILL".to_string()
+    } else if crash_line_reports_signal(output, &["sigterm", "signal: 15"]) {
+        "SIGTERM".to_string()
     } else if let Some(code) = exit_code.and_then(exit_code_signal_name) {
         code.to_string()
     } else {
         "none".to_string()
     }
+}
+
+/// A37: SIGKILL/SIGTERM never arrive as the tool's own exit status. run_harness turns
+/// a killed library subprocess into Err, so the tool exits 4 and the only evidence is
+/// the harness crash-detail line that target::crash_status_detail formats as
+/// `... crashed (SIGKILL (signal: 9); stdout: ...; stderr: ...)`.
+///
+/// Matching is line-scoped and requires that crash-detail shape, and `input:` lines are
+/// skipped: unlike the fault-signal names, kill names are ordinary words that show up in
+/// paths and log text, and a filename must never decide a signal (the same false-positive
+/// class the A1 fix removed from contains_oom). Deliberately not matched: "killed",
+/// "terminated", "terminate" - `Out of memory: Killed process`, `killed by signal 11`,
+/// bash's `Terminated` and C++'s `terminate called after throwing ...` would each
+/// misclassify a non-kill as a kill.
+fn crash_line_reports_signal(output: &str, needles: &[&str]) -> bool {
+    output.lines().any(|line| {
+        let lower = line.trim().to_ascii_lowercase();
+        if lower.starts_with("input:") || !lower.contains("crashed (") {
+            return false;
+        }
+        needles.iter().any(|needle| lower.contains(needle))
+    })
 }
 
 fn exit_code_signal_name(exit_code: i32) -> Option<&'static str> {
@@ -823,7 +856,13 @@ fn classify_crash_kind(
 }
 
 fn requires_manual_review(crash_kind: &str) -> bool {
-    matches!(crash_kind, "manual_review" | "parser_or_runtime_error")
+    // A37: "sigkill"/"sigterm" mean the process was killed from outside its own code,
+    // which is never a reproduced library bug, so it must not reach the "reproduced"
+    // verdict that feeds the report pipeline.
+    matches!(
+        crash_kind,
+        "manual_review" | "parser_or_runtime_error" | "sigkill" | "sigterm"
+    )
 }
 
 fn extract_crash_summary(output: &str, crash_kind: &str) -> String {
@@ -1019,8 +1058,9 @@ fn exit_signal(_status: &ExitStatus) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_deep_triage_metadata, contains_oom, extract_crash_summary, extract_signature_top3,
-        parse_crash_log, TriageAttempt,
+        build_deep_triage_metadata, classify_crash_kind, contains_oom, extract_crash_summary,
+        extract_signal, extract_signature_top3, parse_crash_log, requires_manual_review,
+        TriageAttempt,
     };
     use crate::json_utils::{extract_json_number_literal, extract_json_string_literal};
 
@@ -1142,6 +1182,295 @@ library_step: onnxruntime loader crashed (SIGSEGV (signal: 11); stdout: no outpu
             "benign 'oom' in the input path must not be classified as infra_oom"
         );
         assert_ne!(parsed.crash_kind, "infra_oom");
+    }
+
+    // (case, output, exit_code, signal_number, expected)
+    type SignalCase = (
+        &'static str,
+        &'static str,
+        Option<i32>,
+        Option<i32>,
+        &'static str,
+    );
+
+    #[test]
+    fn extract_signal_table_covers_kill_signals_and_keeps_old_rows() {
+        let cases: &[SignalCase] = &[
+            // --- unchanged rows (must keep asserting today's behavior) ---
+            (
+                "runtime_signal_number_wins_over_text",
+                "library_step: onnxruntime loader crashed (SIGKILL (signal: 9); stdout: ; stderr: )",
+                Some(4),
+                Some(11),
+                "SIGSEGV",
+            ),
+            (
+                "sigsegv_text",
+                "library_step: onnxruntime loader crashed (SIGSEGV (signal: 11); stdout: ; stderr: )",
+                Some(4),
+                None,
+                "SIGSEGV",
+            ),
+            (
+                "sigfpe_text",
+                "library_step: onnxruntime loader crashed (SIGFPE (signal: 8); stdout: ; stderr: )",
+                Some(4),
+                None,
+                "SIGFPE",
+            ),
+            ("exit_code_139", "no signal text at all", Some(139), None, "SIGSEGV"),
+            ("exit_code_136", "no signal text at all", Some(136), None, "SIGFPE"),
+            ("exit_code_137", "no signal text at all", Some(137), None, "SIGKILL"),
+            ("exit_code_143", "no signal text at all", Some(143), None, "SIGTERM"),
+            (
+                "cpp_terminate_text_still_falls_back_to_exit_code",
+                "terminate called after throwing an instance of 'std::bad_alloc'",
+                Some(134),
+                None,
+                "SIGABRT",
+            ),
+            (
+                "no_evidence",
+                "input: /tmp/x.onnx\nlibrary_step: onnxruntime loader invoked (non-zero exit: 1)",
+                Some(1),
+                None,
+                "none",
+            ),
+            // --- A37: kill signals parsed out of the harness crash-detail line ---
+            (
+                "harness_sigkill_signal_line",
+                "input: /tmp/x.onnx\nlibrary_step: onnxruntime loader crashed (SIGKILL (signal: 9); stdout: no output; stderr: no output)\nlibrary_outcome: crashed",
+                Some(4),
+                None,
+                "SIGKILL",
+            ),
+            (
+                "harness_sigkill_exit_code_detail",
+                "library_step: safetensors loader crashed (SIGKILL (exit_code: 137); stdout: ; stderr: )",
+                Some(4),
+                None,
+                "SIGKILL",
+            ),
+            (
+                "harness_sigterm_signal_line",
+                "library_step: llama.cpp parser invocation crashed (SIGTERM (signal: 15); stdout: ; stderr: )",
+                Some(4),
+                None,
+                "SIGTERM",
+            ),
+            // --- rejected literals: these must NOT become a kill signal ---
+            (
+                "sigkill_in_input_path_is_ignored",
+                "input: /data/models/sigkill-repro.onnx\nlibrary_step: onnxruntime loader invoked (non-zero exit: 1)",
+                Some(4),
+                None,
+                "none",
+            ),
+            (
+                "killed_word_on_a_crash_line_is_not_sigkill",
+                "library_step: onnxruntime loader crashed (unknown (signal: 3); stdout: killed; stderr: no output)",
+                Some(4),
+                None,
+                "none",
+            ),
+            (
+                "terminated_word_is_not_sigterm",
+                "external_step: TOOL_EXTERNAL_HARNESS_CMD executed but failed with status terminated",
+                Some(4),
+                None,
+                "none",
+            ),
+        ];
+
+        for (case, output, exit_code, signal_number, expected) in cases {
+            assert_eq!(
+                extract_signal(output, *exit_code, *signal_number),
+                *expected,
+                "case: {case}"
+            );
+        }
+    }
+
+    // (case, output, sanitizer, signal, timeout, infra_oom, expected)
+    type CrashKindCase = (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        bool,
+        bool,
+        &'static str,
+    );
+
+    #[test]
+    fn classify_crash_kind_table_keeps_branch_order() {
+        let cases: &[CrashKindCase] = &[
+            (
+                "timeout_wins_over_infra_oom",
+                "",
+                "none",
+                "SIGKILL",
+                true,
+                true,
+                "timeout",
+            ),
+            (
+                "infra_oom_wins_over_sanitizer_kind",
+                "AddressSanitizer: heap-buffer-overflow",
+                "asan",
+                "SIGSEGV",
+                false,
+                true,
+                "infra_oom",
+            ),
+            (
+                "sanitizer_kind",
+                "AddressSanitizer: heap-buffer-overflow",
+                "asan",
+                "SIGSEGV",
+                false,
+                false,
+                "heap-buffer-overflow",
+            ),
+            (
+                "sanitizer_over_signal",
+                "asan report",
+                "asan",
+                "SIGSEGV",
+                false,
+                false,
+                "asan",
+            ),
+            (
+                "signal_lowercased",
+                "crash",
+                "none",
+                "SIGSEGV",
+                false,
+                false,
+                "sigsegv",
+            ),
+            (
+                "sigkill_signal_lowercased",
+                "crash",
+                "none",
+                "SIGKILL",
+                false,
+                false,
+                "sigkill",
+            ),
+            (
+                "parser_error",
+                "onnxruntimeerror: invalid model",
+                "none",
+                "none",
+                false,
+                false,
+                "parser_or_runtime_error",
+            ),
+            (
+                "manual_review_fallback",
+                "some text",
+                "none",
+                "none",
+                false,
+                false,
+                "manual_review",
+            ),
+        ];
+
+        for (case, output, sanitizer, signal, timeout, infra_oom, expected) in cases {
+            assert_eq!(
+                classify_crash_kind(output, sanitizer, signal, *timeout, *infra_oom),
+                *expected,
+                "case: {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn oom_sigkill_from_harness_text_is_infra_oom() {
+        // A37 + G3: the library subprocess is OOM-killed, so the tool exits 4 (not 137)
+        // and no OOM text exists anywhere (the kernel logs to dmesg, and SIGKILL leaves
+        // the child no chance to print). Before the fix extract_signal returned "none"
+        // and classify_crash_kind fell through to manual_review.
+        let output = "\
+[harness] done
+target: onnx
+input: /data/runs/run-1/inputs/case.onnx
+parser_step: onnx protobuf header ok
+core_path_step: protobuf->onnxruntime session loader
+library_step: onnxruntime loader crashed (SIGKILL (signal: 9); stdout: no output; stderr: no output)
+library_outcome: crashed
+external_step: skipped because library_connect crashed
+[E_HARNESS_EXEC] harness error: library connect crashed: onnxruntime loader crashed (SIGKILL (signal: 9); stdout: no output; stderr: no output)
+";
+        let parsed = parse_crash_log(output, Some(4), None, "crashed");
+
+        assert_eq!(parsed.signal, "SIGKILL");
+        assert!(parsed.infra_oom, "a non-timeout SIGKILL is an infra kill");
+        assert_eq!(parsed.crash_kind, "infra_oom");
+        assert!(
+            parsed.crash_summary.contains("SIGKILL (signal: 9)"),
+            "the kill evidence must survive into crash_summary: {}",
+            parsed.crash_summary
+        );
+    }
+
+    #[test]
+    fn timeout_sigkill_is_timeout_not_infra_oom() {
+        // The timeout killer is the one in-pipeline SIGKILL producer; it must stay a
+        // timeout so `verdict` is not silently rewritten to infra_oom.
+        let output = "library_step: onnxruntime loader crashed (SIGKILL (signal: 9); stdout: no output; stderr: no output)\n";
+        let parsed = parse_crash_log(output, Some(124), None, "timeout");
+
+        assert!(!parsed.infra_oom);
+        assert_eq!(parsed.crash_kind, "timeout");
+    }
+
+    #[test]
+    fn library_sigsegv_stays_a_real_crash_after_signal_parsing() {
+        // 0a0b475 non-regression: a real library crash (tool exit 4, SIGSEGV detail)
+        // must still be a crash, never infra_oom.
+        let output = "\
+input: /data/runs/run-1/inputs/case.onnx
+library_step: onnxruntime loader crashed (SIGSEGV (signal: 11); stdout: no output; stderr: no output)
+library_outcome: crashed
+";
+        let parsed = parse_crash_log(output, Some(4), None, "crashed");
+
+        assert_eq!(parsed.signal, "SIGSEGV");
+        assert!(!parsed.infra_oom);
+        assert_eq!(parsed.crash_kind, "sigsegv");
+    }
+
+    #[test]
+    fn sigkill_in_input_path_is_not_an_infra_oom() {
+        // A1-style false positive for the new kill literals: a PoC filename must never
+        // downgrade a real finding to infra_oom.
+        let parsed = parse_crash_log(
+            "input: /data/models/sigkill-repro.onnx\n\
+onnxruntimeerror: invalid model graph\n",
+            Some(4),
+            None,
+            "crashed",
+        );
+
+        assert_eq!(parsed.signal, "none");
+        assert!(!parsed.infra_oom);
+        assert_eq!(parsed.crash_kind, "parser_or_runtime_error");
+    }
+
+    #[test]
+    fn external_kill_crash_kinds_require_manual_review() {
+        assert!(requires_manual_review("sigkill"));
+        assert!(requires_manual_review("sigterm"));
+        // unchanged rows
+        assert!(requires_manual_review("manual_review"));
+        assert!(requires_manual_review("parser_or_runtime_error"));
+        assert!(!requires_manual_review("sigsegv"));
+        assert!(!requires_manual_review("heap-buffer-overflow"));
+        assert!(!requires_manual_review("asan"));
     }
 
     #[test]
