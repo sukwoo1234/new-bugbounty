@@ -60,6 +60,7 @@ pub(crate) fn apply(
         }
     };
 
+    let parse_preserving = parse_preserving_label(&out);
     Ok(MutationOutput {
         bytes: out,
         operator_params: vec![
@@ -69,8 +70,26 @@ pub(crate) fn apply(
             ("original_byte", format!("0x{:02x}", original_byte)),
             ("mutated_byte", format!("0x{:02x}", mutated_byte)),
         ],
-        parse_preserving: "yes",
+        parse_preserving,
     })
+}
+
+
+/// Whether the mutated bytes still parse.
+///
+/// A17/A18: these operators substitute an arbitrary printable byte into a string,
+/// which can be a quote or backslash in a safetensors JSON header, or the middle
+/// of a multi-byte UTF-8 sequence in GGUF. The output was labelled
+/// parse_preserving="yes" regardless, so the manifest asserted something the file
+/// no longer satisfied. The mutation itself is worth keeping - a parser's handling
+/// of its own delimiters is exactly what wants exercising - so the label is
+/// derived instead of claimed.
+fn parse_preserving_label(bytes: &[u8]) -> &'static str {
+    if parse_gguf(bytes).is_ok() {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 #[cfg(test)]

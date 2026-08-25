@@ -345,6 +345,36 @@ pub(crate) mod test_fixtures {
         buf
     }
 
+    /// A fixture whose tensor name is not pure ASCII. Real models carry these, and
+    /// a one-byte substitution inside a multi-byte sequence breaks the UTF-8 the
+    /// GGUF format requires.
+    pub(crate) fn build_gguf_with_multibyte_tensor_name() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&1u64.to_le_bytes());
+        buf.extend_from_slice(&1u64.to_le_bytes());
+
+        let key = b"general.alignment";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&(GgufValueType::U32 as u32).to_le_bytes());
+        buf.extend_from_slice(&32u32.to_le_bytes());
+
+        let tname = "가중치".as_bytes();
+        buf.extend_from_slice(&(tname.len() as u64).to_le_bytes());
+        buf.extend_from_slice(tname);
+        buf.extend_from_slice(&2u32.to_le_bytes());
+        buf.extend_from_slice(&3u64.to_le_bytes());
+        buf.extend_from_slice(&4u64.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+
+        buf.resize(align_up(buf.len(), 32), 0);
+        buf.resize(buf.len() + 48, 0);
+        buf
+    }
+
     /// A fixture whose metadata holds an EMPTY string value beside a scalar. A real
     /// model has these - an unset `general.description`, say.
     pub(crate) fn build_gguf_with_empty_string_value() -> Vec<u8> {
