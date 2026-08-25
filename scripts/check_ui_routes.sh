@@ -47,7 +47,7 @@ wait_for_server() {
 
 check_url() {
   local url="$1"
-  if curl -fsS "$url" >/dev/null; then
+  if curl -fsS --max-time 10 "$url" >/dev/null; then
     echo "[OK] $url" | tee -a "$CHECK_LOG"
   else
     echo "[FAIL] $url" | tee -a "$CHECK_LOG"
@@ -95,6 +95,8 @@ check_rejected_inputs() {
     "A14 replay input outside the data dir"
   check_status 400 POST "${BASE_URL}/replay/start?target=onnx&triage_id=..%2F..%2Fetc" \
     "A14 triage id must not leave the triage tree"
+  # A handler error used to close the connection with zero bytes (curl exit 52) instead of a status.
+  check_status 500 GET "${BASE_URL}/file?path=%2Fetc%2Fpasswd" "a refused file view answers a status"
   local state="$WORKDIR/data/ui-target/prepare-target.state"
   if [[ -f "$state" ]] && grep -qx 'pid=1234' "$state"; then
     echo "[FAIL] A2 injected a pid line into $state" | tee -a "$CHECK_LOG"
@@ -128,7 +130,7 @@ check_stalled_client_does_not_block() {
 
 check_stalled_client_does_not_block
 
-dash_html="$(curl -fsS "${BASE_URL}/dashboard.html")"
+dash_html="$(curl -fsS --max-time 10 "${BASE_URL}/dashboard.html")"
 
 # A placeholder that survives into the served page means the binary and templates/dashboard.html
 # have drifted apart, which silently breaks whatever that placeholder drives.

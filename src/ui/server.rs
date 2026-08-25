@@ -22,6 +22,24 @@ const WRITE_TIMEOUT_SECS: u64 = 30;
 /// rather than left to the peer.
 const MAX_IN_FLIGHT_CONNECTIONS: usize = 64;
 
+/// A4 again: the state lock must not be held while the response is written, or a peer that stops
+/// reading parks every other state request behind it for the whole write timeout. Handlers build
+/// their response and hand it back; the connection writes it after the lock is gone. It also
+/// makes them testable without a socket.
+struct Response {
+    status: String,
+    content_type: String,
+    body: String,
+}
+
+fn respond(status: &str, content_type: &str, body: &str) -> Result<Response, String> {
+    Ok(Response {
+        status: status.to_string(),
+        content_type: content_type.to_string(),
+        body: body.to_string(),
+    })
+}
+
 /// Serialises every handler that reads or writes the UI state files or spawns a job. Only the
 /// read-only views (dashboard, file, entity) run concurrently, which is what A4 needs: one
 /// stalled or slow request no longer blocks the rest of the dashboard.
@@ -156,22 +174,48 @@ fn handle_connection(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(),
     let Some(request) = parse_request_head(&head) else {
         return Ok(());
     };
+    let response = respond_to_request(app_paths, &request);
+    write_response(
+        stream,
+        &response.status,
+        &response.content_type,
+        &response.body,
+    )
+}
+
+/// Every failure used to close the connection with zero bytes, so a caller saw "empty reply from
+/// server" instead of a status - for an unreadable file, a path outside the data dir, or a
+/// request head that never arrived.
+fn respond_to_request(app_paths: &AppPaths, request: &RequestHead) -> Response {
+    match route_request(app_paths, request) {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("[ui] request error: {e}");
+            Response {
+                status: "500 Internal Server Error".to_string(),
+                content_type: "application/json; charset=utf-8".to_string(),
+                body: "{\"error\":\"internal_error\"}".to_string(),
+            }
+        }
+    }
+}
+
+fn route_request(app_paths: &AppPaths, request: &RequestHead) -> Result<Response, String> {
     let method = request.method.as_str();
     let raw_path = request.path.as_str();
 
     if raw_path.starts_with("/control/") {
-        return handle_control_route(app_paths, stream, method, raw_path);
+        return handle_control_route(app_paths, method, raw_path);
     }
     if raw_path.starts_with("/replay/") {
-        return handle_replay_route(app_paths, stream, method, raw_path);
+        return handle_replay_route(app_paths, method, raw_path);
     }
     if raw_path.starts_with("/target/") {
-        return handle_target_route(app_paths, stream, method, raw_path);
+        return handle_target_route(app_paths, method, raw_path);
     }
 
     if method != "GET" {
-        return write_response(
-            stream,
+        return respond(
             "405 Method Not Allowed",
             "text/plain; charset=utf-8",
             "method not allowed\n",
@@ -179,112 +223,89 @@ fn handle_connection(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(),
     }
 
     if raw_path.starts_with("/file?") {
-        return handle_file_view(app_paths, stream, raw_path);
+        return handle_file_view(app_paths, raw_path);
     }
     if let Some(asset_name) = raw_path.strip_prefix("/assets/") {
-        return handle_asset_view(stream, asset_name);
+        return handle_asset_view(asset_name);
     }
     if let Some(id) = raw_path.strip_prefix("/run/") {
-        return handle_entity_view(app_paths, stream, "run", id);
+        return handle_entity_view(app_paths, "run", id);
     }
     if let Some(id) = raw_path.strip_prefix("/triage/") {
-        return handle_entity_view(app_paths, stream, "triage", id);
+        return handle_entity_view(app_paths, "triage", id);
     }
     if let Some(id) = raw_path.strip_prefix("/report/") {
-        return handle_entity_view(app_paths, stream, "report", id);
+        return handle_entity_view(app_paths, "report", id);
     }
     if let Some(id) = raw_path.strip_prefix("/coverage/") {
-        return handle_entity_view(app_paths, stream, "coverage", id);
+        return handle_entity_view(app_paths, "coverage", id);
     }
 
     match raw_path {
-        "/healthz" => write_response(stream, "200 OK", "text/plain; charset=utf-8", "ok\n"),
+        "/healthz" => respond("200 OK", "text/plain; charset=utf-8", "ok\n"),
         "/dashboard.json" => {
             let snap = collect_dashboard_snapshot(app_paths)?;
             let body = super::dashboard::render_dashboard_json(&snap);
-            write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+            respond("200 OK", "application/json; charset=utf-8", &body)
         }
         "/dashboard.html" | "/" => {
             let snap = collect_dashboard_snapshot(app_paths)?;
             let body = super::dashboard::render_dashboard_html(&snap);
-            write_response(stream, "200 OK", "text/html; charset=utf-8", &body)
+            respond("200 OK", "text/html; charset=utf-8", &body)
         }
-        _ => write_response(
-            stream,
-            "404 Not Found",
-            "text/plain; charset=utf-8",
-            "not found\n",
-        ),
+        _ => respond("404 Not Found", "text/plain; charset=utf-8", "not found\n"),
     }
 }
 
 fn handle_control_route(
     app_paths: &AppPaths,
-    stream: &mut TcpStream,
     method: &str,
     raw_path: &str,
-) -> Result<(), String> {
+) -> Result<Response, String> {
     let _state = lock_state();
     reap_children();
     match (method, raw_path.split('?').next().unwrap_or(raw_path)) {
-        ("GET", "/control/status") => handle_control_status(app_paths, stream),
-        ("POST", "/control/start") => handle_control_start(app_paths, stream, raw_path),
-        ("POST", "/control/stop") => handle_control_stop(app_paths, stream),
-        _ => write_response(
-            stream,
-            "404 Not Found",
-            "text/plain; charset=utf-8",
-            "not found\n",
-        ),
+        ("GET", "/control/status") => handle_control_status(app_paths),
+        ("POST", "/control/start") => handle_control_start(app_paths, raw_path),
+        ("POST", "/control/stop") => handle_control_stop(app_paths),
+        _ => respond("404 Not Found", "text/plain; charset=utf-8", "not found\n"),
     }
 }
 
 fn handle_replay_route(
     app_paths: &AppPaths,
-    stream: &mut TcpStream,
     method: &str,
     raw_path: &str,
-) -> Result<(), String> {
+) -> Result<Response, String> {
     let _state = lock_state();
     reap_children();
     match (method, raw_path.split('?').next().unwrap_or(raw_path)) {
-        ("GET", "/replay/status") => handle_replay_status(app_paths, stream),
-        ("POST", "/replay/start") => handle_replay_start(app_paths, stream, raw_path),
-        ("POST", "/replay/stop") => handle_replay_stop(app_paths, stream),
-        _ => write_response(
-            stream,
-            "404 Not Found",
-            "text/plain; charset=utf-8",
-            "not found\n",
-        ),
+        ("GET", "/replay/status") => handle_replay_status(app_paths),
+        ("POST", "/replay/start") => handle_replay_start(app_paths, raw_path),
+        ("POST", "/replay/stop") => handle_replay_stop(app_paths),
+        _ => respond("404 Not Found", "text/plain; charset=utf-8", "not found\n"),
     }
 }
 
 fn handle_target_route(
     app_paths: &AppPaths,
-    stream: &mut TcpStream,
     method: &str,
     raw_path: &str,
-) -> Result<(), String> {
+) -> Result<Response, String> {
     let _state = lock_state();
     reap_children();
     match (method, raw_path.split('?').next().unwrap_or(raw_path)) {
-        ("GET", "/target/build/status") => handle_target_build_status(app_paths, stream),
-        ("POST", "/target/build/start") => handle_target_build_start(app_paths, stream, raw_path),
-        ("POST", "/target/build/stop") => handle_target_build_stop(app_paths, stream),
-        ("GET", "/target/status") => handle_target_status(app_paths, stream),
-        ("POST", "/target/prepare") => handle_target_prepare(app_paths, stream, raw_path),
-        ("POST", "/target/stop") => handle_target_stop(app_paths, stream),
-        _ => write_response(
-            stream,
-            "404 Not Found",
-            "text/plain; charset=utf-8",
-            "not found\n",
-        ),
+        ("GET", "/target/build/status") => handle_target_build_status(app_paths),
+        ("POST", "/target/build/start") => handle_target_build_start(app_paths, raw_path),
+        ("POST", "/target/build/stop") => handle_target_build_stop(app_paths),
+        ("GET", "/target/status") => handle_target_status(app_paths),
+        ("POST", "/target/prepare") => handle_target_prepare(app_paths, raw_path),
+        ("POST", "/target/stop") => handle_target_stop(app_paths),
+        _ => respond("404 Not Found", "text/plain; charset=utf-8", "not found\n"),
     }
 }
 
-fn handle_control_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
+fn handle_control_status(app_paths: &AppPaths) -> Result<Response, String> {
     let state = read_control_state(app_paths)?;
     let running = running_job_pid(state.pid, state.pid_start).is_some();
     let mut body = String::new();
@@ -311,10 +332,10 @@ fn handle_control_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result
         json_escape(&state.log_file)
     ));
     body.push('}');
-    write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+    respond("200 OK", "application/json; charset=utf-8", &body)
 }
 
-fn handle_replay_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
+fn handle_replay_status(app_paths: &AppPaths) -> Result<Response, String> {
     let state = read_replay_state(app_paths)?;
     let running = running_job_pid(state.pid, state.pid_start).is_some();
     let summary_path = if running {
@@ -355,10 +376,10 @@ fn handle_replay_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<
     ));
     body.push_str(&format!(",\"verdict\":\"{}\"", json_escape(&verdict)));
     body.push('}');
-    write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+    respond("200 OK", "application/json; charset=utf-8", &body)
 }
 
-fn handle_target_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
+fn handle_target_status(app_paths: &AppPaths) -> Result<Response, String> {
     let mut state = read_target_prepare_state(app_paths)?;
     let running = running_job_pid(state.pid, state.pid_start).is_some();
     if !running
@@ -442,10 +463,10 @@ fn handle_target_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<
         })
     ));
     body.push('}');
-    write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+    respond("200 OK", "application/json; charset=utf-8", &body)
 }
 
-fn handle_target_build_status(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
+fn handle_target_build_status(app_paths: &AppPaths) -> Result<Response, String> {
     let mut state = read_target_build_state(app_paths)?;
     let running = running_job_pid(state.pid, state.pid_start).is_some();
     if !running
@@ -516,18 +537,13 @@ fn handle_target_build_status(app_paths: &AppPaths, stream: &mut TcpStream) -> R
         })
     ));
     body.push('}');
-    write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+    respond("200 OK", "application/json; charset=utf-8", &body)
 }
 
-fn handle_replay_start(
-    app_paths: &AppPaths,
-    stream: &mut TcpStream,
-    raw_path: &str,
-) -> Result<(), String> {
+fn handle_replay_start(app_paths: &AppPaths, raw_path: &str) -> Result<Response, String> {
     let current = read_replay_state(app_paths)?;
     if running_job_pid(current.pid, current.pid_start).is_some() {
-        return write_response(
-            stream,
+        return respond(
             "409 Conflict",
             "application/json; charset=utf-8",
             "{\"error\":\"replay_already_running\"}",
@@ -540,20 +556,20 @@ fn handle_replay_start(
     };
     let input_value = extract_query_param(raw_path, "input").unwrap_or("");
     if triage_id.is_empty() && input_value.is_empty() {
-        return bad_request(stream, "missing_input");
+        return bad_request("missing_input");
     }
     let input_path = if triage_id.is_empty() {
         let decoded_input =
             url_decode(input_value).ok_or_else(|| "invalid url encoding".to_string())?;
         if !is_safe_query_value(&decoded_input) {
-            return bad_request(stream, "invalid_input");
+            return bad_request("invalid_input");
         }
         resolve_replay_input(app_paths, &decoded_input)
     } else {
         resolve_triage_input(app_paths, &triage_id)
     };
     let Some(input_path) = input_path else {
-        return bad_request(stream, "invalid_input");
+        return bad_request("invalid_input");
     };
 
     let target = match extract_query_param(raw_path, "target").unwrap_or("onnx") {
@@ -561,8 +577,7 @@ fn handle_replay_start(
             extract_query_param(raw_path, "target").unwrap_or("onnx")
         }
         _ => {
-            return write_response(
-                stream,
+            return respond(
                 "400 Bad Request",
                 "application/json; charset=utf-8",
                 "{\"error\":\"invalid_target\"}",
@@ -625,18 +640,13 @@ fn handle_replay_start(
         json_escape(target),
         json_escape(&state.input),
     );
-    write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+    respond("200 OK", "application/json; charset=utf-8", &body)
 }
 
-fn handle_target_prepare(
-    app_paths: &AppPaths,
-    stream: &mut TcpStream,
-    raw_path: &str,
-) -> Result<(), String> {
+fn handle_target_prepare(app_paths: &AppPaths, raw_path: &str) -> Result<Response, String> {
     let current = read_target_prepare_state(app_paths)?;
     if running_job_pid(current.pid, current.pid_start).is_some() {
-        return write_response(
-            stream,
+        return respond(
             "409 Conflict",
             "application/json; charset=utf-8",
             "{\"error\":\"target_prepare_already_running\"}",
@@ -648,8 +658,7 @@ fn handle_target_prepare(
             extract_query_param(raw_path, "target").unwrap_or("onnx")
         }
         _ => {
-            return write_response(
-                stream,
+            return respond(
                 "400 Bad Request",
                 "application/json; charset=utf-8",
                 "{\"error\":\"invalid_target\"}",
@@ -662,7 +671,7 @@ fn handle_target_prepare(
     };
     let version = version.trim().to_string();
     if !is_safe_version(&version) {
-        return bad_request(stream, "invalid_version");
+        return bad_request("invalid_version");
     }
     let source_url = match extract_query_param(raw_path, "source_url") {
         Some(value) => {
@@ -672,7 +681,7 @@ fn handle_target_prepare(
     };
     let source_url = source_url.trim().to_string();
     if !is_safe_source_url(&source_url) {
-        return bad_request(stream, "invalid_source_url");
+        return bad_request("invalid_source_url");
     }
 
     let target_dir = app_paths.data_dir.join("ui-target");
@@ -732,18 +741,13 @@ fn handle_target_prepare(
         json_escape(target),
         json_escape(&state.version)
     );
-    write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+    respond("200 OK", "application/json; charset=utf-8", &body)
 }
 
-fn handle_target_build_start(
-    app_paths: &AppPaths,
-    stream: &mut TcpStream,
-    raw_path: &str,
-) -> Result<(), String> {
+fn handle_target_build_start(app_paths: &AppPaths, raw_path: &str) -> Result<Response, String> {
     let current = read_target_build_state(app_paths)?;
     if running_job_pid(current.pid, current.pid_start).is_some() {
-        return write_response(
-            stream,
+        return respond(
             "409 Conflict",
             "application/json; charset=utf-8",
             "{\"error\":\"target_build_already_running\"}",
@@ -755,8 +759,7 @@ fn handle_target_build_start(
             extract_query_param(raw_path, "target").unwrap_or("gguf")
         }
         _ => {
-            return write_response(
-                stream,
+            return respond(
                 "400 Bad Request",
                 "application/json; charset=utf-8",
                 "{\"error\":\"invalid_target\"}",
@@ -769,7 +772,7 @@ fn handle_target_build_start(
     };
     let version = version.trim().to_string();
     if !is_safe_version(&version) {
-        return bad_request(stream, "invalid_version");
+        return bad_request("invalid_version");
     }
 
     let build_dir = app_paths.data_dir.join("ui-target-build");
@@ -828,10 +831,10 @@ fn handle_target_build_start(
         json_escape(target),
         json_escape(&state.version)
     );
-    write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+    respond("200 OK", "application/json; charset=utf-8", &body)
 }
 
-fn handle_replay_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
+fn handle_replay_stop(app_paths: &AppPaths) -> Result<Response, String> {
     let mut state = read_replay_state(app_paths)?;
     let mut was_running = false;
     if let Some(pid) = running_job_pid(state.pid, state.pid_start) {
@@ -844,10 +847,10 @@ fn handle_replay_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<()
         "{{\"ok\":true,\"running\":false,\"stopped\":{}}}",
         if was_running { "true" } else { "false" }
     );
-    write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+    respond("200 OK", "application/json; charset=utf-8", &body)
 }
 
-fn handle_target_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
+fn handle_target_stop(app_paths: &AppPaths) -> Result<Response, String> {
     let mut state = read_target_prepare_state(app_paths)?;
     if let Some(pid) = running_job_pid(state.pid, state.pid_start) {
         signal_job(pid, SIGTERM);
@@ -862,10 +865,10 @@ fn handle_target_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<()
         "{{\"ok\":true,\"target\":\"{}\"}}",
         json_escape(&state.target)
     );
-    write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+    respond("200 OK", "application/json; charset=utf-8", &body)
 }
 
-fn handle_target_build_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
+fn handle_target_build_stop(app_paths: &AppPaths) -> Result<Response, String> {
     let mut state = read_target_build_state(app_paths)?;
     if let Some(pid) = running_job_pid(state.pid, state.pid_start) {
         signal_job(pid, SIGTERM);
@@ -880,18 +883,13 @@ fn handle_target_build_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Res
         "{{\"ok\":true,\"target\":\"{}\"}}",
         json_escape(&state.target)
     );
-    write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+    respond("200 OK", "application/json; charset=utf-8", &body)
 }
 
-fn handle_control_start(
-    app_paths: &AppPaths,
-    stream: &mut TcpStream,
-    raw_path: &str,
-) -> Result<(), String> {
+fn handle_control_start(app_paths: &AppPaths, raw_path: &str) -> Result<Response, String> {
     let current = read_control_state(app_paths)?;
     if running_job_pid(current.pid, current.pid_start).is_some() {
-        return write_response(
-            stream,
+        return respond(
             "409 Conflict",
             "application/json; charset=utf-8",
             "{\"error\":\"already_running\"}",
@@ -911,16 +909,14 @@ fn handle_control_start(
         bounded_count_or_default(extract_query_param(raw_path, "restart_limit"), 1000, "1");
 
     if !matches!(target, "onnx" | "gguf" | "safetensors") {
-        return write_response(
-            stream,
+        return respond(
             "400 Bad Request",
             "application/json; charset=utf-8",
             "{\"error\":\"invalid_target\"}",
         );
     }
     if !matches!(backend, "local-harness" | "aflpp" | "libfuzzer") {
-        return write_response(
-            stream,
+        return respond(
             "400 Bad Request",
             "application/json; charset=utf-8",
             "{\"error\":\"invalid_backend\"}",
@@ -967,7 +963,7 @@ fn handle_control_start(
     if let Some(max_jobs) = extract_query_param(raw_path, "max_jobs") {
         let checked = bounded_count_or_default(Some(max_jobs), MAX_JOBS_LIMIT, "");
         if checked.is_empty() {
-            return bad_request(stream, "invalid_max_jobs");
+            return bad_request("invalid_max_jobs");
         }
         cmd.env("MAX_JOBS", checked);
     }
@@ -992,10 +988,10 @@ fn handle_control_start(
         json_escape(target),
         json_escape(backend),
     );
-    write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+    respond("200 OK", "application/json; charset=utf-8", &body)
 }
 
-fn handle_control_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
+fn handle_control_stop(app_paths: &AppPaths) -> Result<Response, String> {
     let mut state = read_control_state(app_paths)?;
     let mut was_running = false;
     if let Some(pid) = running_job_pid(state.pid, state.pid_start) {
@@ -1008,7 +1004,7 @@ fn handle_control_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(
         "{{\"ok\":true,\"running\":false,\"stopped\":{}}}",
         if was_running { "true" } else { "false" }
     );
-    write_response(stream, "200 OK", "application/json; charset=utf-8", &body)
+    respond("200 OK", "application/json; charset=utf-8", &body)
 }
 
 struct ControlState {
@@ -1609,12 +1605,7 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-fn handle_entity_view(
-    app_paths: &AppPaths,
-    stream: &mut TcpStream,
-    kind: &str,
-    id: &str,
-) -> Result<(), String> {
+fn handle_entity_view(app_paths: &AppPaths, kind: &str, id: &str) -> Result<Response, String> {
     let (title, main_rel_path, extra_rel_paths) = match kind {
         "run" => (
             format!("Run Detail: {id}"),
@@ -1636,14 +1627,7 @@ fn handle_entity_view(
             format!("./data/coverage/{id}/summary.json"),
             vec![],
         ),
-        _ => {
-            return write_response(
-                stream,
-                "404 Not Found",
-                "text/plain; charset=utf-8",
-                "not found\n",
-            )
-        }
+        _ => return respond("404 Not Found", "text/plain; charset=utf-8", "not found\n"),
     };
 
     let main_file = resolve_safe_data_path(&app_paths.data_dir, &main_rel_path)?;
@@ -1678,17 +1662,12 @@ fn handle_entity_view(
         html_escape(&main_content)
     );
 
-    write_response(stream, "200 OK", "text/html; charset=utf-8", &html)
+    respond("200 OK", "text/html; charset=utf-8", &html)
 }
 
-fn handle_file_view(
-    app_paths: &AppPaths,
-    stream: &mut TcpStream,
-    raw_path: &str,
-) -> Result<(), String> {
+fn handle_file_view(app_paths: &AppPaths, raw_path: &str) -> Result<Response, String> {
     let Some(path_value) = extract_query_param(raw_path, "path") else {
-        return write_response(
-            stream,
+        return respond(
             "400 Bad Request",
             "text/plain; charset=utf-8",
             "missing query parameter: path\n",
@@ -1698,33 +1677,25 @@ fn handle_file_view(
     let resolved = resolve_safe_data_path(&app_paths.data_dir, &decoded)?;
     let body = fs::read_to_string(&resolved)
         .map_err(|e| format!("failed to read '{}': {e}", resolved.display()))?;
-    write_response(stream, "200 OK", "text/plain; charset=utf-8", &body)
+    respond("200 OK", "text/plain; charset=utf-8", &body)
 }
 
-fn handle_asset_view(stream: &mut TcpStream, asset_name: &str) -> Result<(), String> {
+fn handle_asset_view(asset_name: &str) -> Result<Response, String> {
     let (rel_path, content_type) = match asset_name {
         "dashboard.css" => ("templates/assets/dashboard.css", "text/css; charset=utf-8"),
-        _ => {
-            return write_response(
-                stream,
-                "404 Not Found",
-                "text/plain; charset=utf-8",
-                "not found\n",
-            )
-        }
+        _ => return respond("404 Not Found", "text/plain; charset=utf-8", "not found\n"),
     };
     let body = fs::read_to_string(rel_path)
         .map_err(|e| format!("failed to read asset '{rel_path}': {e}"))?;
-    write_response(stream, "200 OK", content_type, &body)
+    respond("200 OK", content_type, &body)
 }
 
 // A2: every state file is a line-based `key=value` list, so a value that carries a line break
 // used to inject a whole extra line - an attacker-chosen `pid=` that /target/stop then handed to
 // kill. Values are refused at the door, and what does get written is encoded so that a path that
 // legitimately contains a line break still cannot forge a line.
-fn bad_request(stream: &mut TcpStream, error: &str) -> Result<(), String> {
-    write_response(
-        stream,
+fn bad_request(error: &str) -> Result<Response, String> {
+    respond(
         "400 Bad Request",
         "application/json; charset=utf-8",
         &format!("{{\"error\":\"{error}\"}}"),
@@ -1977,7 +1948,7 @@ mod tests {
         is_safe_query_value, is_safe_source_url, is_safe_version, parse_request_head,
         positive_timeout_sec_or_default, proc_stat_field, process_pgid, process_start_ticks,
         process_state, read_request_head, reap_children, register_child, resolve_replay_input,
-        resolve_triage_input, running_job_pid, signal_job, spawn_job, SIGTERM,
+        resolve_triage_input, respond_to_request, running_job_pid, signal_job, spawn_job, SIGTERM,
     };
     use crate::common::{now_unix_millis, AppPaths};
     use std::fs;
@@ -2118,6 +2089,37 @@ mod tests {
         assert_eq!(bounded_count_or_default(Some("--data-dir"), 64, "2"), "2");
         assert_eq!(bounded_count_or_default(Some(""), 64, "2"), "2");
         assert_eq!(bounded_count_or_default(None, 64, "2"), "2");
+    }
+
+    fn request(method: &str, path: &str) -> super::RequestHead {
+        parse_request_head(&format!("{method} {path} HTTP/1.1\r\n\r\n")).expect("request")
+    }
+
+    // The handlers used to write straight to the socket while holding the state lock, so a peer
+    // that stopped reading parked every other state request behind it. They build a response now,
+    // which is also the only reason this test can exist without a socket.
+    #[test]
+    fn a_handler_builds_its_response_without_a_socket() {
+        let root = unique_tmp_dir("respond");
+        let app_paths = AppPaths {
+            data_dir: root.join("data"),
+            seeds_dir: root.join("seeds"),
+        };
+        fs::create_dir_all(&app_paths.data_dir).expect("data dir");
+
+        let ok = respond_to_request(&app_paths, &request("GET", "/control/status"));
+        assert_eq!(ok.status, "200 OK");
+        assert!(ok.body.contains("\"running\":false"), "{}", ok.body);
+
+        let missing = respond_to_request(&app_paths, &request("GET", "/nope"));
+        assert_eq!(missing.status, "404 Not Found");
+
+        // A failure is a status, not an empty reply.
+        let outside = respond_to_request(&app_paths, &request("GET", "/file?path=%2Fetc%2Fpasswd"));
+        assert_eq!(outside.status, "500 Internal Server Error");
+        assert!(outside.body.contains("internal_error"), "{}", outside.body);
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     // The dashboard offers "replay the latest reproduced crash", and the crash that summary
