@@ -8,6 +8,10 @@ LOG_DIR="${LOG_DIR:-$WORKDIR/data/ui-check}"
 mkdir -p "$LOG_DIR"
 
 SERVER_LOG="${LOG_DIR}/ui-serve.log"
+# A3: the control endpoints need this token. Setting it here also exercises the documented
+# override; without it the server generates one and leaves it in a 0600 file.
+export TOOL_UI_TOKEN="${TOOL_UI_TOKEN:-check-ui-routes-token}"
+AUTH=(-H "X-Tool-Token: ${TOOL_UI_TOKEN}")
 CHECK_LOG="${LOG_DIR}/ui-routes-check.log"
 
 cleanup() {
@@ -47,7 +51,8 @@ wait_for_server() {
 
 check_url() {
   local url="$1"
-  if curl -fsS --max-time 10 "$url" >/dev/null; then
+  shift
+  if curl -fsS --max-time 10 "$@" "$url" >/dev/null; then
     echo "[OK] $url" | tee -a "$CHECK_LOG"
   else
     echo "[FAIL] $url" | tee -a "$CHECK_LOG"
@@ -63,8 +68,8 @@ check_url "${BASE_URL}/dashboard.json"
 check_url "${BASE_URL}/assets/dashboard.css"
 check_url "${BASE_URL}/control/status"
 check_url "${BASE_URL}/replay/status"
-check_url "${BASE_URL}/target/status"
-check_url "${BASE_URL}/target/build/status"
+check_url "${BASE_URL}/target/status" "${AUTH[@]}"
+check_url "${BASE_URL}/target/build/status" "${AUTH[@]}"
 
 # Asserts the exact HTTP status of a request that must be refused before anything is spawned.
 check_status() {
@@ -72,8 +77,9 @@ check_status() {
   local method="$2"
   local url="$3"
   local label="$4"
+  shift 4
   local got
-  got="$(curl -s -o /dev/null -w '%{http_code}' -X "$method" "$url" || true)"
+  got="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X "$method" "$@" "$url" || true)"
   if [[ "$got" == "$expected" ]]; then
     echo "[OK] $label -> $got" | tee -a "$CHECK_LOG"
   else
@@ -86,15 +92,15 @@ check_status() {
 # /target/stop then handed to kill. A16: `version` reached build_prepared_target.sh's rm -rf.
 check_rejected_inputs() {
   check_status 400 POST "${BASE_URL}/target/prepare?target=onnx&version=x%0Apid%3D1234" \
-    "A2 newline in version"
+    "A2 newline in version" "${AUTH[@]}"
   check_status 400 POST "${BASE_URL}/target/prepare?target=onnx&source_url=file%3A%2F%2F%2Fetc%2Fpasswd" \
-    "source_url must be http(s)"
+    "source_url must be http(s)" "${AUTH[@]}"
   check_status 400 POST "${BASE_URL}/target/build/start?target=onnx&version=..%2F..%2F..%2Ftmp%2Fpwn" \
-    "A16 traversal in build version"
+    "A16 traversal in build version" "${AUTH[@]}"
   check_status 400 POST "${BASE_URL}/replay/start?target=onnx&input=%2Fetc%2Fpasswd" \
-    "A14 replay input outside the data dir"
+    "A14 replay input outside the data dir" "${AUTH[@]}"
   check_status 400 POST "${BASE_URL}/replay/start?target=onnx&triage_id=..%2F..%2Fetc" \
-    "A14 triage id must not leave the triage tree"
+    "A14 triage id must not leave the triage tree" "${AUTH[@]}"
   # A handler error used to close the connection with zero bytes (curl exit 52) instead of a status.
   check_status 500 GET "${BASE_URL}/file?path=%2Fetc%2Fpasswd" "a refused file view answers a status"
   local state="$WORKDIR/data/ui-target/prepare-target.state"
@@ -106,6 +112,46 @@ check_rejected_inputs() {
 }
 
 check_rejected_inputs
+
+# A3: every mutating endpoint used to be reachable by any page the user had open.
+check_authorization() {
+  check_status 403 POST "${BASE_URL}/target/prepare?target=onnx" "A3 no token"
+  check_status 403 POST "${BASE_URL}/target/prepare?target=onnx" "A3 wrong token" \
+    -H "X-Tool-Token: not-the-token"
+  check_status 403 POST "${BASE_URL}/target/prepare?target=onnx" "A3 cross-origin form post" \
+    "${AUTH[@]}" -H "Origin: http://evil.example"
+  check_status 403 POST "${BASE_URL}/target/prepare?target=onnx" "A3 cross-origin referer" \
+    "${AUTH[@]}" -H "Referer: http://evil.example/x.html"
+  check_status 403 GET "${BASE_URL}/target/status" "A3 state-changing GET needs the token"
+  # DNS rebinding: the page is same-origin after the rebind, so the Host is the only tell.
+  check_status 403 GET "${BASE_URL}/healthz" "A3 rebound host" -H "Host: evil.example"
+  # The token must not be sitting in a file the unauthenticated /file route can serve.
+  local token_file
+  token_file="$(sed -n 's/^\[ui\] token file: //p' "$SERVER_LOG" | head -n 1)"
+  if [[ -z "$token_file" || ! -f "$token_file" ]]; then
+    echo "[FAIL] the server did not report a token file" | tee -a "$CHECK_LOG"
+    return 1
+  fi
+  local mode
+  mode="$(stat -c '%a' "$token_file")"
+  if [[ "$mode" != "600" ]]; then
+    echo "[FAIL] token file $token_file has mode $mode, expected 600" | tee -a "$CHECK_LOG"
+    return 1
+  fi
+  case "$token_file" in
+    "$WORKDIR/data/"*)
+      echo "[FAIL] token file $token_file is inside the data dir /file can serve" | tee -a "$CHECK_LOG"
+      return 1
+      ;;
+  esac
+  if grep -q "$TOOL_UI_TOKEN" "$SERVER_LOG"; then
+    echo "[FAIL] the server printed the token into $SERVER_LOG" | tee -a "$CHECK_LOG"
+    return 1
+  fi
+  echo "[OK] token lives in $token_file (mode $mode), not in the log" | tee -a "$CHECK_LOG"
+}
+
+check_authorization
 
 # A4: a client that opens the socket and sends nothing used to block the single-threaded accept
 # loop. A client that dribbles a partial head never trips the per-read timeout, so it also has to
@@ -146,7 +192,7 @@ dash_html="$(curl -fsS --max-time 10 "${BASE_URL}/dashboard.html")"
 
 # A placeholder that survives into the served page means the binary and templates/dashboard.html
 # have drifted apart, which silently breaks whatever that placeholder drives.
-if printf '%s' "$dash_html" | grep -q '{{'; then
+if printf '%s' "$dash_html" | grep -q '{{[a-z_]*}}'; then
   echo "[FAIL] dashboard.html still carries an unsubstituted placeholder:" | tee -a "$CHECK_LOG"
   printf '%s' "$dash_html" | grep -o '{{[a-z_]*}}' | sort -u | tee -a "$CHECK_LOG"
   exit 1

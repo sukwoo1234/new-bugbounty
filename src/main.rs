@@ -627,7 +627,10 @@ fn main() -> ExitCode {
                         let Some(out) = args.out.as_ref() else {
                             return Err("html format requires --out <path>".to_string());
                         };
-                        let html = ui::dashboard::render_dashboard_html(&snap);
+                        // The UI token exists only inside a running server; an exported page
+                        // must not carry the placeholder either, or its buttons would send it.
+                        let html = ui::dashboard::render_dashboard_html(&snap)
+                            .replace("{{ui_csrf_token}}", "");
                         if let Some(parent) = out.parent() {
                             if !parent.as_os_str().is_empty() {
                                 fs::create_dir_all(parent).map_err(|e| {

@@ -46,6 +46,36 @@
 - 데이터: `./data`
 - 시드: `./seeds`
 
+## 대시보드 (`tool ui-serve`)
+
+```bash
+cargo run --offline -- ui-serve --bind 127.0.0.1:8787
+```
+
+대시보드는 빌드 스크립트와 퍼징 루프를 띄우는 제어면이라 상태를 바꾸는 요청에는 인증이 필요하다.
+
+- **토큰**: 서버가 시작할 때 32바이트 토큰을 만들어 `$XDG_RUNTIME_DIR/tool-ui-token`
+  (없으면 `~/.cache/tool/ui-token`)에 `0600`으로 저장하고, 로그에는 **경로만** 찍는다.
+  `/file?path=`가 데이터 디렉터리를 인증 없이 서빙하므로 토큰을 그 안에 두거나 stdout으로
+  찍으면 그대로 노출된다. `TOOL_UI_TOKEN`으로 직접 지정할 수도 있다.
+- **요청**: `POST /control/*`, `/replay/*`, `/target/*` 와 상태 파일을 다시 쓰는
+  `GET /target/status`, `GET /target/build/status` 는 헤더 `X-Tool-Token: <토큰>` 이 필요하고,
+  `Origin`/`Referer`가 있으면 대시보드 자신의 오리진이어야 한다. 브라우저는 페이지에 심긴
+  토큰을 자동으로 붙이므로 대시보드 사용에는 달라지는 것이 없다.
+  ```bash
+  curl -X POST -H "X-Tool-Token: $(cat "$XDG_RUNTIME_DIR/tool-ui-token")" \
+    'http://127.0.0.1:8787/control/start?target=onnx&backend=local-harness&duration_seconds=600'
+  ```
+- **Host**: 모든 경로에서 `Host` 헤더가 허용목록(바인드 호스트 · `127.0.0.1` · `localhost` ·
+  `[::1]`, 각각 포트 유무)에 있어야 한다. DNS 리바인딩으로 되돌아온 페이지는 same-origin이 되어
+  토큰까지 읽을 수 있으므로 `Origin`을 `Host`와 비교하는 것으로는 막을 수 없다.
+- **와일드카드 바인드**: `--bind 0.0.0.0:...` 처럼 허용목록을 유도할 수 없는 주소는
+  `TOOL_UI_ALLOWED_HOSTS=<host[:port],...>` 를 명시하지 않으면 시작을 거부한다(exit 8).
+- 재현 버튼은 경로 대신 `triage_id`를 보내고, 서버가 `data/triage/<id>/summary.json`에
+  기록된 입력을 읽는다. `input=`으로 직접 지정하는 경로는 데이터/시드 디렉터리 안으로 제한된다.
+
+점검: `scripts/check_ui_routes.sh`
+
 ## Fuzz Host 준비(의존성 설치)
 
 새 퍼징 PC/WSL에서는 `git clone`만으로 시스템 의존성이 설치되지 않는다.

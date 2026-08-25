@@ -2,6 +2,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -58,9 +59,84 @@ impl Drop for InFlightGuard {
     }
 }
 
+/// Where the token is left for the operator. Deliberately NOT under the data dir: /file?path=
+/// serves the data dir unauthenticated, and the project's own check script points the server's
+/// stdout at data/ui-check/ui-serve.log, so anything printed there is one request away from being
+/// handed back. Only the path is printed.
+fn token_file_path() -> PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        return PathBuf::from(dir).join("tool-ui-token");
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home)
+            .join(".cache")
+            .join("tool")
+            .join("ui-token");
+    }
+    std::env::temp_dir().join(format!("tool-ui-token-{}", std::process::id()))
+}
+
+fn write_token_file(path: &Path, token: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create '{}': {e}", parent.display()))?;
+    }
+    let _ = fs::remove_file(path);
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("failed to create token file '{}': {e}", path.display()))?;
+    file.write_all(token.as_bytes())
+        .map_err(|e| format!("failed to write token file '{}': {e}", path.display()))
+}
+
+fn generate_token() -> Result<String, String> {
+    let mut file = fs::File::open("/dev/urandom")
+        .map_err(|e| format!("failed to open /dev/urandom for the UI token: {e}"))?;
+    let mut bytes = [0u8; 32];
+    file.read_exact(&mut bytes)
+        .map_err(|e| format!("failed to read /dev/urandom for the UI token: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn ui_security(bind: &str) -> Result<UiSecurity, String> {
+    let allowed_hosts = match std::env::var("TOOL_UI_ALLOWED_HOSTS") {
+        Ok(value) if !value.trim().is_empty() => value
+            .split(',')
+            .map(|h| h.trim().to_ascii_lowercase())
+            .filter(|h| !h.is_empty())
+            .collect(),
+        _ => allowed_hosts_for_bind(bind).ok_or_else(|| {
+            format!(
+                "'{bind}' has no host allowlist to derive; the dashboard spawns build and fuzzing \
+                 jobs, so binding it beyond loopback needs TOOL_UI_ALLOWED_HOSTS=<host[:port],...> \
+                 set explicitly"
+            )
+        })?,
+    };
+    let token = match std::env::var("TOOL_UI_TOKEN") {
+        Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
+        _ => generate_token()?,
+    };
+    Ok(UiSecurity {
+        token,
+        allowed_hosts,
+    })
+}
+
 pub(crate) fn run_ui_server(app_paths: &AppPaths, bind: &str) -> Result<(), String> {
+    let security = Arc::new(ui_security(bind)?);
+    let token_path = token_file_path();
+    write_token_file(&token_path, &security.token)?;
+
     let listener = TcpListener::bind(bind).map_err(|e| format!("failed to bind '{bind}': {e}"))?;
     println!("[ui] listening on http://{bind}");
+    println!("[ui] token file: {}", token_path.display());
+    println!(
+        "[ui] control endpoints require header 'X-Tool-Token: <that file>' and a same-origin request"
+    );
     println!(
         "[ui] endpoints: /healthz, /dashboard.json, /dashboard.html, /file?path=..., /control/status, /replay/status, /target/status, /target/build/status"
     );
@@ -91,11 +167,12 @@ pub(crate) fn run_ui_server(app_paths: &AppPaths, bind: &str) -> Result<(), Stri
         in_flight.fetch_add(1, Ordering::SeqCst);
         let guard = InFlightGuard(Arc::clone(&in_flight));
         let paths = Arc::clone(&paths);
+        let security = Arc::clone(&security);
         if let Err(e) = thread::Builder::new()
             .name("ui-conn".to_string())
             .spawn(move || {
                 let _guard = guard;
-                if let Err(e) = handle_connection(&paths, &mut stream) {
+                if let Err(e) = handle_connection(&paths, &security, &mut stream) {
                     eprintln!("[ui] request error: {e}");
                 }
             })
@@ -118,6 +195,7 @@ pub(crate) const HEAD_DEADLINE: Duration = Duration::from_secs(10);
 struct RequestHead {
     method: String,
     path: String,
+    headers: Vec<(String, String)>,
 }
 
 /// `Ok(None)` means the peer closed without sending a byte - a browser preconnect, not an
@@ -174,21 +252,163 @@ fn head_terminator(head: &[u8]) -> Option<usize> {
 }
 
 fn parse_request_head(head: &str) -> Option<RequestHead> {
-    let first_line = head.lines().next()?;
+    let mut lines = head.lines();
+    let first_line = lines.next()?;
     let mut parts = first_line.split_whitespace();
     let method = parts.next().unwrap_or_default().to_string();
     let path = parts.next().unwrap_or("/").to_string();
-    Some(RequestHead { method, path })
+    let mut headers = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
+        }
+    }
+    Some(RequestHead {
+        method,
+        path,
+        headers,
+    })
 }
 
-fn handle_connection(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
+fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.as_str())
+}
+
+/// A3: every mutating endpoint was reachable with no authentication, no CSRF token and no origin
+/// check, so any page the user had open could start or stop a fuzzing run and spawn build scripts
+/// against the dashboard. /control/start and /control/stop have no browser client at all - the
+/// template never calls them - so the endpoint with the largest blast radius is gated hardest at
+/// no cost to the UI.
+pub(crate) struct UiSecurity {
+    token: String,
+    /// A FIXED allowlist. Comparing Origin against the Host the caller sent would match by
+    /// construction under DNS rebinding, and a rebound page is same-origin, so it could simply
+    /// read the token out of /dashboard.html and use it.
+    allowed_hosts: Vec<String>,
+}
+
+/// The loopback spellings a browser may send for a loopback bind. Returns None when the bind has
+/// no safe allowlist to derive - binding the control plane to every interface is a decision the
+/// operator has to make explicitly.
+fn allowed_hosts_for_bind(bind: &str) -> Option<Vec<String>> {
+    let (host, port) = match bind.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) && !p.is_empty() => (h, p),
+        _ => return None,
+    };
+    let host = host
+        .trim_matches(|c| c == '[' || c == ']')
+        .to_ascii_lowercase();
+    if host.is_empty() || host == "0.0.0.0" || host == "::" || host == "*" {
+        return None;
+    }
+    let mut names = vec![
+        host.clone(),
+        "127.0.0.1".to_string(),
+        "localhost".to_string(),
+    ];
+    if !names.iter().any(|n| n == "::1") {
+        names.push("::1".to_string());
+    }
+    let mut out = Vec::new();
+    for name in names {
+        let bare = if name.contains(':') {
+            format!("[{name}]")
+        } else {
+            name.clone()
+        };
+        if !out.contains(&bare) {
+            out.push(bare.clone());
+        }
+        let with_port = format!("{bare}:{port}");
+        if !out.contains(&with_port) {
+            out.push(with_port);
+        }
+    }
+    Some(out)
+}
+
+/// Only the endpoints that change something need the token. The two target status GETs are on the
+/// list because they reconcile and rewrite their state file, which is the very guard the token is
+/// there to protect, and a plain GET is reachable cross-origin with no headers at all.
+fn route_changes_state(method: &str, path: &str) -> bool {
+    let path = path.split('?').next().unwrap_or(path);
+    if method == "POST" {
+        return path.starts_with("/control/")
+            || path.starts_with("/replay/")
+            || path.starts_with("/target/");
+    }
+    matches!(path, "/target/status" | "/target/build/status")
+}
+
+fn secret_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+fn origin_is_ours(value: &str, allowed_hosts: &[String]) -> bool {
+    let rest = match value.split_once("://") {
+        Some(("http", rest)) | Some(("https", rest)) => rest,
+        _ => return false,
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    allowed_hosts
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(authority))
+}
+
+fn authorize(security: &UiSecurity, request: &RequestHead) -> Result<(), &'static str> {
+    // Checked on every route, reads included: /dashboard.html carries the token and /file serves
+    // the data dir, so a rebound origin must not reach them either.
+    let host = header_value(&request.headers, "host").unwrap_or_default();
+    if !security
+        .allowed_hosts
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(host))
+    {
+        return Err("host_not_allowed");
+    }
+    if !route_changes_state(&request.method, &request.path) {
+        return Ok(());
+    }
+    for header in ["origin", "referer"] {
+        if let Some(value) = header_value(&request.headers, header) {
+            if !value.is_empty() && !origin_is_ours(value, &security.allowed_hosts) {
+                return Err("cross_origin");
+            }
+        }
+    }
+    let presented = header_value(&request.headers, "x-tool-token").unwrap_or_default();
+    if !secret_eq(presented, &security.token) {
+        return Err("missing_or_bad_token");
+    }
+    Ok(())
+}
+
+fn handle_connection(
+    app_paths: &AppPaths,
+    security: &UiSecurity,
+    stream: &mut TcpStream,
+) -> Result<(), String> {
     let Some(head) = read_request_head(stream, MAX_REQUEST_HEAD_BYTES, HEAD_DEADLINE)? else {
         return Ok(());
     };
     let Some(request) = parse_request_head(&head) else {
         return Ok(());
     };
-    let response = respond_to_request(app_paths, &request);
+    let response = respond_to_request(app_paths, security, &request);
     write_response(
         stream,
         &response.status,
@@ -200,8 +420,19 @@ fn handle_connection(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(),
 /// Every failure used to close the connection with zero bytes, so a caller saw "empty reply from
 /// server" instead of a status - for an unreadable file, a path outside the data dir, or a
 /// request head that never arrived.
-fn respond_to_request(app_paths: &AppPaths, request: &RequestHead) -> Response {
-    match route_request(app_paths, request) {
+fn respond_to_request(
+    app_paths: &AppPaths,
+    security: &UiSecurity,
+    request: &RequestHead,
+) -> Response {
+    if let Err(reason) = authorize(security, request) {
+        return Response {
+            status: "403 Forbidden".to_string(),
+            content_type: "application/json; charset=utf-8".to_string(),
+            body: format!("{{\"error\":\"{reason}\"}}"),
+        };
+    }
+    match route_request(app_paths, security, request) {
         Ok(response) => response,
         Err(e) => {
             eprintln!("[ui] request error: {e}");
@@ -214,7 +445,11 @@ fn respond_to_request(app_paths: &AppPaths, request: &RequestHead) -> Response {
     }
 }
 
-fn route_request(app_paths: &AppPaths, request: &RequestHead) -> Result<Response, String> {
+fn route_request(
+    app_paths: &AppPaths,
+    security: &UiSecurity,
+    request: &RequestHead,
+) -> Result<Response, String> {
     let method = request.method.as_str();
     let raw_path = request.path.as_str();
 
@@ -264,7 +499,11 @@ fn route_request(app_paths: &AppPaths, request: &RequestHead) -> Result<Response
         }
         "/dashboard.html" | "/" => {
             let snap = collect_dashboard_snapshot(app_paths)?;
-            let body = super::dashboard::render_dashboard_html(&snap);
+            // Substituted here and only here: render_dashboard_html also backs
+            // `tool dashboard --format html --out <path>`, which writes to a file that is often
+            // inside the data dir and therefore readable through /file?path=.
+            let body = super::dashboard::render_dashboard_html(&snap)
+                .replace("{{ui_csrf_token}}", &html_escape(&security.token));
             respond("200 OK", "text/html; charset=utf-8", &body)
         }
         _ => respond("404 Not Found", "text/plain; charset=utf-8", "not found\n"),
@@ -1961,6 +2200,7 @@ fn write_response(
 
 #[cfg(test)]
 mod tests {
+    use super::{allowed_hosts_for_bind, authorize, secret_eq, UiSecurity};
     use super::{
         bounded_count_or_default, decode_state_value, encode_state_value, extract_query_param,
         is_process_alive, is_safe_query_value, is_safe_source_url, is_safe_version,
@@ -2174,8 +2414,156 @@ mod tests {
         assert_eq!(bounded_count_or_default(None, 64, "2"), "2");
     }
 
+    fn secured(token: &str) -> UiSecurity {
+        UiSecurity {
+            token: token.to_string(),
+            allowed_hosts: allowed_hosts_for_bind("127.0.0.1:8787").expect("allowlist"),
+        }
+    }
+
+    fn head(method: &str, path: &str, extra: &str) -> super::RequestHead {
+        parse_request_head(&format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:8787\r\n{extra}\r\n"
+        ))
+        .expect("request")
+    }
+
+    // A3: the bind address alone is not the allowlist - operators type localhost:8787 - and the
+    // allowlist must be fixed, never derived from the Host the caller sent, or a rebound
+    // evil.example:8787 matches itself and the whole check passes by construction.
+    #[test]
+    fn the_host_allowlist_is_fixed_and_covers_the_usual_loopback_spellings() {
+        let hosts = allowed_hosts_for_bind("127.0.0.1:8787").expect("allowlist");
+        for expected in [
+            "127.0.0.1",
+            "127.0.0.1:8787",
+            "localhost",
+            "localhost:8787",
+            "[::1]",
+            "[::1]:8787",
+        ] {
+            assert!(hosts.iter().any(|h| h == expected), "missing {expected}");
+        }
+        assert!(!hosts.iter().any(|h| h.contains("evil")));
+        // Binding to the world has no safe allowlist to derive.
+        assert!(allowed_hosts_for_bind("0.0.0.0:8787").is_none());
+        assert!(allowed_hosts_for_bind("[::]:8787").is_none());
+    }
+
+    #[test]
+    fn a_request_for_another_host_is_refused_on_every_route() {
+        let sec = secured("tok");
+        for path in ["/healthz", "/dashboard.html", "/control/status"] {
+            let mut request = head("GET", path, "");
+            request.headers = vec![("host".to_string(), "evil.example".to_string())];
+            assert_eq!(
+                authorize(&sec, &request),
+                Err("host_not_allowed"),
+                "{path} accepted a rebound host"
+            );
+        }
+        let mut no_host = head("GET", "/healthz", "");
+        no_host.headers.clear();
+        assert_eq!(authorize(&sec, &no_host), Err("host_not_allowed"));
+    }
+
+    // A3: every mutating endpoint was reachable by any page the user had open - and so were the
+    // two status GETs, which rewrite their state file.
+    #[test]
+    fn a_mutating_request_needs_the_token() {
+        let sec = secured("s3cret");
+        assert_eq!(
+            authorize(&sec, &head("POST", "/control/start", "")),
+            Err("missing_or_bad_token")
+        );
+        assert_eq!(
+            authorize(
+                &sec,
+                &head("POST", "/control/start", "X-Tool-Token: wrong\r\n")
+            ),
+            Err("missing_or_bad_token")
+        );
+        assert_eq!(
+            authorize(
+                &sec,
+                &head("POST", "/control/start", "x-tool-token: s3cret\r\n")
+            ),
+            Ok(())
+        );
+        // A GET that rewrites its state file is a mutating endpoint.
+        assert_eq!(
+            authorize(&sec, &head("GET", "/target/status", "")),
+            Err("missing_or_bad_token")
+        );
+        assert_eq!(
+            authorize(&sec, &head("GET", "/target/build/status", "")),
+            Err("missing_or_bad_token")
+        );
+        // Pure reads stay open to the browser that loaded the page.
+        assert_eq!(authorize(&sec, &head("GET", "/control/status", "")), Ok(()));
+        assert_eq!(authorize(&sec, &head("GET", "/dashboard.html", "")), Ok(()));
+    }
+
+    #[test]
+    fn a_cross_origin_caller_is_refused_even_holding_the_token() {
+        let sec = secured("s3cret");
+        assert_eq!(
+            authorize(
+                &sec,
+                &head(
+                    "POST",
+                    "/control/start",
+                    "X-Tool-Token: s3cret\r\nOrigin: http://evil.example\r\n"
+                )
+            ),
+            Err("cross_origin")
+        );
+        assert_eq!(
+            authorize(
+                &sec,
+                &head(
+                    "POST",
+                    "/control/start",
+                    "X-Tool-Token: s3cret\r\nReferer: http://evil.example/x.html\r\n"
+                )
+            ),
+            Err("cross_origin")
+        );
+        assert_eq!(
+            authorize(
+                &sec,
+                &head(
+                    "POST",
+                    "/control/start",
+                    "X-Tool-Token: s3cret\r\nOrigin: http://127.0.0.1:8787\r\n"
+                )
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            authorize(
+                &sec,
+                &head(
+                    "POST",
+                    "/control/start",
+                    "X-Tool-Token: s3cret\r\nReferer: http://localhost:8787/dashboard.html\r\n"
+                )
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn secrets_compare_without_leaking_where_they_differ() {
+        assert!(secret_eq("abc", "abc"));
+        assert!(!secret_eq("abc", "abd"));
+        assert!(!secret_eq("abc", "ab"));
+        assert!(!secret_eq("", "a"));
+        assert!(secret_eq("", ""));
+    }
+
     fn request(method: &str, path: &str) -> super::RequestHead {
-        parse_request_head(&format!("{method} {path} HTTP/1.1\r\n\r\n")).expect("request")
+        head(method, path, "")
     }
 
     // The handlers used to write straight to the socket while holding the state lock, so a peer
@@ -2190,15 +2578,20 @@ mod tests {
         };
         fs::create_dir_all(&app_paths.data_dir).expect("data dir");
 
-        let ok = respond_to_request(&app_paths, &request("GET", "/control/status"));
+        let sec = secured("tok");
+        let ok = respond_to_request(&app_paths, &sec, &request("GET", "/control/status"));
         assert_eq!(ok.status, "200 OK");
         assert!(ok.body.contains("\"running\":false"), "{}", ok.body);
 
-        let missing = respond_to_request(&app_paths, &request("GET", "/nope"));
+        let missing = respond_to_request(&app_paths, &sec, &request("GET", "/nope"));
         assert_eq!(missing.status, "404 Not Found");
 
         // A failure is a status, not an empty reply.
-        let outside = respond_to_request(&app_paths, &request("GET", "/file?path=%2Fetc%2Fpasswd"));
+        let outside = respond_to_request(
+            &app_paths,
+            &sec,
+            &request("GET", "/file?path=%2Fetc%2Fpasswd"),
+        );
         assert_eq!(outside.status, "500 Internal Server Error");
         assert!(outside.body.contains("internal_error"), "{}", outside.body);
 

@@ -339,6 +339,7 @@
 <span>퍼징과 판정이 끝나면 재현 입력과 리포트 근거가 여기에 표시됩니다.</span>
 </div>
 <div class="rows">
+<div id="ui-token" data-token="{{ui_csrf_token}}" hidden></div>
 <div class="row"><div class="m">재현 입력</div><div id="replay-input" class="mono-text">{{latest_valid_input}}</div></div>
 <div class="row"><div class="m">상태</div><div><span id="replay-badge" class="badge badge-neutral">대기 중</span></div></div>
 <div class="row"><div class="m">동작</div><div class="control-actions"><button id="replay-start" class="ctl-btn" type="button" data-triage-id="{{latest_valid_triage_id}}">재현 시작</button><button id="replay-stop" class="ctl-btn ctl-btn-stop" type="button">중지</button></div></div>
@@ -665,6 +666,20 @@
     if (targetBuildVersion && !running) targetBuildVersion.value = status.version || "";
   };
 
+  // A3: the control endpoints require this token and a same-origin request, so a page the user
+  // merely visits can no longer start or stop a run. The dashboard is served with it substituted;
+  // an unsubstituted value means the binary and this template have drifted apart.
+  const uiTokenEl = document.getElementById("ui-token");
+  const uiToken = uiTokenEl ? (uiTokenEl.dataset.token || "").trim() : "";
+  // A live token is hex; a brace means the placeholder was never substituted.
+  const uiTokenUsable = uiToken !== "" && !uiToken.includes("{");
+  const authHeaders = () => (uiTokenUsable ? { "X-Tool-Token": uiToken } : {});
+  const requireToken = () => {
+    if (!uiTokenUsable) {
+      throw new Error("대시보드 토큰을 읽지 못했습니다 (서버와 템플릿 버전 불일치)");
+    }
+  };
+
   const fetchReplayStatus = async () => {
     const res = await fetch("/replay/status");
     if (!res.ok) throw new Error("replay status fetch failed");
@@ -674,7 +689,7 @@
   };
 
   const fetchTargetStatus = async () => {
-    const res = await fetch("/target/status");
+    const res = await fetch("/target/status", { headers: authHeaders() });
     if (!res.ok) throw new Error("target status fetch failed");
     const data = await res.json();
     renderTargetStatus(data);
@@ -682,7 +697,7 @@
   };
 
   const fetchTargetBuildStatus = async () => {
-    const res = await fetch("/target/build/status");
+    const res = await fetch("/target/build/status", { headers: authHeaders() });
     if (!res.ok) throw new Error("target build status fetch failed");
     const data = await res.json();
     renderTargetBuildStatus(data);
@@ -690,7 +705,8 @@
   };
 
   const postReplayAction = async (path) => {
-    const res = await fetch(path, { method: "POST" });
+    requireToken();
+    const res = await fetch(path, { method: "POST", headers: authHeaders() });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(data.error || "replay request failed");
@@ -699,7 +715,8 @@
   };
 
   const postTargetAction = async (path) => {
-    const res = await fetch(path, { method: "POST" });
+    requireToken();
+    const res = await fetch(path, { method: "POST", headers: authHeaders() });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(data.error || "target request failed");
@@ -708,7 +725,8 @@
   };
 
   const postTargetBuildAction = async (path) => {
-    const res = await fetch(path, { method: "POST" });
+    requireToken();
+    const res = await fetch(path, { method: "POST", headers: authHeaders() });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(data.error || "target build request failed");
