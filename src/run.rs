@@ -313,10 +313,26 @@ pub(crate) fn run_fuzz_pipeline(
         },
     );
 
-    match worker_error {
-        Some(e) => Err(e),
-        None => Ok(()),
+    local_run_verdict(&s, worker_error)
+}
+
+/// Whether a finished local-harness run counts as successful.
+///
+/// A failing or timing-out input is a result, not a broken run - that is what the
+/// tool is for. A job the host could not execute is different: nothing was tested,
+/// so reporting success would tell the campaign loop that a block ran when it did
+/// not. The engine-backend path gates on its own counter the same way.
+fn local_run_verdict(stats: &RunStats, worker_error: Option<String>) -> Result<(), String> {
+    if let Some(e) = worker_error {
+        return Err(e);
     }
+    if stats.job_errors > 0 {
+        return Err(format!(
+            "{} of {} jobs could not be executed (job_errors={})",
+            stats.job_errors, stats.total, stats.job_errors
+        ));
+    }
+    Ok(())
 }
 
 /// Pull jobs off the shared queue until it is empty, recording each outcome.
@@ -614,8 +630,14 @@ fn run_engine_worker(plan: EngineWorkerPlan) -> Result<EngineWorkerResult, Strin
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    fs::write(&plan.worker_log_path, log_body)
-        .map_err(|e| format!("failed to write '{}': {e}", plan.worker_log_path.display()))?;
+    // Same reason: the worker has finished and its crash artifacts are already on
+    // disk. A log that cannot be written must not turn that into a worker error.
+    if let Err(e) = fs::write(&plan.worker_log_path, log_body) {
+        eprintln!(
+            "[run] warning: failed to write '{}': {e}",
+            plan.worker_log_path.display()
+        );
+    }
 
     let exit_code = output.status.code().unwrap_or(1);
     let outcome = if output.status.success() {
@@ -1013,7 +1035,13 @@ fn run_job_with_retry(
         let (result, is_session_ok) =
             execute_harness_subprocess(job, target, timeout_sec, timeout_available)?;
         last_session_ok = is_session_ok;
-        write_job_log(logs_dir, job, attempt, &result)?;
+        // Review follow-up: the harness has already run and its verdict is in hand.
+        // Failing here on a full disk or an fd limit threw that verdict away - and
+        // for an input that had just crashed the library, the reproducer was never
+        // persisted. A log is evidence about a result, not the result.
+        if let Err(e) = write_job_log(logs_dir, job, attempt, &result) {
+            eprintln!("[run] warning: failed to write the job log: {e}");
+        }
         if !should_retry(&result) {
             return Ok((result, retries_used, is_session_ok));
         }
@@ -1457,6 +1485,55 @@ mod tests {
     // A26: one job that could not be executed aborted the whole local-harness run
     // through `?`, so status.json and the metrics event for every job that had
     // already finished were thrown away with it.
+    // Review follow-up: the stage made an unrunnable job non-fatal so the finished
+    // jobs kept their record - but then never failed the run, so a block in which
+    // NOTHING executed exited 0. The campaign loop reads that exit code, so hours of
+    // fuzzing could vanish without an alert. The engine path already gates on its
+    // own counter; the local path has to match.
+    #[test]
+    fn a_run_whose_jobs_could_not_execute_does_not_report_success() {
+        use super::{local_run_verdict, RunStats};
+
+        let clean = RunStats {
+            total: 3,
+            success: 3,
+            ..RunStats::default()
+        };
+        assert!(local_run_verdict(&clean, None).is_ok());
+
+        let some_failed = RunStats {
+            total: 3,
+            success: 2,
+            failed: 1,
+            ..RunStats::default()
+        };
+        assert!(
+            local_run_verdict(&some_failed, None).is_ok(),
+            "a failing input is a result, not a broken run"
+        );
+
+        let could_not_run = RunStats {
+            total: 3,
+            success: 2,
+            job_errors: 1,
+            ..RunStats::default()
+        };
+        let err = local_run_verdict(&could_not_run, None)
+            .expect_err("a job that never executed must fail the run");
+        assert!(err.contains("job_errors=1"), "err was: {err}");
+
+        let poisoned = RunStats {
+            total: 1,
+            success: 1,
+            ..RunStats::default()
+        };
+        assert_eq!(
+            local_run_verdict(&poisoned, Some("worker thread panicked".to_string())),
+            Err("worker thread panicked".to_string()),
+            "a worker error still wins"
+        );
+    }
+
     #[test]
     fn a_job_that_cannot_be_spawned_does_not_discard_the_finished_jobs() {
         use super::{drain_job_queue, RunJob, RunStats};
