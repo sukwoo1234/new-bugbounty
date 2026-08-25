@@ -7,8 +7,15 @@ usage: run_long.sh --target <onnx|gguf|safetensors> --backend <local-harness|lib
 EOF
 }
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=lib/engine_mode.sh
+. "$SCRIPT_DIR/lib/engine_mode.sh"
+
 WORKDIR="${WORKDIR:-$PWD}"
 DATA_DIR="${DATA_DIR:-$WORKDIR/data}"
+# G2/G4: refuse a silent fallback when the run is meant to be native/instrumented.
+REQUIRE_NATIVE="${REQUIRE_NATIVE:-0}"
+REQUIRE_INSTRUMENTED="${REQUIRE_INSTRUMENTED:-0}"
 TOOL_BIN="${TOOL_BIN:-$WORKDIR/target/debug/tool}"
 TARGET=""
 BACKEND=""
@@ -71,21 +78,51 @@ case "$BACKEND" in
     if [[ -z "${TOOL_LIBFUZZER_CMD:-}" ]]; then
       NATIVE_ONNX_DRIVER="${WORKDIR}/harnesses/libfuzzer/onnxruntime_loader_fuzzer"
       if [[ "$TARGET" == "onnx" && -x "$NATIVE_ONNX_DRIVER" ]]; then
+        export TOOL_LIBFUZZER_MODE="native"
         export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && LLVM_PROFILE_FILE={artifact_dir}/onnx-native-%p.profraw ${NATIVE_ONNX_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=5 {corpus_dir} >/dev/null 2>&1"
       else
+        export TOOL_LIBFUZZER_MODE="blackbox"
+        echo "[run-long] WARN: no native libFuzzer driver at ${NATIVE_ONNX_DRIVER}; running the black-box tool wrapper. This run is NOT a native libFuzzer run." >&2
+        if [[ "$REQUIRE_NATIVE" == "1" ]]; then
+          echo "[run-long] REQUIRE_NATIVE=1 is set; refusing to run in black-box mode" >&2
+          exit 3
+        fi
         export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && TOOL_HARNESS_TOOL=${TOOL_BIN} TOOL_HARNESS_TARGET=${TARGET} TOOL_HARNESS_EXT=${TARGET} ${WORKDIR}/harnesses/libfuzzer/tool_harness_driver -artifact_prefix={artifact_dir}/ -max_total_time=5 {corpus_dir} >/dev/null 2>&1"
       fi
+      echo "[run-long] libfuzzer_mode=${TOOL_LIBFUZZER_MODE}"
+      echo "[run-long] TOOL_LIBFUZZER_CMD=${TOOL_LIBFUZZER_CMD}"
+    else
+      echo "[run-long] libfuzzer_mode=${TOOL_LIBFUZZER_MODE:-unlabeled} (TOOL_LIBFUZZER_CMD provided by caller)"
     fi
     ;;
   aflpp)
     if [[ -z "${TOOL_AFLPP_CMD:-}" ]]; then
       NATIVE_ONNX_AFLPP_DRIVER="${WORKDIR}/harnesses/aflpp/onnxruntime_loader_replay"
       ONNX_AFLPP_LD_LIBRARY_PATH="{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/Linux/Release:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov-o0/RelWithDebInfo:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov/RelWithDebInfo"
-      if [[ "$TARGET" == "onnx" && -x "$NATIVE_ONNX_AFLPP_DRIVER" ]]; then
-        export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"LD_LIBRARY_PATH=${ONNX_AFLPP_LD_LIBRARY_PATH}:\\\$LD_LIBRARY_PATH afl-fuzz -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/harnesses/aflpp/onnxruntime_loader_replay @@ >/dev/null 2>&1\""
+      # G2: only a binary carrying the AFL++ runtime may drive afl-fuzz without -n.
+      if [[ "$TARGET" == "onnx" ]] && has_afl_instrumentation "$NATIVE_ONNX_AFLPP_DRIVER"; then
+        export TOOL_AFLPP_MODE="instrumented"
+        export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"LD_LIBRARY_PATH=${ONNX_AFLPP_LD_LIBRARY_PATH}:\\\$LD_LIBRARY_PATH AFL_IGNORE_SEED_PROBLEMS=1 afl-fuzz -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/harnesses/aflpp/onnxruntime_loader_replay @@ >/dev/null 2>&1\""
       else
-        export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"AFL_CRASH_EXITCODE=4 afl-fuzz -n -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/target/debug/tool harness --target ${TARGET} --input @@ >/dev/null 2>&1\""
+        export TOOL_AFLPP_MODE="blackbox_n"
+        if [[ -x "$NATIVE_ONNX_AFLPP_DRIVER" ]]; then
+          echo "[run-long] WARN: ${NATIVE_ONNX_AFLPP_DRIVER} has no AFL++ instrumentation; falling back to -n black-box mode. This run is NOT coverage-guided." >&2
+        else
+          echo "[run-long] WARN: no native AFL++ replay binary; running -n black-box mode over 'tool harness'. This run is NOT coverage-guided." >&2
+        fi
+        if [[ "$REQUIRE_INSTRUMENTED" == "1" ]]; then
+          echo "[run-long] REQUIRE_INSTRUMENTED=1 is set; refusing to run without instrumentation" >&2
+          exit 3
+        fi
+        # AFL_CRASH_EXITCODE: in -n mode AFL++ only records signal deaths, but the tool
+        # wrapper reports a library crash as exit 4. AFL_IGNORE_SEED_PROBLEMS: a corpus
+        # that already contains a crashing seed must not abort the whole run.
+        export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"AFL_CRASH_EXITCODE=4 AFL_IGNORE_SEED_PROBLEMS=1 afl-fuzz -n -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/target/debug/tool harness --target ${TARGET} --input @@ >/dev/null 2>&1\""
       fi
+      echo "[run-long] aflpp_mode=${TOOL_AFLPP_MODE}"
+      echo "[run-long] TOOL_AFLPP_CMD=${TOOL_AFLPP_CMD}"
+    else
+      echo "[run-long] aflpp_mode=${TOOL_AFLPP_MODE:-unlabeled} (TOOL_AFLPP_CMD provided by caller)"
     fi
     ;;
   *)

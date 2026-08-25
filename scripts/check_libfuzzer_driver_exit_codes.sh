@@ -25,7 +25,13 @@ fail() {
   exit 1
 }
 
-command -v clang++ >/dev/null 2>&1 || fail "clang++ not found"
+if ! command -v clang++ >/dev/null 2>&1; then
+  if [ "${REQUIRE_CLANG:-0}" = "1" ]; then
+    fail "clang++ not found and REQUIRE_CLANG=1"
+  fi
+  log "skip: clang++ not found (set REQUIRE_CLANG=1 to make this a failure)"
+  exit 0
+fi
 [ -f "$SRC" ] || fail "driver source not found: $SRC"
 
 cat > "$WORK/test_main.cc" <<'EOF'
@@ -65,7 +71,10 @@ expect_exit() {
 
 # 134 = SIGABRT, i.e. libFuzzer records a crash artifact for this input
 expect_exit 0 0 "clean run is not a finding"
-expect_exit 0 9 "benign harness rejection is not a finding"
+expect_exit 0 9 "rejected input is not a finding"
+expect_exit 0 10 "unavailable harness is not a finding"
+expect_exit 0 127 "tool that cannot be executed is not a finding"
+expect_exit 0 126 "tool that is not executable is not a finding"
 expect_exit 134 4 "library crash is a finding"
 expect_exit 134 1 "unknown non-zero exit stays a finding"
 expect_exit 134 139 "signal-killed harness stays a finding"

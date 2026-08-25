@@ -14,6 +14,7 @@
 #   wc -l /tmp/map.txt   # must be > 0
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 WORKDIR="${WORKDIR:-$PWD}"
 PROJECT_ROOT="${PROJECT_ROOT:-$WORKDIR}"
 ORT_VER="${ORT_VER:-v1.23.2}"
@@ -70,14 +71,8 @@ echo "[build-aflpp-onnx-native] compiling"
   -L"$SO_DIR" -lonnxruntime -Wl,-rpath,"$SO_DIR" \
   -o "$OUT"
 
-has_afl_instrumentation() {
-  local bin="$1"
-
-  if command -v nm >/dev/null 2>&1 && nm -C "$bin" 2>/dev/null | grep -qE '__afl|__sanitizer_cov'; then
-    return 0
-  fi
-  grep -qaE '__afl_area_ptr|__sanitizer_cov_trace' "$bin" 2>/dev/null
-}
+# shellcheck source=lib/engine_mode.sh
+. "$SCRIPT_DIR/lib/engine_mode.sh"
 
 if has_afl_instrumentation "$OUT"; then
   INSTRUMENTATION=instrumented

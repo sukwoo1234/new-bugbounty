@@ -203,6 +203,9 @@ SUCCESS="$(jq -r '.success // 0' "$OUT_DIR/run-status.json")"
 FAILED="$(jq -r '.failed // 0' "$OUT_DIR/run-status.json")"
 TIMEOUT="$(jq -r '.timeout // 0' "$OUT_DIR/run-status.json")"
 RETRIES="$(jq -r '.retries // 0' "$OUT_DIR/run-status.json")"
+REJECTED="$(jq -r '.rejected // 0' "$OUT_DIR/run-status.json")"
+# G2/G4: whether this run was really native/instrumented or a black-box fallback
+ENGINE_MODE="$(jq -r '.engine_mode // "unlabeled"' "$OUT_DIR/run-status.json")"
 
 NEW_CRASHES_PER_HOUR="$(jq -r '.metrics.new_crashes_per_hour // 0' "$OUT_DIR/metrics-latest.json")"
 VALID_CRASH_RATIO="$(jq -r 'if (.metrics.valid_crash_ratio_status // "legacy_unverified") == "available" then (.metrics.valid_crash_ratio // "not_available") else (.metrics.valid_crash_ratio_status // "legacy_unverified") end' "$OUT_DIR/metrics-latest.json")"
@@ -320,7 +323,9 @@ cat > "$OUT_DIR/summary.md" <<EOF
 | success | ${SUCCESS} |
 | failed | ${FAILED} |
 | timeout | ${TIMEOUT} |
+| rejected | ${REJECTED} |
 | retries | ${RETRIES} |
+| engine_mode | ${ENGINE_MODE} |
 | new_crashes_per_hour | ${NEW_CRASHES_PER_HOUR} |
 | valid_crash_ratio | ${VALID_CRASH_RATIO} |
 | valid_crash_ratio_source | ${VALID_CRASH_RATIO_SOURCE} |

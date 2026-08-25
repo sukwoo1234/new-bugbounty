@@ -1,5 +1,6 @@
 #include <atomic>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -11,11 +12,15 @@ namespace {
 std::atomic<unsigned long long> g_seq{0};
 
 // G3: `tool harness` exit codes (kept in sync with EXIT_HARNESS_* in src/main.rs).
-// 4 means the target library crashed - the finding. 9 means the harness rejected the
-// input before the library ran (missing input, precheck reject, probe unavailable);
-// aborting on that would file every rejected mutant as a libFuzzer crash artifact.
+// 4 means the target library crashed - the finding. 9 means this input never reached
+// the library (missing file, precheck reject) and 10 means the harness itself could not
+// run; aborting on those would file rejected mutants and broken hosts as crash
+// artifacts. 126/127 come from the shell when the tool binary itself cannot be executed.
 constexpr int kToolHarnessLibraryCrashExit = 4;
-constexpr int kToolHarnessBenignExit = 9;
+constexpr int kToolHarnessInputRejectedExit = 9;
+constexpr int kToolHarnessUnavailableExit = 10;
+constexpr int kShellNotExecutableExit = 126;
+constexpr int kShellCommandNotFoundExit = 127;
 
 std::string env_or(const char* key, const char* fallback) {
   const char* v = std::getenv(key);
@@ -67,7 +72,13 @@ extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, size_t size) {
     std::abort();
   }
   const int status = WEXITSTATUS(rc);
-  if (status == kToolHarnessBenignExit) {
+  if (status == kToolHarnessInputRejectedExit) {
+    return 0;
+  }
+  if (status == kToolHarnessUnavailableExit || status == kShellNotExecutableExit ||
+      status == kShellCommandNotFoundExit) {
+    // Broken host, not a finding. Say so once per input rather than filing an artifact.
+    std::fprintf(stderr, "tool_harness_driver: harness unavailable (exit %d)\n", status);
     return 0;
   }
   // Everything else that is non-zero - kToolHarnessLibraryCrashExit, a shell-reported

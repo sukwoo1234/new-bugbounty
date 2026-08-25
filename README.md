@@ -102,8 +102,14 @@ cargo run --offline -- run --target onnx --backend aflpp --corpus-dir seeds/onnx
 ```
 
 ### AFL++ (tool harness 연결)
+
+`-n` black-box 모드에서 AFL++는 시그널로 죽은 실행만 크래시로 기록한다. `tool harness`는
+라이브러리 크래시를 시그널이 아니라 **exit 4**로 보고하므로(입력 거부=9, 하네스 실행 불가=10),
+`AFL_CRASH_EXITCODE=4`가 없으면 크래시가 아예 기록되지 않는다. 시드 코퍼스에 이미 크래시
+입력이 있으면 dry-run이 전체 실행을 중단시키므로 `AFL_IGNORE_SEED_PROBLEMS=1`도 함께 준다.
+
 ```bash
-TOOL_AFLPP_CMD='docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc "afl-fuzz -n -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- /work/target/debug/tool harness --target onnx --input @@ >/dev/null 2>&1"' \
+TOOL_AFLPP_CMD='docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc "AFL_CRASH_EXITCODE=4 AFL_IGNORE_SEED_PROBLEMS=1 afl-fuzz -n -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- /work/target/debug/tool harness --target onnx --input @@ >/dev/null 2>&1"' \
 cargo run --offline -- run --target onnx --backend aflpp --corpus-dir seeds/onnx --workers 1 --timeout-sec 30 --restart-limit 1
 ```
 `permission denied ... docker.sock`가 나오면 Docker 그룹 권한을 다시 적용(`newgrp docker`)하거나 새 셸에서 재시도한다. `run --backend aflpp`는 `{docker_user_flag}`를 현재 사용자로 치환해 `afl-out`이 root 소유로 남지 않게 한다.

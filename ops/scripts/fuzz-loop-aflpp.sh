@@ -69,19 +69,12 @@ AFLPP_NATIVE_ONNX_DRIVER="harnesses/aflpp/onnxruntime_loader_replay"
 AFLPP_NATIVE_ONNX_MODE=0
 AFLPP_MODE=blackbox_n
 
-# G2: a plain-clang replay binary carries no AFL++ feedback, so driving it without -n
-# is not coverage-guided (afl-fuzz may even abort with "No instrumentation detected").
-# Only an instrumented binary earns the native path; everything else is labelled and
-# runs in explicit -n black-box mode.
-has_afl_instrumentation() {
-    local bin="$1"
-
-    [ -x "${bin}" ] || return 1
-    if command -v nm >/dev/null 2>&1 && nm -C "${bin}" 2>/dev/null | grep -qE '__afl|__sanitizer_cov'; then
-        return 0
-    fi
-    grep -qaE '__afl_area_ptr|__sanitizer_cov_trace' "${bin}" 2>/dev/null
-}
+# G2: a replay binary without the AFL++ runtime carries no feedback, so driving it
+# without -n is not coverage-guided (afl-fuzz may even abort with "No instrumentation
+# detected"). Only an instrumented binary earns the native path; everything else is
+# labelled and runs in explicit -n black-box mode.
+# shellcheck source=../../scripts/lib/engine_mode.sh
+. "${SCRIPT_DIR}/../../scripts/lib/engine_mode.sh"
 
 if [ -z "${AFLPP_CONTAINER_TOOL_WAS_SET}" ] && [ "${TARGET}" = "onnx" ] \
     && has_afl_instrumentation "${PROJECT_ROOT}/${AFLPP_NATIVE_ONNX_DRIVER}"; then
@@ -273,13 +266,14 @@ mark_latest_aflpp_run() {
 #   {docker_readonly_flags} = --read-only --tmpfs /tmp:rw,size=1g --tmpfs /dev/shm:rw,size=1g
 #   {workdir_abs}/{corpus_dir_abs}/{run_dir_abs} = host mounts; {container_*} = in-container paths
 if [ "${AFLPP_NATIVE_ONNX_MODE}" = "1" ]; then
-    export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"LD_LIBRARY_PATH=${ONNX_AFLPP_LD_LIBRARY_PATH}:\\\$LD_LIBRARY_PATH afl-fuzz -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/${AFLPP_CONTAINER_TOOL} @@ >/dev/null 2>&1\""
+    export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"LD_LIBRARY_PATH=${ONNX_AFLPP_LD_LIBRARY_PATH}:\\\$LD_LIBRARY_PATH AFL_IGNORE_SEED_PROBLEMS=1 afl-fuzz -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/${AFLPP_CONTAINER_TOOL} @@ >/dev/null 2>&1\""
 else
     # G3: in -n black-box mode AFL++ only records signal deaths, but the tool wrapper
-    # never dies by signal - it reports a library crash as exit 4 (benign rejections use
-    # 9, see EXIT_HARNESS_* in src/main.rs). Without AFL_CRASH_EXITCODE a real crash is
-    # invisible to this arm.
-    export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"AFL_CRASH_EXITCODE=4 afl-fuzz -n -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/${AFLPP_CONTAINER_TOOL} harness --target ${TARGET} --input @@ >/dev/null 2>&1\""
+    # never dies by signal - it reports a library crash as exit 4 (rejected inputs use 9
+    # and an unavailable harness 10, see EXIT_HARNESS_* in src/main.rs). Without
+    # AFL_CRASH_EXITCODE a real crash is invisible to this arm. AFL_IGNORE_SEED_PROBLEMS
+    # keeps a corpus that already holds a crashing seed from aborting the whole run.
+    export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"AFL_CRASH_EXITCODE=4 AFL_IGNORE_SEED_PROBLEMS=1 afl-fuzz -n -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/${AFLPP_CONTAINER_TOOL} harness --target ${TARGET} --input @@ >/dev/null 2>&1\""
 fi
 
 iter=0
