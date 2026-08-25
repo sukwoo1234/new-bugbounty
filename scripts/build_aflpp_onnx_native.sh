@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# Builds the native AFL++ ONNX replay binary.
+#
+# G2: the committed binary was a plain-clang artifact with zero AFL++ instrumentation, so
+# Arm C was never coverage-guided even though this script claims an afl-clang-fast++ build.
+# The build now verifies its own output and fails if the result carries no instrumentation.
+# Set ALLOW_UNINSTRUMENTED=1 only for a deliberate uninstrumented baseline build.
+#
+# On a host without afl-clang-fast++, build inside the same image the loop runs:
+#   docker run --rm -v "$PWD":/work -w /work aflplusplus/aflplusplus \
+#     bash -lc 'scripts/build_aflpp_onnx_native.sh'
+# Then confirm the tuples AFL++ will actually see:
+#   afl-showmap -o /tmp/map.txt -- harnesses/aflpp/onnxruntime_loader_replay seeds/onnx/min.onnx
+#   wc -l /tmp/map.txt   # must be > 0
 set -euo pipefail
 
 WORKDIR="${WORKDIR:-$PWD}"
@@ -57,7 +70,29 @@ echo "[build-aflpp-onnx-native] compiling"
   -L"$SO_DIR" -lonnxruntime -Wl,-rpath,"$SO_DIR" \
   -o "$OUT"
 
+has_afl_instrumentation() {
+  local bin="$1"
+
+  if command -v nm >/dev/null 2>&1 && nm -C "$bin" 2>/dev/null | grep -qE '__afl|__sanitizer_cov'; then
+    return 0
+  fi
+  grep -qaE '__afl_area_ptr|__sanitizer_cov_trace' "$bin" 2>/dev/null
+}
+
+if has_afl_instrumentation "$OUT"; then
+  INSTRUMENTATION=instrumented
+elif [[ "${ALLOW_UNINSTRUMENTED:-0}" == "1" ]]; then
+  INSTRUMENTATION=uninstrumented
+  echo "[build-aflpp-onnx-native] WARN: $OUT has no AFL++/sancov instrumentation (ALLOW_UNINSTRUMENTED=1)" >&2
+else
+  echo "[build-aflpp-onnx-native] $OUT has no AFL++/sancov instrumentation" >&2
+  echo "[build-aflpp-onnx-native] AFL_CXX=$AFL_CXX did not instrument; build inside aflplusplus/aflplusplus" >&2
+  echo "[build-aflpp-onnx-native] (set ALLOW_UNINSTRUMENTED=1 for a deliberate baseline build)" >&2
+  exit 1
+fi
+
 echo "[build-aflpp-onnx-native] done"
 echo "src: $SRC"
 echo "out: $OUT"
 echo "so: $SO"
+echo "instrumentation: $INSTRUMENTATION"
