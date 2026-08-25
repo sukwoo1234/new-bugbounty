@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::atomic::{AtomicU64, Ordering},
+    sync::OnceLock,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -81,9 +82,31 @@ pub(crate) fn command_exists(cmd: &str) -> bool {
     Command::new(cmd).arg("--version").output().is_ok()
 }
 
+/// Whether `prlimit` is on this host, looked up once.
+///
+/// The answer cannot change while the process runs, but this used to spawn
+/// `prlimit --version` on every wrapped command - one extra fork/exec per fuzzing
+/// job and per triage attempt.
+fn prlimit_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        #[cfg(test)]
+        PRLIMIT_PROBES.fetch_add(1, Ordering::Relaxed);
+        command_exists("prlimit")
+    })
+}
+
+#[cfg(test)]
+static PRLIMIT_PROBES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn prlimit_probe_count() -> usize {
+    PRLIMIT_PROBES.load(Ordering::Relaxed)
+}
+
 pub(crate) fn command_with_core_dump_off(program: impl AsRef<OsStr>) -> Command {
     let program = program.as_ref();
-    let mut cmd = if command_exists("prlimit") {
+    let mut cmd = if prlimit_available() {
         let mut c = Command::new("prlimit");
         c.arg("--core=0").arg("--").arg(program);
         c
@@ -397,6 +420,24 @@ pub(crate) enum HarnessExecResult {
 
 #[cfg(test)]
 mod tests {
+    // Every wrapped spawn probed for prlimit by running `prlimit --version`, so a
+    // fuzzing loop paid an extra fork/exec on every single job and every triage
+    // attempt just to re-learn something that cannot change while the process runs.
+    #[test]
+    fn prlimit_is_probed_once_per_process() {
+        use super::{command_with_core_dump_off, prlimit_probe_count};
+
+        for _ in 0..50 {
+            let _ = command_with_core_dump_off("true");
+        }
+        assert_eq!(
+            prlimit_probe_count(),
+            1,
+            "prlimit should be looked up once, not once per spawn"
+        );
+    }
+
+
     // A25 / the same hole in `run`: `--max-jobs 0` truncated the input list to
     // nothing AFTER the "no inputs" check, so a run that executed nothing still
     // published a status.json, a coverage summary and a metrics event that read as

@@ -1286,9 +1286,16 @@ mod tests {
         let input = root.join("model.gguf");
         std::fs::write(&input, b"gguf").expect("write input");
 
+        // A prlimit stand-in that just execs what it was asked to run. Its exec
+        // failure message is not the sentinel the A13 carve-out recognises, which is
+        // also what a non-English host looks like - so this covers both the
+        // "no util-linux" and the "unrecognised wrapper message" cases.
+        let prlimit = dir_b.join("prlimit");
+        std::fs::write(&prlimit, "#!/bin/sh\nshift 2\nexec \"$@\"\n").expect("write prlimit");
+        std::fs::set_permissions(&prlimit, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod prlimit");
+
         let previous_path = std::env::var_os("PATH");
-        // Without prlimit on PATH the wrapper spawns the program directly, which is
-        // how a real host without util-linux behaves.
         std::env::set_var("PATH", &dir_b);
         std::env::set_var("TOOL_LLAMA_CLI_BIN", dir_a.join("llama-cli"));
         let result = gguf_library_connect(&input);
