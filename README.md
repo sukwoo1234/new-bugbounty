@@ -161,6 +161,25 @@ tool campaign --mode serial --target onnx --hours 168 --campaign-id paper-onnx-0
 tool campaign --mode parallel --target onnx --hours 168 --campaign-id hunt-onnx-001
 ```
 
+### `--timeout-sec`가 묶는 범위 (R3)
+
+`--timeout-sec`는 **입력 하나를 처리하는 하네스 실행**의 벽시계 상한이다. 엔진 백엔드를
+쓸 때 이것이 무엇을 묶고 무엇을 안 묶는지 헷갈리기 쉬워 명시한다.
+
+| 경로 | `--timeout-sec`가 묶나 | 실제로 시간을 묶는 것 |
+|---|---|---|
+| `--backend local-harness` | **예** — 잡 1개마다 적용 | `--timeout-sec` |
+| `--backend aflpp` / `libfuzzer` | **아니오** — 엔진 실행 시간에는 적용되지 않는다 | 엔진 자신의 옵션(AFL++ `-V`, libFuzzer `-max_total_time`). 래퍼가 `--duration-seconds`에서 계산해 넘긴다 |
+| 백엔드가 찾아낸 크래시의 트리아지 | **예** — 재현 시도 1회마다 적용 | `--timeout-sec` |
+
+설계상 의도된 동작이다. 엔진은 자기 루프를 스스로 관리하므로 바깥에서 한 번 더 묶으면
+코퍼스를 저장하지 못한 채 죽는다. 다만 **엔진 백엔드 블록의 총 실행 시간을 줄이려면
+`--timeout-sec`가 아니라 `--duration-seconds`(또는 캠페인의 `--block-seconds`)를 바꿔야 한다.**
+
+엔진 명령 템플릿(`TOOL_AFLPP_CMD` / `TOOL_LIBFUZZER_CMD`)에는 `{timeout_sec}` 자리표시자가
+있으므로, 입력 1개당 상한을 엔진에 직접 넘기고 싶다면 템플릿에 명시적으로 넣으면 된다
+(예: libFuzzer `-timeout={timeout_sec}`). 넣지 않으면 엔진 기본값이 쓰인다.
+
 짧은 스모크는 시간/입력 수를 제한한다.
 
 ```bash
