@@ -42,6 +42,10 @@ pub(crate) struct RunJob {
     pub(crate) input: PathBuf,
 }
 
+/// What running one job reports back: the harness outcome, how many retries it
+/// took, and whether the library session was reached.
+type JobOutcome = (HarnessExecResult, usize, bool);
+
 #[derive(Default)]
 struct RunStats {
     total: usize,
@@ -51,6 +55,9 @@ struct RunStats {
     rejected: usize,
     retries: usize,
     library_session_ok: usize,
+    // A26: jobs the run never got to execute. Not failures of the library under test,
+    // so they stay out of `failed` and out of the metrics denominator.
+    job_errors: usize,
 }
 
 struct RunStatusCounts {
@@ -60,6 +67,7 @@ struct RunStatusCounts {
     timeout: usize,
     rejected: usize,
     retries: usize,
+    job_errors: usize,
     backend_crash_artifacts: usize,
     backend_crashes_triaged: usize,
     backend_crash_triage_errors: usize,
@@ -217,61 +225,32 @@ pub(crate) fn run_fuzz_pipeline(
         let target = target.clone();
 
         handles.push(thread::spawn(move || {
-            loop {
-                let job = {
-                    let mut guard = match queue.lock() {
-                        Ok(g) => g,
-                        Err(_) => return Err("queue lock poisoned".to_string()),
-                    };
-                    guard.pop_front()
-                };
-
-                let Some(job) = job else {
-                    break;
-                };
-
-                let (result, retries_used, is_session_ok) = run_job_with_retry(
-                    &job,
+            let exec = |job: &RunJob| {
+                run_job_with_retry(
+                    job,
                     &target,
                     timeout_sec,
                     restart_limit,
                     timeout_available,
                     &logs_dir,
-                )?;
-
-                let mut s = stats
-                    .lock()
-                    .map_err(|_| "stats lock poisoned".to_string())?;
-                s.retries += retries_used;
-                if is_session_ok {
-                    s.library_session_ok += 1;
-                }
-                match result {
-                    HarnessExecResult::Success(_) => s.success += 1,
-                    HarnessExecResult::Failed(_) => s.failed += 1,
-                    HarnessExecResult::Timeout(_) => s.timeout += 1,
-                    HarnessExecResult::Rejected(_) => s.rejected += 1,
-                }
-                let persist_reproducer = is_reproducer(&result);
-                drop(s);
-                if persist_reproducer {
-                    if let Err(e) = persist_crash_input(&crash_inputs_dir, job.id, &job.input) {
-                        eprintln!(
-                            "[run] warning: failed to persist reproducer for {}: {e}",
-                            job.input.display()
-                        );
-                    }
-                }
-            }
-            Ok(())
+                )
+            };
+            drain_job_queue(&queue, &stats, &crash_inputs_dir, &exec)
         }));
     }
 
+    // Join every worker before deciding: returning early left the remaining workers
+    // detached, still writing into the run directory this function was abandoning.
+    let mut worker_error = None;
     for handle in handles {
-        match handle.join() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(_) => return Err("worker thread panicked".to_string()),
+        let outcome = match handle.join() {
+            Ok(outcome) => outcome,
+            Err(_) => Err("worker thread panicked".to_string()),
+        };
+        if let Err(e) = outcome {
+            if worker_error.is_none() {
+                worker_error = Some(e);
+            }
         }
     }
 
@@ -290,6 +269,7 @@ pub(crate) fn run_fuzz_pipeline(
             timeout: s.timeout,
             rejected: s.rejected,
             retries: s.retries,
+            job_errors: s.job_errors,
             backend_crash_artifacts: 0,
             backend_crashes_triaged: 0,
             backend_crash_triage_errors: 0,
@@ -307,6 +287,7 @@ pub(crate) fn run_fuzz_pipeline(
     println!("timeout: {}", s.timeout);
     println!("rejected: {}", s.rejected);
     println!("retries: {}", s.retries);
+    println!("job_errors: {}", s.job_errors);
     println!("status: {}", status_path.display());
 
     metrics::record_metrics_event(
@@ -314,7 +295,9 @@ pub(crate) fn run_fuzz_pipeline(
         MetricEvent {
             ts: now_unix(),
             kind: "run",
-            total: s.total as u64,
+            // A job that never ran is not a trial: keeping it in `total` would dilute
+            // library_connect_rate_proxy with inputs the library never saw.
+            total: s.total.saturating_sub(s.job_errors) as u64,
             errors: (s.failed + s.timeout) as u64,
             successful_runs_proxy: s.success as u64,
             library_session_ok: s.library_session_ok as u64,
@@ -323,6 +306,72 @@ pub(crate) fn run_fuzz_pipeline(
             total_crashes: 0,
         },
     )?;
+
+    match worker_error {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Pull jobs off the shared queue until it is empty, recording each outcome.
+///
+/// `exec` is built inside each worker thread so it can borrow that thread's own
+/// clones of the target and log directory.
+fn drain_job_queue(
+    queue: &Mutex<VecDeque<RunJob>>,
+    stats: &Mutex<RunStats>,
+    crash_inputs_dir: &Path,
+    exec: &dyn Fn(&RunJob) -> Result<JobOutcome, String>,
+) -> Result<(), String> {
+    loop {
+        let job = {
+            let mut guard = queue.lock().map_err(|_| "queue lock poisoned".to_string())?;
+            guard.pop_front()
+        };
+
+        let Some(job) = job else {
+            break;
+        };
+
+        // A26: one job the host could not execute - a transient spawn failure, a log
+        // that could not be opened - used to abort the whole run and take the record
+        // of every finished job with it. Count it and keep draining.
+        let (result, retries_used, is_session_ok) = match exec(&job) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                eprintln!(
+                    "[run] warning: job {} ({}) could not be executed: {e}",
+                    job.id,
+                    job.input.display()
+                );
+                let mut s = stats.lock().map_err(|_| "stats lock poisoned".to_string())?;
+                s.job_errors += 1;
+                continue;
+            }
+        };
+
+        let mut s = stats.lock().map_err(|_| "stats lock poisoned".to_string())?;
+        s.retries += retries_used;
+        if is_session_ok {
+            s.library_session_ok += 1;
+        }
+        match result {
+            HarnessExecResult::Success(_) => s.success += 1,
+            HarnessExecResult::Failed(_) => s.failed += 1,
+            HarnessExecResult::Timeout(_) => s.timeout += 1,
+            HarnessExecResult::Rejected(_) => s.rejected += 1,
+        }
+        let persist_reproducer = is_reproducer(&result);
+        drop(s);
+        if persist_reproducer {
+            if let Err(e) = persist_crash_input(crash_inputs_dir, job.id, &job.input) {
+                eprintln!(
+                    "[run] warning: failed to persist reproducer for {}: {e}",
+                    job.input.display()
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -430,6 +479,7 @@ fn run_engine_backend(
             timeout,
             rejected: 0,
             retries: 0,
+            job_errors: 0,
             backend_crash_artifacts: ingest.discovered,
             backend_crashes_triaged: ingest.triaged,
             backend_crash_triage_errors: ingest.errors,
@@ -891,7 +941,7 @@ fn run_job_with_retry(
     restart_limit: u32,
     timeout_available: bool,
     logs_dir: &Path,
-) -> Result<(HarnessExecResult, usize, bool), String> {
+) -> Result<JobOutcome, String> {
     let attempts = restart_limit + 1;
     let mut last = HarnessExecResult::Failed("not executed".to_string());
     let mut last_session_ok = false;
@@ -1114,7 +1164,7 @@ fn write_run_status(
 ) -> Result<PathBuf, String> {
     let status_path = run_dir.join("status.json");
     let status_json = format!(
-        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"rejected\": {},\n  \"retries\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {},\n  \"engine_mode\": \"{}\",\n  \"backend_crash_artifacts\": {},\n  \"backend_crashes_triaged\": {},\n  \"backend_crash_triage_errors\": {},\n  \"backend_crash_scan_errors\": {}\n}}\n",
+        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"rejected\": {},\n  \"retries\": {},\n  \"job_errors\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {},\n  \"engine_mode\": \"{}\",\n  \"backend_crash_artifacts\": {},\n  \"backend_crashes_triaged\": {},\n  \"backend_crash_triage_errors\": {},\n  \"backend_crash_scan_errors\": {}\n}}\n",
         run_id,
         target_label(target),
         run_backend_label(backend),
@@ -1124,6 +1174,7 @@ fn write_run_status(
         counts.timeout,
         counts.rejected,
         counts.retries,
+        counts.job_errors,
         workers,
         timeout_sec,
         restart_limit,
@@ -1267,6 +1318,7 @@ mod tests {
                 timeout: 0,
                 rejected: 0,
                 retries: 0,
+                job_errors: 0,
                 backend_crash_artifacts: 0,
                 backend_crashes_triaged: 0,
                 backend_crash_triage_errors: 0,
@@ -1339,6 +1391,90 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // A26: one job that could not be executed aborted the whole local-harness run
+    // through `?`, so status.json and the metrics event for every job that had
+    // already finished were thrown away with it.
+    #[test]
+    fn a_job_that_cannot_be_spawned_does_not_discard_the_finished_jobs() {
+        use super::{drain_job_queue, RunJob, RunStats};
+        use crate::common::HarnessExecResult;
+        use std::collections::VecDeque;
+        use std::sync::Mutex;
+
+        let jobs: VecDeque<RunJob> = (0..3)
+            .map(|id| RunJob {
+                id,
+                input: PathBuf::from(format!("seed-{id}.onnx")),
+            })
+            .collect();
+        let queue = Mutex::new(jobs);
+        let stats = Mutex::new(RunStats {
+            total: 3,
+            ..RunStats::default()
+        });
+        let crash_inputs_dir = unique_temp_dir("a26-crash-inputs");
+
+        let exec = |job: &RunJob| {
+            if job.id == 1 {
+                Err("failed to spawn harness: Too many open files".to_string())
+            } else {
+                Ok((HarnessExecResult::Success(String::new()), 0, true))
+            }
+        };
+
+        drain_job_queue(&queue, &stats, &crash_inputs_dir, &exec).expect("drain must not abort");
+
+        assert!(
+            queue.lock().expect("queue").is_empty(),
+            "the queue must still be drained"
+        );
+        let s = stats.lock().expect("stats");
+        assert_eq!(s.success, 2, "the finished jobs must survive");
+        assert_eq!(s.failed, 0, "an unrunnable job is not a failed job");
+        assert_eq!(s.job_errors, 1);
+
+        let _ = fs::remove_dir_all(&crash_inputs_dir);
+    }
+
+    #[test]
+    fn run_status_records_the_jobs_that_could_not_run() {
+        use super::{write_run_status, RunStatusCounts};
+
+        let run_dir = unique_temp_dir("a26-job-errors-status");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        let status_path = write_run_status(
+            &run_dir,
+            9,
+            &TargetKind::Onnx,
+            &RunBackend::LocalHarness,
+            RunStatusCounts {
+                total: 3,
+                success: 2,
+                failed: 0,
+                timeout: 0,
+                rejected: 0,
+                retries: 0,
+                job_errors: 1,
+                backend_crash_artifacts: 0,
+                backend_crashes_triaged: 0,
+                backend_crash_triage_errors: 0,
+                backend_crash_scan_errors: 0,
+            },
+            1,
+            30,
+            1,
+            "local_harness",
+        )
+        .expect("write status");
+
+        let status = fs::read_to_string(&status_path).expect("read status");
+        assert!(
+            status.contains("\"job_errors\": 1"),
+            "status was: {status}"
+        );
+        let _ = fs::remove_dir_all(&run_dir);
+    }
+
     #[test]
     fn collects_aflpp_crash_files_without_readme() {
         let run_dir = unique_temp_dir("aflpp-crash-collect");
@@ -1401,6 +1537,7 @@ mod tests {
                 timeout: 0,
                 rejected: 0,
                 retries: 0,
+                job_errors: 0,
                 backend_crash_artifacts: 0,
                 backend_crashes_triaged: 0,
                 backend_crash_triage_errors: 0,
