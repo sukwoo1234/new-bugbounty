@@ -211,7 +211,7 @@ NEW_CRASHES_PER_HOUR="$(jq -r '.metrics.new_crashes_per_hour // 0' "$OUT_DIR/met
 VALID_CRASH_RATIO="$(jq -r 'if (.metrics.valid_crash_ratio_status // "legacy_unverified") == "available" then (.metrics.valid_crash_ratio // "not_available") else (.metrics.valid_crash_ratio_status // "legacy_unverified") end' "$OUT_DIR/metrics-latest.json")"
 VALID_CRASH_RATIO_SOURCE="$(jq -r '.metrics.valid_crash_ratio_source // "legacy_event_log"' "$OUT_DIR/metrics-latest.json")"
 SUCCESSFUL_RUNS_PER_HOUR_PROXY="$(jq -r '.metrics.successful_runs_per_hour_proxy // .metrics.new_paths_per_hour // 0' "$OUT_DIR/metrics-latest.json")"
-GLOBAL_ERROR_RATE_5M="$(jq -r '.metrics.global_error_rate_5m // 0' "$OUT_DIR/metrics-latest.json")"
+GLOBAL_ERROR_RATE_5M="$(jq -r 'if (.metrics.global_error_rate_5m_status // "available") == "available" then (.metrics.global_error_rate_5m // "not_available") else (.metrics.global_error_rate_5m_status) end' "$OUT_DIR/metrics-latest.json")"
 # A27: an engine-backend block counts workers, not inputs, so it has its own
 # counters. On an aflpp/libfuzzer arm the per-input rows above read 0 by design -
 # that is "not this arm's unit", not "nothing happened".

@@ -196,14 +196,20 @@ fn build_metrics_snapshot(
             "available",
         )
     };
-    let error_rate_5m = if total_5m == 0 {
-        0.0
+    // A window with no local run events is not a window with no errors. Publishing
+    // 0.0000 for it read as a perfectly healthy five minutes, which after the
+    // per-kind split is the normal state of an engine-backend data dir.
+    let (error_rate_literal, error_rate_status) = if total_5m == 0 {
+        ("null".to_string(), "not_available")
     } else {
-        errors_5m as f64 / total_5m as f64
+        (
+            format!("{:.4}", errors_5m as f64 / total_5m as f64),
+            "available",
+        )
     };
 
     Ok(format!(
-        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"metrics\": {{\n    \"successful_runs_per_hour_proxy\": {},\n    \"library_connect_rate_proxy\": {},\n    \"library_connect_rate_proxy_status\": \"{}\",\n    \"library_connect_rate_proxy_source\": \"session_ok_over_local_run_total_1h\",\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"triage_summary_scan\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {:.4},\n    \"backend_worker_runs_per_hour\": {},\n    \"backend_worker_errors_5m\": {}\n  }}\n}}\n",
+        "{{\n  \"schema_version\": \"1.0\",\n  \"generated_at\": {},\n  \"metrics\": {{\n    \"successful_runs_per_hour_proxy\": {},\n    \"library_connect_rate_proxy\": {},\n    \"library_connect_rate_proxy_status\": \"{}\",\n    \"library_connect_rate_proxy_source\": \"session_ok_over_local_run_total_1h\",\n    \"new_crashes_per_hour\": {},\n    \"valid_crash_ratio\": {},\n    \"valid_crash_ratio_status\": \"{}\",\n    \"valid_crash_ratio_source\": \"triage_summary_scan\",\n    \"valid_crashes\": {},\n    \"total_crashes\": {},\n    \"triage_summary_count\": {},\n    \"global_error_rate_5m\": {},\n    \"global_error_rate_5m_status\": \"{}\",\n    \"backend_worker_runs_per_hour\": {},\n    \"backend_worker_errors_5m\": {}\n  }}\n}}\n",
         now_ts,
         successful_runs_proxy_1h,
         lib_rate_literal,
@@ -214,7 +220,8 @@ fn build_metrics_snapshot(
         triage_ratio.valid_crashes,
         triage_ratio.total_crashes,
         triage_ratio.summary_count,
-        error_rate_5m,
+        error_rate_literal,
+        error_rate_status,
         backend_worker_runs_1h,
         backend_worker_errors_5m
     ))
@@ -271,6 +278,41 @@ fn calculate_valid_crash_ratio_from_triage(triage_root: &Path) -> Result<TriageC
 
 #[cfg(test)]
 mod tests {
+    // With no run events in the window the rate was published as 0.0000, which reads
+    // as a perfectly healthy five minutes. After the per-kind split that is the
+    // normal state of an aflpp or libfuzzer data dir, so the difference between
+    // "nothing ran" and "nothing failed" has to be visible.
+    #[test]
+    fn the_error_rate_is_not_available_when_no_run_events_are_in_the_window() {
+        let data = unique_tmp_data_dir("metrics_error_rate_gate");
+        let seeds = data.join("seeds");
+        fs::create_dir_all(&seeds).expect("create seeds dir");
+        let events_path = data.join("metrics").join("events.jsonl");
+        fs::create_dir_all(events_path.parent().expect("parent")).expect("create metrics dir");
+
+        let ts = 1_700_000_000u64;
+        let line = format!("{{\"ts\":{ts},\"kind\":\"run-backend\",\"total\":4,\"errors\":0,\"successful_runs_proxy\":4,\"library_session_ok\":0,\"new_crashes\":0,\"valid_crashes\":0,\"total_crashes\":0}}");
+        fs::write(&events_path, line + "\n").expect("write events");
+
+        let app_paths = AppPaths {
+            data_dir: data.clone(),
+            seeds_dir: seeds,
+        };
+        let snapshot =
+            build_metrics_snapshot(&app_paths, &events_path, ts).expect("build snapshot");
+
+        assert!(
+            snapshot.contains("\"global_error_rate_5m\": null"),
+            "snapshot was: {snapshot}"
+        );
+        assert!(
+            snapshot.contains("\"global_error_rate_5m_status\": \"not_available\""),
+            "snapshot was: {snapshot}"
+        );
+
+        let _ = fs::remove_dir_all(&data);
+    }
+
     // A8/A21/A27: the snapshot summed `total` and `errors` across every event kind,
     // but only a local-harness run ever probes the library, and only a local run
     // counts inputs. A triage event counts attempts and reports a REPRODUCED crash

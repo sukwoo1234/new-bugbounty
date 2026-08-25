@@ -46,6 +46,7 @@ pub(crate) struct DashboardSnapshot {
     pub(crate) total_crashes: String,
     pub(crate) triage_summary_count: String,
     pub(crate) global_error_rate_5m: String,
+    pub(crate) global_error_rate_5m_status: String,
     // The engine backends count workers, not inputs, so they get their own
     // counters rather than diluting the per-input ones.
     pub(crate) backend_worker_runs_per_hour: String,
@@ -345,7 +346,8 @@ pub(crate) fn collect_dashboard_snapshot(
     let mut valid_crashes = "0".to_string();
     let mut total_crashes = "0".to_string();
     let mut triage_summary_count = "0".to_string();
-    let mut global_error_rate_5m = "0.0".to_string();
+    let mut global_error_rate_5m = "not_available".to_string();
+    let mut global_error_rate_5m_status = "not_available".to_string();
     let mut backend_worker_runs_per_hour = "0".to_string();
     let mut backend_worker_errors_5m = "0".to_string();
     let metrics_exists = metrics_path.exists();
@@ -382,8 +384,17 @@ pub(crate) fn collect_dashboard_snapshot(
         backend_worker_errors_5m =
             extract_json_number_literal(&metrics, "backend_worker_errors_5m")
                 .unwrap_or_else(|| "0".to_string());
-        global_error_rate_5m = extract_json_number_literal(&metrics, "global_error_rate_5m")
-            .unwrap_or_else(|| "0.0".to_string());
+        // Read the status first: a `null` value would otherwise fall back to "0.0",
+        // which is indistinguishable from a real zero.
+        global_error_rate_5m_status =
+            extract_json_string_literal(&metrics, "global_error_rate_5m_status")
+                .unwrap_or_else(|| "available".to_string());
+        global_error_rate_5m = if global_error_rate_5m_status == "available" {
+            extract_json_number_literal(&metrics, "global_error_rate_5m")
+                .unwrap_or_else(|| "not_available".to_string())
+        } else {
+            global_error_rate_5m_status.clone()
+        };
     }
 
     let latest_valid = find_latest_reproduced_triage(&triage_root)?;
@@ -488,6 +499,7 @@ pub(crate) fn collect_dashboard_snapshot(
         total_crashes,
         triage_summary_count,
         global_error_rate_5m,
+        global_error_rate_5m_status,
         backend_worker_runs_per_hour,
         backend_worker_errors_5m,
         latest_valid_triage,
