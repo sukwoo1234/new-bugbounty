@@ -292,7 +292,9 @@ pub(crate) fn run_fuzz_pipeline(
     println!("job_errors: {}", s.job_errors);
     println!("status: {}", status_path.display());
 
-    metrics::record_metrics_event(
+    // status.json is already written; a metrics failure must not turn a finished run
+    // into a non-zero exit that a campaign loop reads as a failed block.
+    metrics::record_metrics_event_best_effort(
         app_paths,
         MetricEvent {
             ts: now_unix(),
@@ -307,7 +309,7 @@ pub(crate) fn run_fuzz_pipeline(
             valid_crashes: 0,
             total_crashes: 0,
         },
-    )?;
+    );
 
     match worker_error {
         Some(e) => Err(e),
@@ -509,7 +511,9 @@ fn run_engine_backend(
     }
     println!("status: {}", status_path.display());
 
-    metrics::record_metrics_event(
+    // status.json is already written; a metrics failure must not turn a finished run
+    // into a non-zero exit that a campaign loop reads as a failed block.
+    metrics::record_metrics_event_best_effort(
         app_paths,
         MetricEvent {
             ts: now_unix(),
@@ -522,7 +526,7 @@ fn run_engine_backend(
             valid_crashes: 0,
             total_crashes: 0,
         },
-    )?;
+    );
 
     if failed == 0
         && timeout == 0

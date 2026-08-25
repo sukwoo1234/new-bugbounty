@@ -260,7 +260,9 @@ pub(crate) fn run_triage_pipeline(
 
     let valid_crashes = if verdict == "reproduced" { 1 } else { 0 };
     let new_crashes = if crashed_count > 0 { 1 } else { 0 };
-    crate::metrics::record_metrics_event(
+    // The summary is already on disk; a metrics failure must not report this triage
+    // as failed to the caller that will read the exit code.
+    crate::metrics::record_metrics_event_best_effort(
         app_paths,
         MetricEvent {
             ts: now_unix(),
@@ -273,7 +275,7 @@ pub(crate) fn run_triage_pipeline(
             valid_crashes: valid_crashes as u64,
             total_crashes: new_crashes as u64,
         },
-    )?;
+    );
 
     Ok(())
 }
