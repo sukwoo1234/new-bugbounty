@@ -2,6 +2,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -600,9 +601,7 @@ fn handle_replay_start(
         .arg(timeout_sec)
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err));
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to start replay triage: {e}"))?;
+    let child = spawn_job(&mut cmd).map_err(|e| format!("failed to start replay triage: {e}"))?;
     let pid = child.id();
     register_child(child);
 
@@ -705,9 +704,8 @@ fn handle_target_prepare(
     cmd.stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err));
 
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to spawn target prepare command: {e}"))?;
+    let child =
+        spawn_job(&mut cmd).map_err(|e| format!("failed to spawn target prepare command: {e}"))?;
     let pid = child.id();
     register_child(child);
 
@@ -803,9 +801,8 @@ fn handle_target_build_start(
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err));
 
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to spawn target build command: {e}"))?;
+    let child =
+        spawn_job(&mut cmd).map_err(|e| format!("failed to spawn target build command: {e}"))?;
     let pid = child.id();
     register_child(child);
 
@@ -834,22 +831,7 @@ fn handle_replay_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<()
     let mut state = read_replay_state(app_paths)?;
     let mut was_running = false;
     if let Some(pid) = running_job_pid(state.pid, state.pid_start) {
-        was_running = true;
-        {
-            let status = Command::new("kill")
-                .arg("-TERM")
-                .arg(pid.to_string())
-                .status()
-                .map_err(|e| format!("failed to stop replay pid {pid}: {e}"))?;
-            if !status.success() {
-                return write_response(
-                    stream,
-                    "500 Internal Server Error",
-                    "application/json; charset=utf-8",
-                    "{\"error\":\"failed_to_stop_replay\"}",
-                );
-            }
-        }
+        was_running = signal_job(pid, SIGTERM);
     }
     state.pid = None;
     state.pid_start = None;
@@ -864,20 +846,7 @@ fn handle_replay_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<()
 fn handle_target_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
     let mut state = read_target_prepare_state(app_paths)?;
     if let Some(pid) = running_job_pid(state.pid, state.pid_start) {
-        {
-            let status = Command::new("kill")
-                .arg(pid.to_string())
-                .status()
-                .map_err(|e| format!("failed to signal target prepare pid {pid}: {e}"))?;
-            if !status.success() {
-                return write_response(
-                    stream,
-                    "500 Internal Server Error",
-                    "application/json; charset=utf-8",
-                    "{\"error\":\"failed_to_stop_target_prepare\"}",
-                );
-            }
-        }
+        signal_job(pid, SIGTERM);
     }
     state.pid = None;
     state.pid_start = None;
@@ -895,20 +864,7 @@ fn handle_target_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<()
 fn handle_target_build_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
     let mut state = read_target_build_state(app_paths)?;
     if let Some(pid) = running_job_pid(state.pid, state.pid_start) {
-        {
-            let status = Command::new("kill")
-                .arg(pid.to_string())
-                .status()
-                .map_err(|e| format!("failed to signal target build pid {pid}: {e}"))?;
-            if !status.success() {
-                return write_response(
-                    stream,
-                    "500 Internal Server Error",
-                    "application/json; charset=utf-8",
-                    "{\"error\":\"failed_to_stop_target_build\"}",
-                );
-            }
-        }
+        signal_job(pid, SIGTERM);
     }
     state.pid = None;
     state.pid_start = None;
@@ -1011,9 +967,7 @@ fn handle_control_start(
         }
         cmd.env("MAX_JOBS", checked);
     }
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("failed to start run loop script: {e}"))?;
+    let child = spawn_job(&mut cmd).map_err(|e| format!("failed to start run loop script: {e}"))?;
     let pid = child.id();
     register_child(child);
 
@@ -1041,22 +995,7 @@ fn handle_control_stop(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(
     let mut state = read_control_state(app_paths)?;
     let mut was_running = false;
     if let Some(pid) = running_job_pid(state.pid, state.pid_start) {
-        was_running = true;
-        {
-            let status = Command::new("kill")
-                .arg("-TERM")
-                .arg(pid.to_string())
-                .status()
-                .map_err(|e| format!("failed to stop pid {pid}: {e}"))?;
-            if !status.success() {
-                return write_response(
-                    stream,
-                    "500 Internal Server Error",
-                    "application/json; charset=utf-8",
-                    "{\"error\":\"failed_to_stop\"}",
-                );
-            }
-        }
+        was_running = signal_job(pid, SIGTERM);
     }
     state.pid = None;
     state.pid_start = None;
@@ -1565,17 +1504,59 @@ fn reap_children() {
     children.retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
 }
 
+pub(crate) const SIGTERM: i32 = 15;
+
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+    fn setsid() -> i32;
+}
+
+/// Jobs are started in their own session, so the whole job - the wrapper script and everything it
+/// runs - can be signalled as one group without the signal reaching the server, which would
+/// otherwise share its process group with them.
+fn spawn_job(cmd: &mut Command) -> std::io::Result<Child> {
+    unsafe {
+        cmd.pre_exec(|| {
+            if setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn()
+}
+
+/// Signals the job's whole process group. A job started by `spawn_job` leads its group, so its
+/// pid doubles as the group id; a job recorded by an older build may not, so fall back to the
+/// single process rather than signalling a group the server could be in.
+fn signal_job(pid: u32, sig: i32) -> bool {
+    let pid = pid as i32;
+    if process_pgid(pid as u32) == Some(pid as u32) && unsafe { kill(-pid, sig) } == 0 {
+        return true;
+    }
+    unsafe { kill(pid, sig) == 0 }
+}
+
+/// Field n of /proc/<pid>/stat, counting from 1 as procfs does. The command name sits in
+/// parentheses and may contain spaces and parentheses, so the fields after it are found from the
+/// LAST ')': the next token is field 3.
+fn proc_stat_field(pid: u32, field: usize) -> Option<String> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rfind(')')?;
+    stat[after_comm + 1..]
+        .split_whitespace()
+        .nth(field.checked_sub(3)?)
+        .map(|v| v.to_string())
+}
+
+fn process_pgid(pid: u32) -> Option<u32> {
+    proc_stat_field(pid, 5)?.parse().ok()
+}
+
 /// Field 22 of /proc/<pid>/stat: the process start time in clock ticks since boot. It is unique
 /// per process for the life of the boot, so it tells a recycled pid from the job we started.
 fn process_start_ticks(pid: u32) -> Option<u64> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_comm = stat.rfind(')')?;
-    // The fields after the command name start at field 3 (state), so start time is the 20th.
-    stat[after_comm + 1..]
-        .split_whitespace()
-        .nth(19)?
-        .parse::<u64>()
-        .ok()
+    proc_stat_field(pid, 22)?.parse().ok()
 }
 
 /// The pid of the job a state file describes - but only when that process is still running and is
@@ -1597,13 +1578,7 @@ fn running_job_pid(pid: Option<u32>, pid_start: Option<u64>) -> Option<u32> {
 /// The state letter of /proc/<pid>/stat. The command name sits in parentheses and may itself
 /// contain spaces and parentheses, so the fields after it are found from the LAST ')'.
 fn process_state(pid: u32) -> Option<char> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_comm = stat.rfind(')')?;
-    stat[after_comm + 1..]
-        .split_whitespace()
-        .next()?
-        .chars()
-        .next()
+    proc_stat_field(pid, 3)?.chars().next()
 }
 
 /// R2: `kill -0` succeeds for a zombie, so an exited-but-unreaped job read as still running and
@@ -1970,8 +1945,9 @@ mod tests {
     use super::{
         bounded_count_or_default, decode_state_value, encode_state_value, is_process_alive,
         is_safe_query_value, is_safe_source_url, is_safe_version, parse_request_head,
-        positive_timeout_sec_or_default, process_start_ticks, process_state, read_request_head,
-        reap_children, register_child, resolve_replay_input, running_job_pid,
+        positive_timeout_sec_or_default, proc_stat_field, process_pgid, process_start_ticks,
+        process_state, read_request_head, reap_children, register_child, resolve_replay_input,
+        running_job_pid, signal_job, spawn_job, SIGTERM,
     };
     use crate::common::{now_unix_millis, AppPaths};
     use std::fs;
@@ -2146,6 +2122,79 @@ mod tests {
             process_state(pid).is_none(),
             "the registry must reap the child so the pid is released"
         );
+    }
+
+    fn process_ppid(pid: u32) -> Option<u32> {
+        proc_stat_field(pid, 4)?.parse().ok()
+    }
+
+    fn child_of(pid: u32) -> Option<u32> {
+        for entry in fs::read_dir("/proc").ok()? {
+            let entry = entry.ok()?;
+            let name = entry.file_name().into_string().ok()?;
+            let Ok(candidate) = name.parse::<u32>() else {
+                continue;
+            };
+            if process_ppid(candidate) == Some(pid) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    fn wait_until_gone(pid: u32) -> bool {
+        for _ in 0..300 {
+            match process_state(pid) {
+                None | Some('Z') => return true,
+                _ => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        false
+    }
+
+    // The run loop script runs `tool run` in the foreground, so SIGTERM to the script's own pid
+    // left the fuzzer running: the dashboard said stopped, the machine kept fuzzing, and the next
+    // start passed the 409 guard and ran a second pipeline over the same data dir.
+    #[test]
+    fn stopping_a_job_reaches_the_work_it_started_not_just_the_wrapper() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg("/bin/sleep 60; true");
+        let child = spawn_job(&mut cmd).expect("spawn");
+        let pid = child.id();
+
+        assert_eq!(
+            process_pgid(pid),
+            Some(pid),
+            "a job must lead its own process group, or signalling the group hits the server too"
+        );
+        assert_ne!(
+            process_pgid(std::process::id()),
+            Some(pid),
+            "the server must not be in the job's group"
+        );
+
+        let mut grandchild = None;
+        for _ in 0..300 {
+            grandchild = child_of(pid);
+            if grandchild.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let grandchild = grandchild.expect("the wrapper never started its work");
+
+        assert!(
+            signal_job(pid, SIGTERM),
+            "the group signal must be delivered"
+        );
+        assert!(wait_until_gone(pid), "the wrapper survived the stop");
+        assert!(
+            wait_until_gone(grandchild),
+            "the work the wrapper started survived the stop"
+        );
+
+        register_child(child);
+        reap_children();
     }
 
     // Pid numbers are reused, and a state file outlives the server, so "the recorded pid is
