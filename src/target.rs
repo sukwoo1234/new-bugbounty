@@ -636,7 +636,8 @@ fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
                 if is_gguf_parser_rejection(&output.status, &stderr) {
                     return LibraryConnectResult {
                         step: format!(
-                            "llama.cpp parser rejected the file ({})",
+                            "llama.cpp parser rejected the file, crash suppressed by {} ({})",
+                            GGUF_SUPPRESS_REJECTION_CRASHES,
                             first_line(&stderr)
                         ),
                         outcome: LibraryConnectOutcome::Invoked,
@@ -858,22 +859,31 @@ fn is_project_root(root: &Path) -> bool {
     root.join("Cargo.toml").is_file() || root.join("seeds").is_dir()
 }
 
+/// Env switch for the carve-out below. Unset means "report every crash".
+pub(crate) const GGUF_SUPPRESS_REJECTION_CRASHES: &str = "TOOL_GGUF_SUPPRESS_REJECTION_CRASHES";
+
 /// Whether the probe died because llama.cpp's parser cleanly refused the file.
 ///
 /// The probe binary is llama.cpp's gguf-hash example, which does not NULL-check
 /// gguf_init_from_file (tools/llama.cpp/examples/gguf-hash/gguf-hash.cpp:329). The
 /// parser returns NULL on every rejection path and the example then dereferences
 /// it, so a structurally broken file - which is most of what the mutator produces -
-/// segfaulted and was reported as a library crash. That made the GGUF crash oracle
-/// a false-positive factory.
+/// segfaults and is reported as a library crash. The GGUF crash oracle is a
+/// false-positive factory, and a GGUF campaign's crashes need re-reading with that
+/// in mind.
 ///
-/// The carve-out is deliberately narrow: llama.cpp logs the rejection and then
-/// frees attacker-controlled structures, and a fault in THAT cleanup is a real
-/// finding. So it only applies to a plain SIGSEGV with the parser's own marker and
-/// no sanitizer report or assertion in the output.
+/// **This is OFF unless the operator sets the env switch, and that is deliberate.**
+/// llama.cpp logs the rejection and only then frees attacker-controlled structures,
+/// so a fault in that cleanup is exactly the memory-safety bug this project hunts -
+/// and it produces the same observable shape as the benign null deref: SIGSEGV,
+/// marker present, nothing else. The markers below can only separate them on a
+/// sanitizer build, and the probe binary this repo builds is not one, so on the
+/// real host the predicate reduces to "SIGSEGV after a rejection message". Suppressing
+/// by default would trade a loud false positive for a silent false negative, and a
+/// lost crash is the worse outcome.
 ///
-/// The durable fix is a native GGUF harness that checks the return value itself;
-/// it is the first Phase 2 item.
+/// The durable fix is a native GGUF harness that checks the return value itself and
+/// crashes only when the parser really faults; it is the first Phase 2 item.
 fn is_gguf_parser_rejection(status: &ExitStatus, stderr: &str) -> bool {
     const REJECTION_MARKER: &str = "gguf_init_from_file_impl: ";
     // Anything that says "a memory-safety tool noticed something" outranks the marker.
@@ -889,6 +899,9 @@ fn is_gguf_parser_rejection(status: &ExitStatus, stderr: &str) -> bool {
         "GGML_ABORT",
     ];
 
+    if std::env::var_os(GGUF_SUPPRESS_REJECTION_CRASHES).is_none() {
+        return false;
+    }
     if exit_signal(status) != Some(SIGSEGV) {
         return false;
     }
@@ -1011,12 +1024,36 @@ mod tests {
     // the example null-deref, so a structurally broken mutant - which is most of
     // what the mutator produces - was reported as a library crash. The crash oracle
     // for GGUF was a false-positive factory.
+    // The suppression is opt-in: on the real host the markers below cannot separate
+    // llama.cpp's benign null deref from a fault in its own cleanup, so the default
+    // must keep reporting the crash. This pins the default.
+    #[cfg(unix)]
+    #[test]
+    fn a_rejection_marker_alone_is_still_a_library_crash_by_default() {
+        use super::LibraryConnectOutcome;
+
+        let _guard = env_lock();
+        std::env::remove_var(super::GGUF_SUPPRESS_REJECTION_CRASHES);
+        let result = gguf_probe_with_stub(
+            "gguf-reject-default",
+            "echo 'gguf_init_from_file_impl: failed to read tensor info' >&2\nkill -SEGV \"$$\"",
+        );
+
+        assert!(
+            matches!(result.outcome, LibraryConnectOutcome::Crashed),
+            "the default must not suppress a crash: {} / {}",
+            result.outcome.as_str(),
+            result.step
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_gguf_file_the_parser_cleanly_rejects_is_not_a_library_crash() {
         use super::LibraryConnectOutcome;
 
         let _guard = env_lock();
+        std::env::set_var(super::GGUF_SUPPRESS_REJECTION_CRASHES, "1");
         let result = gguf_probe_with_stub(
             "gguf-reject",
             "echo 'gguf_init_from_file_impl: failed to read tensor info' >&2\nkill -SEGV \"$$\"",
@@ -1033,6 +1070,7 @@ mod tests {
             "step should say the parser rejected the file: {}",
             result.step
         );
+        std::env::remove_var(super::GGUF_SUPPRESS_REJECTION_CRASHES);
     }
 
     // The carve-out must not widen. A signal death with no rejection marker is the
@@ -1062,6 +1100,7 @@ mod tests {
         use super::LibraryConnectOutcome;
 
         let _guard = env_lock();
+        std::env::set_var(super::GGUF_SUPPRESS_REJECTION_CRASHES, "1");
         let result = gguf_probe_with_stub(
             "gguf-asan",
             "echo 'gguf_init_from_file_impl: failed to read tensor info' >&2\n\
@@ -1074,6 +1113,7 @@ mod tests {
             result.outcome.as_str(),
             result.step
         );
+        std::env::remove_var(super::GGUF_SUPPRESS_REJECTION_CRASHES);
     }
 
     #[cfg(unix)]
@@ -1082,6 +1122,7 @@ mod tests {
         use super::LibraryConnectOutcome;
 
         let _guard = env_lock();
+        std::env::set_var(super::GGUF_SUPPRESS_REJECTION_CRASHES, "1");
         let result = gguf_probe_with_stub(
             "gguf-abort",
             "echo 'gguf_init_from_file_impl: failed to read tensor info' >&2\nkill -ABRT \"$$\"",
@@ -1093,6 +1134,7 @@ mod tests {
             result.outcome.as_str(),
             result.step
         );
+        std::env::remove_var(super::GGUF_SUPPRESS_REJECTION_CRASHES);
     }
 
     // G6: the crash-propagation fix was only ever proven on ONNX. Everything below
