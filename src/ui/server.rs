@@ -127,7 +127,10 @@ fn read_request_head<R: Read>(reader: &mut R, max_bytes: usize) -> Result<Option
 /// Returns the offset just past the blank line that ends the head, accepting both CRLF and the
 /// bare-LF form some clients send.
 fn head_terminator(head: &[u8]) -> Option<usize> {
-    let crlf = head.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
+    let crlf = head
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| i + 4);
     let lf = head.windows(2).position(|w| w == b"\n\n").map(|i| i + 2);
     match (crlf, lf) {
         (Some(a), Some(b)) => Some(a.min(b)),
@@ -538,6 +541,9 @@ fn handle_replay_start(
     }
     let decoded_input =
         url_decode(input_value).ok_or_else(|| "invalid url encoding".to_string())?;
+    if !is_safe_query_value(&decoded_input) {
+        return bad_request(stream, "invalid_input");
+    }
     let input_path = PathBuf::from(&decoded_input);
     if !input_path.exists() || !input_path.is_file() {
         return write_response(
@@ -561,7 +567,8 @@ fn handle_replay_start(
             )
         }
     };
-    let repro_retries = extract_query_param(raw_path, "repro_retries").unwrap_or("3");
+    let repro_retries =
+        bounded_count_or_default(extract_query_param(raw_path, "repro_retries"), 100, "3");
     let timeout_sec = positive_timeout_sec_or_default(extract_query_param(raw_path, "timeout_sec"));
 
     let replay_dir = app_paths.data_dir.join("ui-replay");
@@ -653,12 +660,20 @@ fn handle_target_prepare(
         Some(value) => url_decode(value).ok_or_else(|| "invalid version encoding".to_string())?,
         None => String::new(),
     };
+    let version = version.trim().to_string();
+    if !is_safe_version(&version) {
+        return bad_request(stream, "invalid_version");
+    }
     let source_url = match extract_query_param(raw_path, "source_url") {
         Some(value) => {
             url_decode(value).ok_or_else(|| "invalid source url encoding".to_string())?
         }
         None => String::new(),
     };
+    let source_url = source_url.trim().to_string();
+    if !is_safe_source_url(&source_url) {
+        return bad_request(stream, "invalid_source_url");
+    }
 
     let target_dir = app_paths.data_dir.join("ui-target");
     fs::create_dir_all(&target_dir).map_err(|e| {
@@ -684,11 +699,11 @@ fn handle_target_prepare(
         .arg("prepare-target")
         .arg("--target")
         .arg(target);
-    if !version.trim().is_empty() {
-        cmd.arg("--version").arg(version.trim());
+    if !version.is_empty() {
+        cmd.arg("--version").arg(&version);
     }
-    if !source_url.trim().is_empty() {
-        cmd.arg("--source-url").arg(source_url.trim());
+    if !source_url.is_empty() {
+        cmd.arg("--source-url").arg(&source_url);
     }
     cmd.stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err));
@@ -752,6 +767,10 @@ fn handle_target_build_start(
         Some(value) => url_decode(value).ok_or_else(|| "invalid version encoding".to_string())?,
         None => latest_prepared_version(app_paths, target).unwrap_or_default(),
     };
+    let version = version.trim().to_string();
+    if !is_safe_version(&version) {
+        return bad_request(stream, "invalid_version");
+    }
 
     let build_dir = app_paths.data_dir.join("ui-target-build");
     fs::create_dir_all(&build_dir).map_err(|e| {
@@ -919,10 +938,15 @@ fn handle_control_start(
 
     let target = extract_query_param(raw_path, "target").unwrap_or("onnx");
     let backend = extract_query_param(raw_path, "backend").unwrap_or("local-harness");
-    let duration_seconds = extract_query_param(raw_path, "duration_seconds").unwrap_or("3600");
-    let workers = extract_query_param(raw_path, "workers").unwrap_or("2");
+    let duration_seconds = bounded_count_or_default(
+        extract_query_param(raw_path, "duration_seconds"),
+        MAX_DURATION_SECONDS,
+        "3600",
+    );
+    let workers = bounded_count_or_default(extract_query_param(raw_path, "workers"), 256, "2");
     let timeout_sec = positive_timeout_sec_or_default(extract_query_param(raw_path, "timeout_sec"));
-    let restart_limit = extract_query_param(raw_path, "restart_limit").unwrap_or("1");
+    let restart_limit =
+        bounded_count_or_default(extract_query_param(raw_path, "restart_limit"), 1000, "1");
 
     if !matches!(target, "onnx" | "gguf" | "safetensors") {
         return write_response(
@@ -979,7 +1003,11 @@ fn handle_control_start(
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err));
     if let Some(max_jobs) = extract_query_param(raw_path, "max_jobs") {
-        cmd.env("MAX_JOBS", max_jobs);
+        let checked = bounded_count_or_default(Some(max_jobs), MAX_JOBS_LIMIT, "");
+        if checked.is_empty() {
+            return bad_request(stream, "invalid_max_jobs");
+        }
+        cmd.env("MAX_JOBS", checked);
     }
     let child = cmd
         .spawn()
@@ -1117,9 +1145,9 @@ fn read_control_state(app_paths: &AppPaths) -> Result<ControlState, String> {
             "pid" => out.pid = v.parse::<u32>().ok(),
             "started_at" => out.started_at = v.parse::<u64>().ok(),
             "duration_seconds" => out.duration_seconds = v.parse::<u64>().unwrap_or(3600),
-            "target" => out.target = v.to_string(),
-            "backend" => out.backend = v.to_string(),
-            "log_file" => out.log_file = v.to_string(),
+            "target" => out.target = decode_state_value(v),
+            "backend" => out.backend = decode_state_value(v),
+            "log_file" => out.log_file = decode_state_value(v),
             _ => {}
         }
     }
@@ -1167,9 +1195,9 @@ fn read_replay_state(app_paths: &AppPaths) -> Result<ReplayState, String> {
         match k {
             "pid" => out.pid = v.parse::<u32>().ok(),
             "started_at" => out.started_at = v.parse::<u64>().ok(),
-            "target" => out.target = v.to_string(),
-            "input" => out.input = v.to_string(),
-            "log_file" => out.log_file = v.to_string(),
+            "target" => out.target = decode_state_value(v),
+            "input" => out.input = decode_state_value(v),
+            "log_file" => out.log_file = decode_state_value(v),
             _ => {}
         }
     }
@@ -1226,12 +1254,12 @@ fn read_target_prepare_state(app_paths: &AppPaths) -> Result<TargetPrepareState,
         match k {
             "pid" => out.pid = v.parse::<u32>().ok(),
             "started_at" => out.started_at = v.parse::<u64>().ok(),
-            "target" => out.target = v.to_string(),
-            "version" => out.version = v.to_string(),
-            "source_url" => out.source_url = v.to_string(),
-            "log_file" => out.log_file = v.to_string(),
-            "last_result" => out.last_result = v.to_string(),
-            "last_message" => out.last_message = v.to_string(),
+            "target" => out.target = decode_state_value(v),
+            "version" => out.version = decode_state_value(v),
+            "source_url" => out.source_url = decode_state_value(v),
+            "log_file" => out.log_file = decode_state_value(v),
+            "last_result" => out.last_result = decode_state_value(v),
+            "last_message" => out.last_message = decode_state_value(v),
             _ => {}
         }
     }
@@ -1286,11 +1314,11 @@ fn read_target_build_state(app_paths: &AppPaths) -> Result<TargetBuildState, Str
         match k {
             "pid" => out.pid = v.parse::<u32>().ok(),
             "started_at" => out.started_at = v.parse::<u64>().ok(),
-            "target" => out.target = v.to_string(),
-            "version" => out.version = v.to_string(),
-            "log_file" => out.log_file = v.to_string(),
-            "last_result" => out.last_result = v.to_string(),
-            "last_message" => out.last_message = v.to_string(),
+            "target" => out.target = decode_state_value(v),
+            "version" => out.version = decode_state_value(v),
+            "log_file" => out.log_file = decode_state_value(v),
+            "last_result" => out.last_result = decode_state_value(v),
+            "last_message" => out.last_message = decode_state_value(v),
             _ => {}
         }
     }
@@ -1313,9 +1341,9 @@ fn write_control_state(app_paths: &AppPaths, state: &ControlState) -> Result<(),
         pid_text,
         started_at_text,
         state.duration_seconds,
-        state.target,
-        state.backend,
-        state.log_file
+        encode_state_value(&state.target),
+        encode_state_value(&state.backend),
+        encode_state_value(&state.log_file)
     );
     fs::write(&state_path, body).map_err(|e| {
         format!(
@@ -1338,7 +1366,11 @@ fn write_replay_state(app_paths: &AppPaths, state: &ReplayState) -> Result<(), S
     let started_at_text = state.started_at.map(|v| v.to_string()).unwrap_or_default();
     let body = format!(
         "pid={}\nstarted_at={}\ntarget={}\ninput={}\nlog_file={}\n",
-        pid_text, started_at_text, state.target, state.input, state.log_file
+        pid_text,
+        started_at_text,
+        encode_state_value(&state.target),
+        encode_state_value(&state.input),
+        encode_state_value(&state.log_file)
     );
     fs::write(&state_path, body).map_err(|e| {
         format!(
@@ -1366,12 +1398,12 @@ fn write_target_prepare_state(
         "pid={}\nstarted_at={}\ntarget={}\nversion={}\nsource_url={}\nlog_file={}\nlast_result={}\nlast_message={}\n",
         pid_text,
         started_at_text,
-        state.target,
-        state.version,
-        state.source_url,
-        state.log_file,
-        state.last_result,
-        state.last_message
+        encode_state_value(&state.target),
+        encode_state_value(&state.version),
+        encode_state_value(&state.source_url),
+        encode_state_value(&state.log_file),
+        encode_state_value(&state.last_result),
+        encode_state_value(&state.last_message)
     );
     fs::write(&state_path, body).map_err(|e| {
         format!(
@@ -1396,11 +1428,11 @@ fn write_target_build_state(app_paths: &AppPaths, state: &TargetBuildState) -> R
         "pid={}\nstarted_at={}\ntarget={}\nversion={}\nlog_file={}\nlast_result={}\nlast_message={}\n",
         pid_text,
         started_at_text,
-        state.target,
-        state.version,
-        state.log_file,
-        state.last_result,
-        state.last_message
+        encode_state_value(&state.target),
+        encode_state_value(&state.version),
+        encode_state_value(&state.log_file),
+        encode_state_value(&state.last_result),
+        encode_state_value(&state.last_message)
     );
     fs::write(&state_path, body).map_err(|e| {
         format!(
@@ -1622,6 +1654,114 @@ fn handle_asset_view(stream: &mut TcpStream, asset_name: &str) -> Result<(), Str
     write_response(stream, "200 OK", content_type, &body)
 }
 
+// A2: every state file is a line-based `key=value` list, so a value that carries a line break
+// used to inject a whole extra line - an attacker-chosen `pid=` that /target/stop then handed to
+// kill. Values are refused at the door, and what does get written is encoded so that a path that
+// legitimately contains a line break still cannot forge a line.
+fn bad_request(stream: &mut TcpStream, error: &str) -> Result<(), String> {
+    write_response(
+        stream,
+        "400 Bad Request",
+        "application/json; charset=utf-8",
+        &format!("{{\"error\":\"{error}\"}}"),
+    )
+}
+
+fn is_safe_query_value(value: &str) -> bool {
+    !value.chars().any(|c| c.is_control())
+}
+
+fn encode_state_value(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '%' => out.push_str("%25"),
+            '\n' => out.push_str("%0A"),
+            '\r' => out.push_str("%0D"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn decode_state_value(encoded: &str) -> String {
+    let mut out = String::with_capacity(encoded.len());
+    let bytes = encoded.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            match &encoded[i..i + 3] {
+                "%25" => {
+                    out.push('%');
+                    i += 3;
+                    continue;
+                }
+                "%0A" => {
+                    out.push('\n');
+                    i += 3;
+                    continue;
+                }
+                "%0D" => {
+                    out.push('\r');
+                    i += 3;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        let c = encoded[i..].chars().next().unwrap_or('%');
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
+}
+
+/// A16: `version` becomes VERSION_ROOT="$TARGET_ROOT/$VERSION" in
+/// scripts/build_prepared_target.sh, which then rm -rf's a directory under it, so anything that
+/// can leave the targets tree - or be read as an option - is refused. Real labels look like
+/// `v1.23.2`, `b7921`, `v0.7.0`.
+fn is_safe_version(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    if value.len() > 128 || value.contains("..") {
+        return false;
+    }
+    let mut chars = value.chars();
+    let first = chars.next().unwrap_or('\0');
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | '-'))
+}
+
+/// The source URL is handed to the downloader as an argument, so it has to be a real http(s)
+/// URL rather than a local path or something that reads as an option.
+fn is_safe_source_url(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    if value.len() > 2048 || value.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    value.starts_with("http://") || value.starts_with("https://")
+}
+
+/// The worker/duration/retry knobs were passed on verbatim, so a value that is not a plain
+/// count - "--data-dir", a negative number, an absurd fleet size - reached a Command argument or
+/// a bash script's environment as given.
+const MAX_DURATION_SECONDS: u64 = 30 * 24 * 60 * 60;
+const MAX_JOBS_LIMIT: u64 = 10_000_000;
+
+fn bounded_count_or_default<'a>(raw: Option<&'a str>, max: u64, default: &'a str) -> &'a str {
+    match raw {
+        Some(value) if value.parse::<u64>().is_ok_and(|n| n <= max) => value,
+        _ => default,
+    }
+}
+
 // A29: `timeout_sec=0` means "no time limit" to the shell wrapper and is rejected by the
 // run/triage pipelines, so a query value that is not a positive integer falls back to the
 // documented default instead of spawning a job that can only fail.
@@ -1727,7 +1867,11 @@ fn write_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_request_head, positive_timeout_sec_or_default, read_request_head};
+    use super::{
+        bounded_count_or_default, decode_state_value, encode_state_value, is_safe_query_value,
+        is_safe_source_url, is_safe_version, parse_request_head, positive_timeout_sec_or_default,
+        read_request_head,
+    };
 
     // A4: the old server did one 4 KiB read() and looked only at the first line, so a request
     // whose head arrived in several TCP segments lost its headers. The head has to be read
@@ -1784,6 +1928,80 @@ mod tests {
         assert!(read_request_head(&mut reader, 4096).is_err());
     }
 
+    // A2: the state files are line based, so a value carrying a newline injected extra lines -
+    // notably an attacker-chosen `pid=`, which /target/stop then passed to kill.
+    #[test]
+    fn a_value_with_a_line_break_is_not_an_acceptable_query_value() {
+        assert!(is_safe_query_value("v1.23.2"));
+        assert!(is_safe_query_value("https://example.com/a?b=c"));
+        assert!(is_safe_query_value(""));
+        assert!(!is_safe_query_value("x\npid=1234"));
+        assert!(!is_safe_query_value("x\rpid=1234"));
+        assert!(!is_safe_query_value("x\u{7f}y"));
+        assert!(!is_safe_query_value("x\u{0}y"));
+    }
+
+    // A2 defence in depth: even a legitimate path that happens to contain a newline must not be
+    // able to forge a second `pid=` line, and it must survive the round trip unchanged.
+    #[test]
+    fn state_values_round_trip_through_the_line_based_files() {
+        for raw in [
+            "/data/x.onnx",
+            "/data/we\nird\npid=1234",
+            "/data/100%25done",
+            "/data/pl%ain",
+            "",
+        ] {
+            let encoded = encode_state_value(raw);
+            assert!(!encoded.contains('\n'), "{encoded:?} still holds a newline");
+            assert!(!encoded.contains('\r'), "{encoded:?} still holds a CR");
+            assert_eq!(decode_state_value(&encoded), raw);
+        }
+    }
+
+    // A16: `version` reached scripts/build_prepared_target.sh as VERSION_ROOT="$TARGET_ROOT/$VERSION",
+    // which is then rm -rf'd, so traversal out of the targets tree has to be refused here.
+    #[test]
+    fn only_a_plain_version_label_is_accepted() {
+        assert!(is_safe_version("v1.23.2"));
+        assert!(is_safe_version("b7921"));
+        assert!(is_safe_version("v0.7.0"));
+        assert!(is_safe_version("1.0.0+rc1"));
+        assert!(is_safe_version(""));
+        assert!(!is_safe_version("../../../tmp/pwn"));
+        assert!(!is_safe_version(".."));
+        assert!(!is_safe_version("a/b"));
+        assert!(!is_safe_version("a\\b"));
+        assert!(!is_safe_version("-rf"));
+        assert!(!is_safe_version("v1..2"));
+        assert!(!is_safe_version("v 1"));
+        assert!(!is_safe_version(&"v".repeat(200)));
+    }
+
+    #[test]
+    fn only_an_http_source_url_is_accepted() {
+        assert!(is_safe_source_url("https://example.com/model.onnx"));
+        assert!(is_safe_source_url("http://127.0.0.1:8080/a.tar.gz"));
+        assert!(is_safe_source_url(""));
+        assert!(!is_safe_source_url("file:///etc/passwd"));
+        assert!(!is_safe_source_url("ftp://example.com/x"));
+        assert!(!is_safe_source_url("https://exa mple.com/x"));
+        assert!(!is_safe_source_url("-oremote"));
+    }
+
+    // The numeric knobs went straight into Command args and into env for a bash script with no
+    // parse at all, so a value like "--data-dir" or an absurd count was passed on as given.
+    #[test]
+    fn numeric_query_values_fall_back_to_their_default() {
+        assert_eq!(bounded_count_or_default(Some("4"), 64, "2"), "4");
+        assert_eq!(bounded_count_or_default(Some("0"), 64, "2"), "0");
+        assert_eq!(bounded_count_or_default(Some("65"), 64, "2"), "2");
+        assert_eq!(bounded_count_or_default(Some("-1"), 64, "2"), "2");
+        assert_eq!(bounded_count_or_default(Some("--data-dir"), 64, "2"), "2");
+        assert_eq!(bounded_count_or_default(Some(""), 64, "2"), "2");
+        assert_eq!(bounded_count_or_default(None, 64, "2"), "2");
+    }
+
     #[test]
     fn a_request_line_without_a_path_falls_back_to_root() {
         let parsed = parse_request_head("GET\r\n\r\n").expect("parsed");
@@ -1804,4 +2022,3 @@ mod tests {
         assert_eq!(positive_timeout_sec_or_default(None), "30");
     }
 }
-

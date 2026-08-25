@@ -66,6 +66,41 @@ check_url "${BASE_URL}/replay/status"
 check_url "${BASE_URL}/target/status"
 check_url "${BASE_URL}/target/build/status"
 
+# Asserts the exact HTTP status of a request that must be refused before anything is spawned.
+check_status() {
+  local expected="$1"
+  local method="$2"
+  local url="$3"
+  local label="$4"
+  local got
+  got="$(curl -s -o /dev/null -w '%{http_code}' -X "$method" "$url" || true)"
+  if [[ "$got" == "$expected" ]]; then
+    echo "[OK] $label -> $got" | tee -a "$CHECK_LOG"
+  else
+    echo "[FAIL] $label -> expected $expected, got $got" | tee -a "$CHECK_LOG"
+    return 1
+  fi
+}
+
+# A2: a newline in a query value used to inject an extra `pid=` line into the state file, which
+# /target/stop then handed to kill. A16: `version` reached build_prepared_target.sh's rm -rf.
+check_rejected_inputs() {
+  check_status 400 POST "${BASE_URL}/target/prepare?target=onnx&version=x%0Apid%3D1234" \
+    "A2 newline in version"
+  check_status 400 POST "${BASE_URL}/target/prepare?target=onnx&source_url=file%3A%2F%2F%2Fetc%2Fpasswd" \
+    "source_url must be http(s)"
+  check_status 400 POST "${BASE_URL}/target/build/start?target=onnx&version=..%2F..%2F..%2Ftmp%2Fpwn" \
+    "A16 traversal in build version"
+  local state="$WORKDIR/data/ui-target/prepare-target.state"
+  if [[ -f "$state" ]] && grep -qx 'pid=1234' "$state"; then
+    echo "[FAIL] A2 injected a pid line into $state" | tee -a "$CHECK_LOG"
+    return 1
+  fi
+  echo "[OK] no injected pid line in the prepare state" | tee -a "$CHECK_LOG"
+}
+
+check_rejected_inputs
+
 # A4: a client that opens the socket and sends nothing used to block the single-threaded
 # accept loop, denying every other request until it went away.
 check_stalled_client_does_not_block() {
