@@ -488,6 +488,14 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+# A30: reusing an id truncated the existing campaign's status.tsv and overwrote its
+# manifest.json, destroying the record of the run whose results get cited. There is
+# no resume; after an interruption, start a new id and keep the partial evidence.
+if [[ -e "$CAMPAIGN_ROOT" ]]; then
+  echo "[onnx-abc-week] campaign already exists; use a new --campaign-id: $CAMPAIGN_ROOT" >&2
+  exit 2
+fi
+
 if ! ORT_SRC_RESOLVED="$(find_ort_src)"; then
   echo "[onnx-abc-week] ONNX Runtime libonnxruntime.so not found" >&2
   echo "[onnx-abc-week] expected one of:" >&2
