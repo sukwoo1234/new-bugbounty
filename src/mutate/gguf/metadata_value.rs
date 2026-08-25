@@ -12,7 +12,13 @@ pub(crate) fn apply(
     let candidates: Vec<usize> = (0..layout.kvs.len())
         .filter(|&i| {
             let kv = &layout.kvs[i];
-            let has_payload = kv.value_payload_end > kv.value_payload_start;
+            // A string's payload is a u64 length plus its bytes, so an empty string
+            // has 8 bytes of payload and nothing to mutate. Counting it as a
+            // candidate and then failing on it took the whole operator down with it.
+            let has_payload = match kv.value_type {
+                GgufValueType::String => kv.value_payload_end > kv.value_payload_start + 8,
+                _ => kv.value_payload_end > kv.value_payload_start,
+            };
             let suitable = !matches!(kv.value_type, GgufValueType::Array);
             has_payload && suitable
         })
@@ -65,4 +71,35 @@ pub(crate) fn apply(
         ],
         parse_preserving: "yes",
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_fixtures::build_gguf_with_empty_string_value;
+    use super::*;
+
+    // A GGUF string value is a u64 length followed by that many bytes, so an empty
+    // string still has an 8-byte payload and passed the "has a payload" filter.
+    // Picking it then failed the whole operator instead of choosing another key -
+    // and real models carry empty metadata strings.
+    #[test]
+    fn an_empty_string_value_does_not_fail_the_operator() {
+        let bytes = build_gguf_with_empty_string_value();
+        for seed in 0..50u64 {
+            let mut rng = DeterministicRng::new(seed);
+            let result = apply(&bytes, &mut rng)
+                .unwrap_or_else(|e| panic!("seed {seed} found nothing to mutate: {e:?}"));
+            assert_ne!(result.bytes, bytes);
+            assert_eq!(result.bytes.len(), bytes.len());
+        }
+    }
+
+    // ... and the filter must not become string-only while fixing that.
+    #[test]
+    fn scalar_values_are_still_candidates() {
+        let bytes = build_gguf_with_empty_string_value();
+        let mut rng = DeterministicRng::new(7);
+        let result = apply(&bytes, &mut rng).expect("the u32 alignment value is mutable");
+        assert_ne!(result.bytes, bytes);
+    }
 }

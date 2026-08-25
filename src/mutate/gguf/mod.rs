@@ -344,6 +344,31 @@ pub(crate) mod test_fixtures {
         buf.extend(std::iter::repeat(0u8).take(48));
         buf
     }
+
+    /// A fixture whose metadata holds an EMPTY string value beside a scalar. A real
+    /// model has these - an unset `general.description`, say.
+    pub(crate) fn build_gguf_with_empty_string_value() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        buf.extend_from_slice(&2u64.to_le_bytes());
+
+        let key1 = b"general.description";
+        buf.extend_from_slice(&(key1.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key1);
+        buf.extend_from_slice(&(GgufValueType::String as u32).to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+
+        let key2 = b"general.alignment";
+        buf.extend_from_slice(&(key2.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key2);
+        buf.extend_from_slice(&(GgufValueType::U32 as u32).to_le_bytes());
+        buf.extend_from_slice(&32u32.to_le_bytes());
+
+        buf.resize(align_up(buf.len(), 32), 0);
+        buf
+    }
 }
 
 #[cfg(test)]
