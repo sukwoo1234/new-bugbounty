@@ -18,7 +18,11 @@ use crate::json_utils::{extract_json_string_literal, html_escape, json_escape, u
 /// A4: a client that opens the socket and then goes quiet must not be able to hold a slot
 /// forever, and a slow reader must not wedge a writer.
 const READ_TIMEOUT_SECS: u64 = 5;
-const WRITE_TIMEOUT_SECS: u64 = 30;
+const WRITE_TIMEOUT_SECS: u64 = 5;
+/// SO_SNDTIMEO restarts on every partial write, so a peer that reads one byte per window held its
+/// thread and one of the in-flight slots for as long as it liked. The whole response gets one
+/// wall-clock budget, the same way the request head does.
+const WRITE_DEADLINE: Duration = Duration::from_secs(15);
 /// Connections are handled on their own threads, so the number of them in flight is capped
 /// rather than left to the peer.
 const MAX_IN_FLIGHT_CONNECTIONS: usize = 64;
@@ -1972,36 +1976,38 @@ fn encode_state_value(raw: &str) -> String {
     out
 }
 
+/// Decodes byte by byte. This reads files this build did not necessarily write - every value the
+/// previous build wrote was raw - so it must survive a '%' next to a multi-byte character rather
+/// than slicing the string at an offset that only happens to be in range.
 fn decode_state_value(encoded: &str) -> String {
-    let mut out = String::with_capacity(encoded.len());
     let bytes = encoded.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0usize;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            match &encoded[i..i + 3] {
-                "%25" => {
-                    out.push('%');
+            match &bytes[i..i + 3] {
+                b"%25" => {
+                    out.push(b'%');
                     i += 3;
                     continue;
                 }
-                "%0A" => {
-                    out.push('\n');
+                b"%0A" => {
+                    out.push(b'\n');
                     i += 3;
                     continue;
                 }
-                "%0D" => {
-                    out.push('\r');
+                b"%0D" => {
+                    out.push(b'\r');
                     i += 3;
                     continue;
                 }
                 _ => {}
             }
         }
-        let c = encoded[i..].chars().next().unwrap_or('%');
-        out.push(c);
-        i += c.len_utf8();
+        out.push(bytes[i]);
+        i += 1;
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A16: `version` becomes VERSION_ROOT="$TARGET_ROOT/$VERSION" in
@@ -2182,6 +2188,33 @@ fn resolve_safe_data_path(data_dir: &Path, requested: &str) -> Result<PathBuf, S
     Ok(canon)
 }
 
+fn write_all_before_deadline<W: Write>(
+    writer: &mut W,
+    bytes: &[u8],
+    deadline: Duration,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let mut written = 0usize;
+    while written < bytes.len() {
+        if started.elapsed() > deadline {
+            return Err(format!("response not written within {deadline:?}"));
+        }
+        match writer.write(&bytes[written..]) {
+            Ok(0) => return Err("peer stopped accepting the response".to_string()),
+            Ok(n) => written += n,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) => {}
+            Err(e) => return Err(format!("failed to write response: {e}")),
+        }
+    }
+    Ok(())
+}
+
 fn write_response(
     stream: &mut TcpStream,
     status: &str,
@@ -2190,17 +2223,17 @@ fn write_response(
 ) -> Result<(), String> {
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.as_bytes().len(),
+        body.len(),
         body
     );
-    stream
-        .write_all(response.as_bytes())
-        .map_err(|e| format!("failed to write response: {e}"))
+    write_all_before_deadline(stream, response.as_bytes(), WRITE_DEADLINE)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{allowed_hosts_for_bind, authorize, secret_eq, UiSecurity};
+    use super::{
+        allowed_hosts_for_bind, authorize, secret_eq, write_all_before_deadline, UiSecurity,
+    };
     use super::{
         bounded_count_or_default, decode_state_value, encode_state_value, extract_query_param,
         is_process_alive, is_safe_query_value, is_safe_source_url, is_safe_version,
@@ -2211,6 +2244,7 @@ mod tests {
     };
     use crate::common::{now_unix_millis, AppPaths};
     use std::fs;
+    use std::io::Write;
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -2369,6 +2403,66 @@ mod tests {
             assert!(!encoded.contains('\r'), "{encoded:?} still holds a CR");
             assert_eq!(decode_state_value(&encoded), raw);
         }
+    }
+
+    // The decoder reads files this build did not necessarily write - the old build wrote every
+    // value raw - and it sliced the string at i+3 after a bounds check only, so a '%' next to a
+    // multi-byte character panicked the connection thread. read_*_state runs before any handler
+    // that could repair the file, so the panic repeated on every poll with no way out.
+    #[test]
+    fn a_legacy_state_value_with_a_percent_next_to_a_multibyte_character_decodes() {
+        assert_eq!(
+            decode_state_value("https://x/100%한글.tar.gz"),
+            "https://x/100%한글.tar.gz"
+        );
+        assert_eq!(decode_state_value("build 50%✓ done"), "build 50%✓ done");
+        assert_eq!(decode_state_value("%"), "%");
+        assert_eq!(decode_state_value("%2"), "%2");
+        assert_eq!(decode_state_value("%한"), "%한");
+        assert_eq!(decode_state_value("a%25한"), "a%한");
+        assert_eq!(decode_state_value("한%0A글"), "한\n글");
+    }
+
+    // The write side had only SO_SNDTIMEO, which restarts on every partial write, so a peer that
+    // reads one byte per timeout window held its thread and its in-flight slot for as long as it
+    // liked - 64 of them and every other request gets the 503.
+    #[test]
+    fn a_peer_that_never_finishes_reading_does_not_hold_its_slot_forever() {
+        struct Trickle;
+        impl Write for Trickle {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                Ok(buf.len().min(1))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        struct Stalled;
+        impl Write for Stalled {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let body = "x".repeat(64 * 1024);
+        let budget = std::time::Duration::from_millis(100);
+
+        let started = std::time::Instant::now();
+        assert!(write_all_before_deadline(&mut Trickle, body.as_bytes(), budget).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        let started = std::time::Instant::now();
+        assert!(write_all_before_deadline(&mut Stalled, body.as_bytes(), budget).is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        // A peer that reads normally still gets the whole body.
+        let mut sink = Vec::new();
+        write_all_before_deadline(&mut sink, body.as_bytes(), budget).expect("full write");
+        assert_eq!(sink.len(), body.len());
     }
 
     // A16: `version` reached scripts/build_prepared_target.sh as VERSION_ROOT="$TARGET_ROOT/$VERSION",
