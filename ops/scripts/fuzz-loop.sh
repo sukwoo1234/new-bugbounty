@@ -47,12 +47,15 @@ stop_requested=0
 trap 'stop_requested=1; log "SIGTERM received, will exit after current iteration"' TERM INT
 
 # Resume iteration counter from existing batches (restart continuity).
+# A32: 'iter[0-9]{6}' truncated a seven-digit counter to its first six digits and
+# a lexicographic sort put iter999999 above iter1000000, so the loop resumed below
+# where it left off and re-minted an iteration that already existed on disk.
 last_iter=$(ls -1 "${MUTATED_ROOT}" 2>/dev/null \
-    | grep -oE 'iter[0-9]{6}' \
-    | sort -u \
-    | tail -1 \
-    | sed 's/iter//; s/^0*//')
-iter=${last_iter:-0}
+    | grep -oE 'iter[0-9]+' \
+    | sed 's/iter//' \
+    | sort -n \
+    | tail -1)
+iter=$((10#${last_iter:-0}))
 log "starting fuzz-loop (resume from iter=${iter}, target=${TARGET}, backend=${BACKEND}, workers=${WORKERS}, mutate_operators=${MUTATE_OPERATORS:-default})"
 
 while :; do
@@ -97,9 +100,11 @@ while :; do
     batch_count=$(ls -1 "${MUTATED_ROOT}" 2>/dev/null | grep -c '^batch-iter' || true)
     if [ "${batch_count}" -gt "${MAX_BATCHES_KEEP}" ]; then
         excess=$((batch_count - MAX_BATCHES_KEEP))
+        # Numeric on the iteration number: a plain sort puts batch-iter1000000
+        # before batch-iter999999 and deletes the newest batch instead of the oldest.
         ls -1 "${MUTATED_ROOT}" 2>/dev/null \
             | grep '^batch-iter' \
-            | sort \
+            | sort -t- -k2.5n \
             | head -n "${excess}" \
             | while IFS= read -r old; do
                 rm -rf "${MUTATED_ROOT:?}/${old}"
