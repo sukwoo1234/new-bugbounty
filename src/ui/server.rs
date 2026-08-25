@@ -8,7 +8,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::common::AppPaths;
 use crate::dashboard_data::collect_dashboard_snapshot;
@@ -16,7 +16,7 @@ use crate::json_utils::{extract_json_string_literal, html_escape, json_escape, u
 
 /// A4: a client that opens the socket and then goes quiet must not be able to hold a slot
 /// forever, and a slow reader must not wedge a writer.
-const READ_TIMEOUT_SECS: u64 = 15;
+const READ_TIMEOUT_SECS: u64 = 5;
 const WRITE_TIMEOUT_SECS: u64 = 30;
 /// Connections are handled on their own threads, so the number of them in flight is capped
 /// rather than left to the peer.
@@ -110,6 +110,10 @@ pub(crate) fn run_ui_server(app_paths: &AppPaths, bind: &str) -> Result<(), Stri
 /// head split across TCP segments does not lose its headers, and it has to be bounded so that a
 /// client that never sends the blank line cannot make the server buffer without limit.
 const MAX_REQUEST_HEAD_BYTES: usize = 32 * 1024;
+/// The read timeout bounds a single read syscall, not the connection, so a client that dribbles a
+/// byte just inside it can hold a thread and one of the in-flight slots indefinitely. The head has
+/// its own wall-clock budget.
+pub(crate) const HEAD_DEADLINE: Duration = Duration::from_secs(10);
 
 struct RequestHead {
     method: String,
@@ -118,7 +122,12 @@ struct RequestHead {
 
 /// `Ok(None)` means the peer closed without sending a byte - a browser preconnect, not an
 /// error worth logging.
-fn read_request_head<R: Read>(reader: &mut R, max_bytes: usize) -> Result<Option<String>, String> {
+fn read_request_head<R: Read>(
+    reader: &mut R,
+    max_bytes: usize,
+    deadline: Duration,
+) -> Result<Option<String>, String> {
+    let started = Instant::now();
     let mut head = Vec::new();
     let mut buf = [0u8; 1024];
     loop {
@@ -127,6 +136,9 @@ fn read_request_head<R: Read>(reader: &mut R, max_bytes: usize) -> Result<Option
         }
         if head.len() >= max_bytes {
             return Err(format!("request head exceeds {max_bytes} bytes"));
+        }
+        if started.elapsed() > deadline {
+            return Err(format!("request head not complete within {deadline:?}"));
         }
         let read = reader
             .read(&mut buf)
@@ -146,17 +158,19 @@ fn read_request_head<R: Read>(reader: &mut R, max_bytes: usize) -> Result<Option
 /// Returns the offset just past the blank line that ends the head, accepting both CRLF and the
 /// bare-LF form some clients send.
 fn head_terminator(head: &[u8]) -> Option<usize> {
-    let crlf = head
+    if let Some(end) = head
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
-        .map(|i| i + 4);
-    let lf = head.windows(2).position(|w| w == b"\n\n").map(|i| i + 2);
-    match (crlf, lf) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (Some(a), None) => Some(a),
-        (None, Some(b)) => Some(b),
-        (None, None) => None,
+        .map(|i| i + 4)
+    {
+        return Some(end);
     }
+    // A bare LF pair ends the head only for a client that speaks bare LF throughout. Honouring it
+    // inside a CRLF head would let `X-Pad: \n\n` hide every header after it.
+    if head.contains(&b'\r') {
+        return None;
+    }
+    head.windows(2).position(|w| w == b"\n\n").map(|i| i + 2)
 }
 
 fn parse_request_head(head: &str) -> Option<RequestHead> {
@@ -168,7 +182,7 @@ fn parse_request_head(head: &str) -> Option<RequestHead> {
 }
 
 fn handle_connection(app_paths: &AppPaths, stream: &mut TcpStream) -> Result<(), String> {
-    let Some(head) = read_request_head(stream, MAX_REQUEST_HEAD_BYTES)? else {
+    let Some(head) = read_request_head(stream, MAX_REQUEST_HEAD_BYTES, HEAD_DEADLINE)? else {
         return Ok(());
     };
     let Some(request) = parse_request_head(&head) else {
@@ -1810,7 +1824,11 @@ fn positive_timeout_sec_or_default(raw: Option<&str>) -> &str {
 fn extract_query_param<'a>(path: &'a str, key: &str) -> Option<&'a str> {
     let query = path.split_once('?')?.1;
     for part in query.split('&') {
-        let (k, v) = part.split_once('=')?;
+        // A15: `?` here abandoned the whole query at the first pair without '=', so every later
+        // parameter silently read as absent.
+        let Some((k, v)) = part.split_once('=') else {
+            continue;
+        };
         if k == key {
             return Some(v);
         }
@@ -1944,11 +1962,12 @@ fn write_response(
 #[cfg(test)]
 mod tests {
     use super::{
-        bounded_count_or_default, decode_state_value, encode_state_value, is_process_alive,
-        is_safe_query_value, is_safe_source_url, is_safe_version, parse_request_head,
-        positive_timeout_sec_or_default, proc_stat_field, process_pgid, process_start_ticks,
-        process_state, read_request_head, reap_children, register_child, resolve_replay_input,
-        resolve_triage_input, respond_to_request, running_job_pid, signal_job, spawn_job, SIGTERM,
+        bounded_count_or_default, decode_state_value, encode_state_value, extract_query_param,
+        is_process_alive, is_safe_query_value, is_safe_source_url, is_safe_version,
+        parse_request_head, positive_timeout_sec_or_default, proc_stat_field, process_pgid,
+        process_start_ticks, process_state, read_request_head, reap_children, register_child,
+        resolve_replay_input, resolve_triage_input, respond_to_request, running_job_pid,
+        signal_job, spawn_job, HEAD_DEADLINE, SIGTERM,
     };
     use crate::common::{now_unix_millis, AppPaths};
     use std::fs;
@@ -1983,7 +2002,7 @@ mod tests {
             b"P/1.1\r\nHost: 127.0.0.1:8787\r\nX-Tool-",
             b"Token: abc\r\n\r\n",
         ]);
-        let head = read_request_head(&mut reader, 32 * 1024)
+        let head = read_request_head(&mut reader, 32 * 1024, HEAD_DEADLINE)
             .expect("head")
             .expect("head present");
         assert!(head.ends_with("\r\n\r\n"), "head was {head:?}");
@@ -1992,17 +2011,81 @@ mod tests {
         assert_eq!(parsed.path, "/control/start?target=onnx");
     }
 
+    // set_read_timeout bounds one read syscall, not the connection, so a client dribbling a byte
+    // just under that timeout held its thread and its slot for days and a handful of them took
+    // every slot the server has.
+    #[test]
+    fn a_head_that_arrives_too_slowly_is_given_up_on() {
+        struct Dribble;
+        impl std::io::Read for Dribble {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                buf[0] = b'x';
+                Ok(1)
+            }
+        }
+        let started = std::time::Instant::now();
+        let result = read_request_head(
+            &mut Dribble,
+            32 * 1024,
+            std::time::Duration::from_millis(100),
+        );
+        assert!(
+            result.is_err(),
+            "a head that never ends must be given up on"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the deadline must actually fire: {:?}",
+            started.elapsed()
+        );
+    }
+
+    // A bare LF pair inside a CRLF head would otherwise end the head early and hide every header
+    // after it - including the Origin the CSRF check reads.
+    #[test]
+    fn a_bare_lf_does_not_end_a_crlf_head() {
+        let mut reader: &[u8] =
+            b"GET / HTTP/1.1\r\nX-Pad: \n\nOrigin: http://evil.example\r\nHost: 127.0.0.1\r\n\r\n";
+        let head = read_request_head(&mut reader, 32 * 1024, HEAD_DEADLINE)
+            .expect("head")
+            .expect("head present");
+        assert!(
+            head.contains("Origin: http://evil.example"),
+            "the head stopped early: {head:?}"
+        );
+    }
+
+    // A15: `?` inside the loop abandoned the whole query at the first pair without '=', so
+    // /replay/start?flag&input=x reported a missing input.
+    #[test]
+    fn a_valueless_query_pair_does_not_hide_the_rest() {
+        assert_eq!(
+            extract_query_param("/replay/start?flag&input=x&target=onnx", "input"),
+            Some("x")
+        );
+        assert_eq!(
+            extract_query_param("/replay/start?flag&input=x&target=onnx", "target"),
+            Some("onnx")
+        );
+        assert_eq!(extract_query_param("/replay/start?flag", "input"), None);
+        assert_eq!(extract_query_param("/replay/start", "input"), None);
+    }
+
     #[test]
     fn a_head_without_a_blank_line_is_an_error_not_a_silent_truncation() {
         let mut reader: &[u8] = b"GET /healthz HTTP/1.1\r\nHost: x\r\n";
-        assert!(read_request_head(&mut reader, 32 * 1024).is_err());
+        assert!(read_request_head(&mut reader, 32 * 1024, HEAD_DEADLINE).is_err());
     }
 
     // A browser preconnect opens the socket and closes it again; that is not a request error.
     #[test]
     fn a_connection_that_sends_nothing_is_not_an_error() {
         let mut reader: &[u8] = b"";
-        assert_eq!(read_request_head(&mut reader, 32 * 1024), Ok(None));
+        assert_eq!(
+            read_request_head(&mut reader, 32 * 1024, HEAD_DEADLINE),
+            Ok(None)
+        );
     }
 
     // A4: an oversized head must be refused rather than buffered without bound.
@@ -2014,7 +2097,7 @@ mod tests {
         }
         long.push_str("\r\n");
         let mut reader = long.as_bytes();
-        assert!(read_request_head(&mut reader, 4096).is_err());
+        assert!(read_request_head(&mut reader, 4096, HEAD_DEADLINE).is_err());
     }
 
     // A2: the state files are line based, so a value carrying a newline injected extra lines -

@@ -107,28 +107,40 @@ check_rejected_inputs() {
 
 check_rejected_inputs
 
-# A4: a client that opens the socket and sends nothing used to block the single-threaded
-# accept loop, denying every other request until it went away.
-check_stalled_client_does_not_block() {
+# A4: a client that opens the socket and sends nothing used to block the single-threaded accept
+# loop. A client that dribbles a partial head never trips the per-read timeout, so it also has to
+# be bounded. In both cases the dashboard must still answer promptly, not merely eventually.
+check_slow_clients_do_not_block() {
   local host="${BIND%:*}"
   local port="${BIND##*:}"
-  if ! exec 9<>"/dev/tcp/${host}/${port}" 2>/dev/null; then
-    echo "[FAIL] could not open a stalled connection to ${BIND}" | tee -a "$CHECK_LOG"
-    return 1
-  fi
   local rc=0
-  if curl -fsS --max-time 5 "${BASE_URL}/healthz" >/dev/null 2>&1; then
-    echo "[OK] stalled client does not block the dashboard" | tee -a "$CHECK_LOG"
+  # 3 silent connections and 3 that send an unterminated head
+  local fds=(9 8 7 6 5 4)
+  local i=0
+  for fd in "${fds[@]}"; do
+    if ! eval "exec ${fd}<>/dev/tcp/${host}/${port}" 2>/dev/null; then
+      echo "[FAIL] could not open connection ${fd} to ${BIND}" | tee -a "$CHECK_LOG"
+      return 1
+    fi
+    if [[ "$i" -ge 3 ]]; then
+      printf 'GET /healthz HTTP/1.1\r\nHost: %s\r\n' "$BIND" >&"$fd" || true
+    fi
+    i=$((i + 1))
+  done
+  if curl -fsS --max-time 2 "${BASE_URL}/healthz" >/dev/null 2>&1; then
+    echo "[OK] silent and half-open clients do not block the dashboard" | tee -a "$CHECK_LOG"
   else
-    echo "[FAIL] a client that sends nothing blocked the dashboard" | tee -a "$CHECK_LOG"
+    echo "[FAIL] a slow client blocked the dashboard" | tee -a "$CHECK_LOG"
     rc=1
   fi
-  exec 9<&-
-  exec 9>&-
+  for fd in "${fds[@]}"; do
+    eval "exec ${fd}<&-" 2>/dev/null || true
+    eval "exec ${fd}>&-" 2>/dev/null || true
+  done
   return "$rc"
 }
 
-check_stalled_client_does_not_block
+check_slow_clients_do_not_block
 
 dash_html="$(curl -fsS --max-time 10 "${BASE_URL}/dashboard.html")"
 
