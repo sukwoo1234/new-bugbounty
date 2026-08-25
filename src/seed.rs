@@ -25,19 +25,8 @@ pub(crate) fn run_seed_sync(
     fs::create_dir_all(&dest_dir)
         .map_err(|e| format!("failed to create dest dir '{}': {e}", dest_dir.display()))?;
 
-    let mut existing_hashes = HashSet::new();
-    for entry in fs::read_dir(&dest_dir)
-        .map_err(|e| format!("failed to read dest dir '{}': {e}", dest_dir.display()))?
-    {
-        let entry = entry.map_err(|e| format!("failed to read dest entry: {e}"))?;
-        let path = entry.path();
-        if !path.is_file() || !has_ext(&path, ext) {
-            continue;
-        }
-        if let Ok(h) = sha256_file(&path) {
-            existing_hashes.insert(h);
-        }
-    }
+    let (mut existing_hashes, dest_hash_errors) =
+        collect_existing_hashes_with(&dest_dir, ext, sha256_file)?;
 
     let mut scanned = 0usize;
     let mut matched_ext = 0usize;
@@ -99,7 +88,49 @@ pub(crate) fn run_seed_sync(
     println!("dup_skipped: {dup_skipped}");
     println!("invalid_skipped: {invalid_skipped}");
     println!("error_skipped: {error_skipped}");
+    println!("dest_hash_errors: {dest_hash_errors}");
     Ok(())
+}
+
+fn collect_existing_hashes_with(
+    dir: &Path,
+    ext: &str,
+    hash: impl Fn(&Path) -> Result<String, String>,
+) -> Result<(HashSet<String>, usize), String> {
+    let mut hashes = HashSet::new();
+    let mut errors = 0usize;
+    for entry in
+        fs::read_dir(dir).map_err(|e| format!("failed to read dest dir '{}': {e}", dir.display()))?
+    {
+        let entry = entry.map_err(|e| format!("failed to read dest entry: {e}"))?;
+        let path = entry.path();
+        if !path.is_file() || !has_ext(&path, ext) {
+            continue;
+        }
+        // A24: a destination file that cannot be hashed used to drop out of the
+        // known-hash set silently, so an identical source file was copied in again
+        // as if it were new.
+        match hash(&path) {
+            Ok(h) => {
+                hashes.insert(h);
+            }
+            Err(e) => {
+                eprintln!(
+                    "[seed sync] warning: cannot hash existing seed '{}': {e}",
+                    path.display()
+                );
+                errors += 1;
+            }
+        }
+    }
+    Ok((hashes, errors))
+}
+
+/// A22: a file the tool could not hash still counts toward `total` but never
+/// reaches the unique set, so `total - unique` reported it as a duplicate of
+/// something - while hash_errors on the next line said the opposite.
+fn duplicate_count(total: usize, hash_errors: usize, unique: usize) -> usize {
+    total.saturating_sub(hash_errors).saturating_sub(unique)
 }
 
 pub(crate) fn run_seed_stats(
@@ -153,7 +184,7 @@ pub(crate) fn run_seed_stats(
         }
     }
     let deduped = unique.len();
-    let duplicates = total.saturating_sub(deduped);
+    let duplicates = duplicate_count(total, hash_errors, deduped);
     let valid_ratio = if validated == 0 {
         0.0
     } else {
@@ -206,4 +237,57 @@ fn seed_harness_validate(target: &TargetKind, input: &Path) -> Result<bool, Stri
             )
         })?;
     Ok(out.status.success())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{collect_existing_hashes_with, duplicate_count};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    // A22: a file the tool could not hash contributes to `total` but never to the
+    // unique set, so `total - unique` reported it as a duplicate of something. The
+    // corpus then looks more redundant than it is, and hash_errors right below it
+    // says the opposite.
+    #[test]
+    fn duplicates_do_not_absorb_the_files_that_could_not_be_hashed() {
+        assert_eq!(duplicate_count(5, 2, 3), 0, "3 hashed, 2 unreadable, 0 repeats");
+        assert_eq!(duplicate_count(5, 0, 3), 2, "3 unique out of 5 readable files");
+        assert_eq!(duplicate_count(3, 3, 0), 0, "nothing readable, nothing duplicated");
+        assert_eq!(duplicate_count(2, 5, 0), 0, "never underflows");
+    }
+
+    // A24: a destination file that cannot be hashed dropped out of the known-hash
+    // set with no trace, so an identical source file was copied in again as if it
+    // were new.
+    #[test]
+    fn a_destination_file_that_cannot_be_hashed_is_counted() {
+        let dir = temp_dir("seed-dest-hash-errors");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::write(dir.join("a.onnx"), b"a").expect("write a");
+        fs::write(dir.join("b.onnx"), b"b").expect("write b");
+        fs::write(dir.join("notes.txt"), b"skip").expect("write notes");
+
+        let hash = |path: &Path| -> Result<String, String> {
+            if path.ends_with("b.onnx") {
+                Err("permission denied".to_string())
+            } else {
+                Ok("hash-of-a".to_string())
+            }
+        };
+        let (hashes, errors) = collect_existing_hashes_with(&dir, "onnx", hash).expect("scan");
+
+        assert_eq!(errors, 1, "the unreadable destination file must be counted");
+        assert_eq!(hashes.len(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("tool-{name}-{}-{nanos}", std::process::id()))
+    }
 }
