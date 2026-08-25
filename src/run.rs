@@ -171,6 +171,10 @@ pub(crate) fn run_fuzz_pipeline(
             .max(1),
     );
     let timeout_available = command_exists("timeout");
+    let engine_mode = engine_mode_label(
+        backend,
+        engine_mode_env_key(backend).and_then(|key| std::env::var(key).ok()),
+    );
 
     println!("[run] start");
     println!("target: {}", target_label(target));
@@ -180,6 +184,7 @@ pub(crate) fn run_fuzz_pipeline(
     println!("workers: {workers}");
     println!("timeout_sec: {}", timeout_sec);
     println!("restart_limit: {}", restart_limit);
+    println!("engine_mode: {engine_mode}");
     println!("run_dir: {}", run_dir.display());
 
     let mut handles = Vec::new();
@@ -277,6 +282,7 @@ pub(crate) fn run_fuzz_pipeline(
         workers,
         timeout_sec,
         restart_limit,
+        &engine_mode,
     )?;
 
     println!("[run] done");
@@ -332,6 +338,10 @@ fn run_engine_backend(
     let logs_dir = run_dir.join("logs");
     fs::create_dir_all(&logs_dir)
         .map_err(|e| format!("failed to create run dir '{}': {e}", run_dir.display()))?;
+    let engine_mode = engine_mode_label(
+        backend,
+        engine_mode_env_key(backend).and_then(|key| std::env::var(key).ok()),
+    );
 
     println!("[run] start");
     println!("target: {}", target_label(target));
@@ -341,6 +351,7 @@ fn run_engine_backend(
     println!("workers: {}", workers);
     println!("timeout_sec: {}", timeout_sec);
     println!("restart_limit: {}", restart_limit);
+    println!("engine_mode: {engine_mode}");
     println!("run_dir: {}", run_dir.display());
 
     let mut worker_plans = Vec::with_capacity(workers);
@@ -408,6 +419,7 @@ fn run_engine_backend(
         workers,
         timeout_sec,
         restart_limit,
+        &engine_mode,
     )?;
 
     println!("[run] done");
@@ -927,6 +939,37 @@ pub(crate) fn write_job_log(
         .map_err(|e| format!("failed to write '{}': {e}", path.display()))
 }
 
+// G2/G4: the loop scripts know whether the engine really runs instrumented/native or
+// fell back to black-box mode, and they pass that label in through the environment.
+// Persisting it in the run status keeps a black-box arm from being reported as native
+// later; anything unlabelled or unexpected is recorded as "unlabeled" rather than
+// interpolated verbatim into status.json.
+fn engine_mode_env_key(backend: &RunBackend) -> Option<&'static str> {
+    match backend {
+        RunBackend::LocalHarness => None,
+        RunBackend::Aflpp => Some("TOOL_AFLPP_MODE"),
+        RunBackend::Libfuzzer => Some("TOOL_LIBFUZZER_MODE"),
+    }
+}
+
+fn engine_mode_label(backend: &RunBackend, raw: Option<String>) -> String {
+    if matches!(backend, RunBackend::LocalHarness) {
+        return "local_harness".to_string();
+    }
+    let raw = raw.unwrap_or_default();
+    let label = raw.trim();
+    let plausible = !label.is_empty()
+        && label.len() <= 32
+        && label
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    if plausible {
+        label.to_string()
+    } else {
+        "unlabeled".to_string()
+    }
+}
+
 fn run_backend_label(backend: &RunBackend) -> &'static str {
     match backend {
         RunBackend::LocalHarness => "local-harness",
@@ -944,10 +987,11 @@ fn write_run_status(
     workers: usize,
     timeout_sec: u64,
     restart_limit: u32,
+    engine_mode: &str,
 ) -> Result<PathBuf, String> {
     let status_path = run_dir.join("status.json");
     let status_json = format!(
-        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"retries\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {},\n  \"backend_crash_artifacts\": {},\n  \"backend_crashes_triaged\": {},\n  \"backend_crash_triage_errors\": {}\n}}\n",
+        "{{\n  \"run_id\": \"{}\",\n  \"target\": \"{}\",\n  \"backend\": \"{}\",\n  \"total\": {},\n  \"success\": {},\n  \"failed\": {},\n  \"timeout\": {},\n  \"retries\": {},\n  \"workers\": {},\n  \"timeout_sec\": {},\n  \"restart_limit\": {},\n  \"engine_mode\": \"{}\",\n  \"backend_crash_artifacts\": {},\n  \"backend_crashes_triaged\": {},\n  \"backend_crash_triage_errors\": {}\n}}\n",
         run_id,
         target_label(target),
         run_backend_label(backend),
@@ -959,6 +1003,7 @@ fn write_run_status(
         workers,
         timeout_sec,
         restart_limit,
+        json_escape(engine_mode),
         counts.backend_crash_artifacts,
         counts.backend_crashes_triaged,
         counts.backend_crash_triage_errors
@@ -980,6 +1025,78 @@ mod tests {
         path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    // G2/G4: the engine loops decide whether a run is really native/instrumented or a
+    // black-box fallback; the run status must carry that label so a black-box arm can
+    // never be written up as a native coverage-guided one afterwards.
+    #[test]
+    fn engine_mode_label_records_the_loop_label_and_rejects_junk() {
+        use super::engine_mode_label;
+
+        assert_eq!(
+            engine_mode_label(&RunBackend::Aflpp, Some("instrumented".to_string())),
+            "instrumented"
+        );
+        assert_eq!(
+            engine_mode_label(&RunBackend::Aflpp, Some(" blackbox_n \n".to_string())),
+            "blackbox_n"
+        );
+        assert_eq!(
+            engine_mode_label(&RunBackend::Libfuzzer, Some("native".to_string())),
+            "native"
+        );
+        // an unlabelled backend run must not claim a mode it cannot prove
+        assert_eq!(engine_mode_label(&RunBackend::Libfuzzer, None), "unlabeled");
+        assert_eq!(
+            engine_mode_label(&RunBackend::Libfuzzer, Some(String::new())),
+            "unlabeled"
+        );
+        // never interpolate arbitrary env text into status.json
+        assert_eq!(
+            engine_mode_label(&RunBackend::Aflpp, Some("native\", \"x\": \"y".to_string())),
+            "unlabeled"
+        );
+        assert_eq!(
+            engine_mode_label(&RunBackend::LocalHarness, Some("native".to_string())),
+            "local_harness"
+        );
+    }
+
+    #[test]
+    fn run_status_records_the_engine_mode() {
+        use super::{write_run_status, RunStatusCounts};
+
+        let run_dir = unique_temp_dir("engine-mode-status");
+        fs::create_dir_all(&run_dir).expect("create run dir");
+        let status_path = write_run_status(
+            &run_dir,
+            42,
+            &TargetKind::Onnx,
+            &RunBackend::Aflpp,
+            RunStatusCounts {
+                total: 1,
+                success: 1,
+                failed: 0,
+                timeout: 0,
+                retries: 0,
+                backend_crash_artifacts: 0,
+                backend_crashes_triaged: 0,
+                backend_crash_triage_errors: 0,
+            },
+            1,
+            30,
+            1,
+            "blackbox_n",
+        )
+        .expect("write status");
+
+        let status = fs::read_to_string(&status_path).expect("read status");
+        assert!(
+            status.contains("\"engine_mode\": \"blackbox_n\""),
+            "status was: {status}"
+        );
+        let _ = fs::remove_dir_all(&run_dir);
+    }
 
     // A29: `timeout 0s` means "no limit" under GNU coreutils, so a zero budget used to
     // be accepted and silently unbound every job.

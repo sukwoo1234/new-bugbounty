@@ -5,8 +5,11 @@
 #
 # Difference vs ops/scripts/fuzz-loop-libfuzzer.sh (Arm B):
 #   - AFL++ runs as a hardened Docker container (aflplusplus/aflplusplus).
-#     If harnesses/aflpp/onnxruntime_loader_replay exists, AFL++ drives that native ONNX binary
-#     without `-n`; otherwise it falls back to `-n` dumb/black-box mode over `tool harness`.
+#     If harnesses/aflpp/onnxruntime_loader_replay exists AND carries AFL++/sancov
+#     instrumentation, AFL++ drives that native ONNX binary without `-n` (aflpp_mode=instrumented);
+#     otherwise it warns and falls back to `-n` black-box mode over `tool harness`
+#     (aflpp_mode=blackbox_n). REQUIRE_INSTRUMENTED=1 turns that fallback into a hard failure.
+#     Verify both paths with scripts/check_engine_mode_labels.sh.
 #   - TOOL_AFLPP_CMD env var must be set; this wrapper exports the hardened template (matches
 #     scripts/run_long.sh aflpp leg + docs/specs.md §Docker hardening). run.rs substitutes the
 #     {docker_*}/{workdir_abs}/{corpus_dir_abs}/{run_dir_abs}/{container_*} placeholders at run time.
@@ -52,6 +55,8 @@ RESTART_LIMIT="${RESTART_LIMIT:-1}"
 CORPUS_DIR="${CORPUS_DIR:-${PROJECT_ROOT}/seeds/${TARGET}}"
 ITERATION_SLEEP_SEC="${ITERATION_SLEEP_SEC:-2}"
 MAX_ITERATIONS="${FUZZ_LOOP_MAX_ITERATIONS:-0}"
+# G2: refuse the silent uninstrumented fallback when the run is meant to be native.
+REQUIRE_INSTRUMENTED="${REQUIRE_INSTRUMENTED:-0}"
 RUNS_ROOT="${RUNS_ROOT:-$(canonical_path "${PROJECT_ROOT}/data/runs")}"
 AFLPP_MAX_RUN_DIRS_KEEP="${AFLPP_MAX_RUN_DIRS_KEEP:-20}"
 AFLPP_RUN_SUMMARY_ROOT="${AFLPP_RUN_SUMMARY_ROOT:-$(canonical_path "${PROJECT_ROOT}/data/experiments/aflpp-arm-c-retention")}"
@@ -62,13 +67,31 @@ AFLPP_CONTAINER_TOOL_WAS_SET="${AFLPP_CONTAINER_TOOL+x}"
 AFLPP_CONTAINER_TOOL="${AFLPP_CONTAINER_TOOL:-target/release/tool}"
 AFLPP_NATIVE_ONNX_DRIVER="harnesses/aflpp/onnxruntime_loader_replay"
 AFLPP_NATIVE_ONNX_MODE=0
-if [ -z "${AFLPP_CONTAINER_TOOL_WAS_SET}" ] && [ "${TARGET}" = "onnx" ] && [ -x "${PROJECT_ROOT}/${AFLPP_NATIVE_ONNX_DRIVER}" ]; then
+AFLPP_MODE=blackbox_n
+
+# G2: a plain-clang replay binary carries no AFL++ feedback, so driving it without -n
+# is not coverage-guided (afl-fuzz may even abort with "No instrumentation detected").
+# Only an instrumented binary earns the native path; everything else is labelled and
+# runs in explicit -n black-box mode.
+has_afl_instrumentation() {
+    local bin="$1"
+
+    [ -x "${bin}" ] || return 1
+    if command -v nm >/dev/null 2>&1 && nm -C "${bin}" 2>/dev/null | grep -qE '__afl|__sanitizer_cov'; then
+        return 0
+    fi
+    grep -qaE '__afl_area_ptr|__sanitizer_cov_trace' "${bin}" 2>/dev/null
+}
+
+if [ -z "${AFLPP_CONTAINER_TOOL_WAS_SET}" ] && [ "${TARGET}" = "onnx" ] \
+    && has_afl_instrumentation "${PROJECT_ROOT}/${AFLPP_NATIVE_ONNX_DRIVER}"; then
     AFLPP_CONTAINER_TOOL="${AFLPP_NATIVE_ONNX_DRIVER}"
     AFLPP_NATIVE_ONNX_MODE=1
+    AFLPP_MODE=instrumented
 fi
 ONNX_AFLPP_LD_LIBRARY_PATH="{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/Linux/Release:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov-o0/RelWithDebInfo:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov/RelWithDebInfo"
 
-TOOL_BIN="${PROJECT_ROOT}/target/release/tool"
+TOOL_BIN="${TOOL_BIN:-${PROJECT_ROOT}/target/release/tool}"
 
 log() {
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] fuzz-loop-aflpp: $*"
@@ -82,6 +105,23 @@ mkdir -p "${AFLPP_RUN_SUMMARY_ROOT}" || {
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] fuzz-loop-aflpp: failed to create AFLPP_RUN_SUMMARY_ROOT=${AFLPP_RUN_SUMMARY_ROOT}" >&2
     exit 2
 }
+
+# G2: TOOL_AFLPP_MODE is recorded in the run status by `tool run`, so a black-box arm
+# can never be reported as a native coverage-guided one after the fact.
+export TOOL_AFLPP_MODE="${AFLPP_MODE}"
+
+if [ "${AFLPP_MODE}" != "instrumented" ]; then
+    if [ -x "${PROJECT_ROOT}/${AFLPP_NATIVE_ONNX_DRIVER}" ]; then
+        log "WARN: ${AFLPP_NATIVE_ONNX_DRIVER} has no AFL++/sancov instrumentation; falling back to -n black-box mode. This run is NOT coverage-guided."
+    else
+        log "WARN: no native AFL++ replay binary at ${AFLPP_NATIVE_ONNX_DRIVER}; running -n black-box mode over 'tool harness'. This run is NOT coverage-guided."
+    fi
+    if [ "${REQUIRE_INSTRUMENTED}" = "1" ]; then
+        log "REQUIRE_INSTRUMENTED=1 is set; refusing to run without instrumentation"
+        exit 3
+    fi
+fi
+log "aflpp_mode=${AFLPP_MODE}"
 
 stop_requested=0
 trap 'stop_requested=1; log "SIGTERM received, will exit after current iteration"' TERM INT
@@ -221,6 +261,7 @@ mark_latest_aflpp_run() {
         echo "target=${TARGET}"
         echo "backend=${BACKEND}"
         echo "container_tool=${AFLPP_CONTAINER_TOOL}"
+        echo "aflpp_mode=${AFLPP_MODE}"
         echo "corpus_dir=${CORPUS_DIR}"
     } > "${run_abs}/.fuzz-loop-aflpp"
 }

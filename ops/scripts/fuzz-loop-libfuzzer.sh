@@ -6,6 +6,9 @@
 #   - libfuzzer manages its own corpus + mutation internally, so no `tool mutate` step.
 #   - Loop is just: `tool run --backend libfuzzer` → sleep → repeat.
 #   - TOOL_LIBFUZZER_CMD env var must be set; this wrapper exports a default.
+#   - Without the native ONNX driver the wrapper warns and runs the black-box tool driver
+#     (libfuzzer_mode=blackbox); REQUIRE_NATIVE=1 makes that a hard failure instead.
+#     Verify both paths with scripts/check_engine_mode_labels.sh.
 #
 # Loop: run (workers 12, timeout 30s) -> sleep 2s -> next.
 # Graceful stop: SIGTERM finishes current run, then exits.
@@ -22,6 +25,8 @@ RESTART_LIMIT="${RESTART_LIMIT:-1}"
 CORPUS_DIR="${CORPUS_DIR:-${PROJECT_ROOT}/seeds/${TARGET}}"
 ITERATION_SLEEP_SEC="${ITERATION_SLEEP_SEC:-2}"
 MAX_ITERATIONS="${FUZZ_LOOP_MAX_ITERATIONS:-0}"
+# G4: refuse the silent black-box fallback when the run is meant to be native.
+REQUIRE_NATIVE="${REQUIRE_NATIVE:-0}"
 
 LIBFUZZER_MAX_TOTAL_TIME="${LIBFUZZER_MAX_TOTAL_TIME:-30}"
 NATIVE_ONNX_DRIVER="${PROJECT_ROOT}/harnesses/libfuzzer/onnxruntime_loader_fuzzer"
@@ -35,13 +40,32 @@ if [[ -z "${LIBFUZZER_DRIVER:-}" ]]; then
     fi
 fi
 
-TOOL_BIN="${PROJECT_ROOT}/target/release/tool"
+TOOL_BIN="${TOOL_BIN:-${PROJECT_ROOT}/target/release/tool}"
 
 log() {
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] fuzz-loop-libfuzzer: $*"
 }
 
 cd "${PROJECT_ROOT}"
+
+# G4: the loop used to fall back to the black-box tool wrapper without a word, so a
+# "libfuzzer onnx run" could silently stop being a native run. Label every run and say
+# so loudly; TOOL_LIBFUZZER_MODE is recorded in the run status by `tool run`.
+if [[ "${TARGET}" == "onnx" && "${LIBFUZZER_DRIVER}" == "${NATIVE_ONNX_DRIVER}" ]]; then
+    LIBFUZZER_MODE=native
+else
+    LIBFUZZER_MODE=blackbox
+fi
+export TOOL_LIBFUZZER_MODE="${LIBFUZZER_MODE}"
+
+if [[ "${LIBFUZZER_MODE}" == "blackbox" ]]; then
+    log "WARN: no native libFuzzer driver at ${NATIVE_ONNX_DRIVER}; running the black-box tool wrapper (${LIBFUZZER_DRIVER}). This run is NOT a native libFuzzer run."
+    if [[ "${REQUIRE_NATIVE}" == "1" ]]; then
+        log "REQUIRE_NATIVE=1 is set; refusing to run in black-box mode"
+        exit 3
+    fi
+fi
+log "libfuzzer_mode=${LIBFUZZER_MODE}"
 
 stop_requested=0
 trap 'stop_requested=1; log "SIGTERM received, will exit after current iteration"' TERM INT
