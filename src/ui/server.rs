@@ -842,8 +842,14 @@ fn handle_replay_start(app_paths: &AppPaths, raw_path: &str) -> Result<Response,
         }
     };
     let repro_retries =
-        bounded_count_or_default(extract_query_param(raw_path, "repro_retries"), 100, "3");
-    let timeout_sec = positive_timeout_sec_or_default(extract_query_param(raw_path, "timeout_sec"));
+        match bounded_count_param(extract_query_param(raw_path, "repro_retries"), 1, 100, "3") {
+            Some(value) => value,
+            None => return bad_request("invalid_repro_retries"),
+        };
+    let Some(timeout_sec) = positive_timeout_sec_param(extract_query_param(raw_path, "timeout_sec"))
+    else {
+        return bad_request("invalid_timeout_sec");
+    };
 
     let replay_dir = app_paths.data_dir.join("ui-replay");
     fs::create_dir_all(&replay_dir).map_err(|e| {
@@ -1155,15 +1161,27 @@ fn handle_control_start(app_paths: &AppPaths, raw_path: &str) -> Result<Response
 
     let target = extract_query_param(raw_path, "target").unwrap_or("onnx");
     let backend = extract_query_param(raw_path, "backend").unwrap_or("local-harness");
-    let duration_seconds = bounded_count_or_default(
+    let Some(duration_seconds) = bounded_count_param(
         extract_query_param(raw_path, "duration_seconds"),
+        1,
         MAX_DURATION_SECONDS,
         "3600",
-    );
-    let workers = bounded_count_or_default(extract_query_param(raw_path, "workers"), 256, "2");
-    let timeout_sec = positive_timeout_sec_or_default(extract_query_param(raw_path, "timeout_sec"));
-    let restart_limit =
-        bounded_count_or_default(extract_query_param(raw_path, "restart_limit"), 1000, "1");
+    ) else {
+        return bad_request("invalid_duration_seconds");
+    };
+    let Some(workers) = bounded_count_param(extract_query_param(raw_path, "workers"), 1, 256, "2")
+    else {
+        return bad_request("invalid_workers");
+    };
+    let Some(timeout_sec) = positive_timeout_sec_param(extract_query_param(raw_path, "timeout_sec"))
+    else {
+        return bad_request("invalid_timeout_sec");
+    };
+    let Some(restart_limit) =
+        bounded_count_param(extract_query_param(raw_path, "restart_limit"), 0, 1000, "1")
+    else {
+        return bad_request("invalid_restart_limit");
+    };
 
     if !matches!(target, "onnx" | "gguf" | "safetensors") {
         return respond(
@@ -1218,10 +1236,9 @@ fn handle_control_start(app_paths: &AppPaths, raw_path: &str) -> Result<Response
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err));
     if let Some(max_jobs) = extract_query_param(raw_path, "max_jobs") {
-        let checked = bounded_count_or_default(Some(max_jobs), MAX_JOBS_LIMIT, "");
-        if checked.is_empty() {
+        let Some(checked) = bounded_count_param(Some(max_jobs), 1, MAX_JOBS_LIMIT, "") else {
             return bad_request("invalid_max_jobs");
-        }
+        };
         cmd.env("MAX_JOBS", checked);
     }
     let child = spawn_job(&mut cmd).map_err(|e| format!("failed to start run loop script: {e}"))?;
@@ -2049,21 +2066,32 @@ fn is_safe_source_url(value: &str) -> bool {
 const MAX_DURATION_SECONDS: u64 = 30 * 24 * 60 * 60;
 const MAX_JOBS_LIMIT: u64 = 10_000_000;
 
-fn bounded_count_or_default<'a>(raw: Option<&'a str>, max: u64, default: &'a str) -> &'a str {
-    match raw {
-        Some(value) if value.parse::<u64>().is_ok_and(|n| n <= max) => value,
-        _ => default,
+/// A numeric query value, or None when it cannot be used.
+///
+/// R4: an unparsable or out-of-range value used to become the default silently, so
+/// an operator who mistyped a worker count got a job running with a different one
+/// and nothing said so. A zero worker count or job budget is refused by the CLI
+/// too, hence `min`; restart_limit legitimately allows zero.
+fn bounded_count_param<'a>(
+    raw: Option<&'a str>,
+    min: u64,
+    max: u64,
+    default: &'a str,
+) -> Option<&'a str> {
+    let Some(value) = raw else {
+        return Some(default);
+    };
+    match value.parse::<u64>() {
+        Ok(n) if n >= min && n <= max => Some(value),
+        _ => None,
     }
 }
 
 // A29: `timeout_sec=0` means "no time limit" to the shell wrapper and is rejected by the
 // run/triage pipelines, so a query value that is not a positive integer falls back to the
 // documented default instead of spawning a job that can only fail.
-fn positive_timeout_sec_or_default(raw: Option<&str>) -> &str {
-    match raw {
-        Some(value) if value.parse::<u64>().is_ok_and(|seconds| seconds >= 1) => value,
-        _ => "30",
-    }
+fn positive_timeout_sec_param(raw: Option<&str>) -> Option<&str> {
+    bounded_count_param(raw, 1, u64::MAX, "30")
 }
 
 fn extract_query_param<'a>(path: &'a str, key: &str) -> Option<&'a str> {
@@ -2235,9 +2263,9 @@ mod tests {
         allowed_hosts_for_bind, authorize, secret_eq, write_all_before_deadline, UiSecurity,
     };
     use super::{
-        bounded_count_or_default, decode_state_value, encode_state_value, extract_query_param,
+        bounded_count_param, decode_state_value, encode_state_value, extract_query_param,
         is_process_alive, is_safe_query_value, is_safe_source_url, is_safe_version,
-        parse_request_head, positive_timeout_sec_or_default, proc_stat_field, process_pgid,
+        parse_request_head, positive_timeout_sec_param, proc_stat_field, process_pgid,
         process_start_ticks, process_state, read_request_head, reap_children, register_child,
         resolve_replay_input, resolve_triage_input, respond_to_request, running_job_pid,
         signal_job, spawn_job, HEAD_DEADLINE, SIGTERM,
@@ -2498,14 +2526,41 @@ mod tests {
     // The numeric knobs went straight into Command args and into env for a bash script with no
     // parse at all, so a value like "--data-dir" or an absurd count was passed on as given.
     #[test]
-    fn numeric_query_values_fall_back_to_their_default() {
-        assert_eq!(bounded_count_or_default(Some("4"), 64, "2"), "4");
-        assert_eq!(bounded_count_or_default(Some("0"), 64, "2"), "0");
-        assert_eq!(bounded_count_or_default(Some("65"), 64, "2"), "2");
-        assert_eq!(bounded_count_or_default(Some("-1"), 64, "2"), "2");
-        assert_eq!(bounded_count_or_default(Some("--data-dir"), 64, "2"), "2");
-        assert_eq!(bounded_count_or_default(Some(""), 64, "2"), "2");
-        assert_eq!(bounded_count_or_default(None, 64, "2"), "2");
+    fn numeric_query_values_are_bounded_before_they_reach_a_command() {
+        assert_eq!(bounded_count_param(Some("4"), 0, 64, "2"), Some("4"));
+        assert_eq!(bounded_count_param(Some("0"), 0, 64, "2"), Some("0"));
+        assert_eq!(bounded_count_param(Some("65"), 0, 64, "2"), None);
+        assert_eq!(bounded_count_param(Some("-1"), 0, 64, "2"), None);
+        assert_eq!(bounded_count_param(Some("--data-dir"), 0, 64, "2"), None);
+        assert_eq!(bounded_count_param(Some(""), 0, 64, "2"), None);
+        assert_eq!(bounded_count_param(None, 0, 64, "2"), Some("2"));
+    }
+
+    // R4: an unparsable or out-of-range numeric query value silently became the
+    // default, so an operator who mistyped --workers got a job that ran with a
+    // different worker count than they asked for and no way to notice. max_jobs
+    // already returned 400; the rest did not.
+    #[test]
+    fn an_unusable_numeric_query_value_is_rejected_not_defaulted() {
+        use super::bounded_count_param;
+
+        assert_eq!(bounded_count_param(Some("4"), 1, 64, "2"), Some("4"));
+        assert_eq!(bounded_count_param(None, 1, 64, "2"), Some("2"));
+        assert_eq!(bounded_count_param(Some("abc"), 1, 64, "2"), None);
+        assert_eq!(bounded_count_param(Some("-1"), 1, 64, "2"), None);
+        assert_eq!(bounded_count_param(Some("--data-dir"), 1, 64, "2"), None);
+        assert_eq!(bounded_count_param(Some(""), 1, 64, "2"), None);
+        assert_eq!(bounded_count_param(Some("65"), 1, 64, "2"), None);
+    }
+
+    // A zero worker count or job budget is refused by the CLI, so the dashboard
+    // would spawn a job that can only fail. restart_limit legitimately allows zero.
+    #[test]
+    fn a_count_the_cli_refuses_is_refused_at_the_door() {
+        use super::bounded_count_param;
+
+        assert_eq!(bounded_count_param(Some("0"), 1, 256, "2"), None);
+        assert_eq!(bounded_count_param(Some("0"), 0, 1000, "1"), Some("0"));
     }
 
     fn secured(token: &str) -> UiSecurity {
@@ -2920,16 +2975,16 @@ mod tests {
         assert_eq!(parsed.path, "/");
     }
 
-    // A29: 0 (and anything unparseable) means "no time limit" downstream and is now
-    // rejected by the pipelines, so the UI must not hand it on.
+    // A29: 0 (and anything unparseable) means "no time limit" downstream and is
+    // rejected by the pipelines, so the UI refuses it rather than handing it on.
     #[test]
-    fn non_positive_timeout_query_falls_back_to_the_default() {
-        assert_eq!(positive_timeout_sec_or_default(Some("45")), "45");
-        assert_eq!(positive_timeout_sec_or_default(Some("1")), "1");
-        assert_eq!(positive_timeout_sec_or_default(Some("0")), "30");
-        assert_eq!(positive_timeout_sec_or_default(Some("-5")), "30");
-        assert_eq!(positive_timeout_sec_or_default(Some("abc")), "30");
-        assert_eq!(positive_timeout_sec_or_default(Some("")), "30");
-        assert_eq!(positive_timeout_sec_or_default(None), "30");
+    fn a_non_positive_timeout_query_is_refused() {
+        assert_eq!(positive_timeout_sec_param(Some("45")), Some("45"));
+        assert_eq!(positive_timeout_sec_param(Some("1")), Some("1"));
+        assert_eq!(positive_timeout_sec_param(Some("0")), None);
+        assert_eq!(positive_timeout_sec_param(Some("-5")), None);
+        assert_eq!(positive_timeout_sec_param(Some("abc")), None);
+        assert_eq!(positive_timeout_sec_param(Some("")), None);
+        assert_eq!(positive_timeout_sec_param(None), Some("30"));
     }
 }
