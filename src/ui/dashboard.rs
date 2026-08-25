@@ -179,9 +179,9 @@ pub(crate) fn render_dashboard_html(s: &DashboardSnapshot) -> String {
         &s.logs_error,
     );
     let suggested_commands_html = render_suggested_commands(s);
-    let recent_triage_rows = render_recent_triage_rows(&s.recent_triage_ids);
-    let recent_report_rows = render_recent_report_rows(&s.recent_report_ids);
-    let recent_coverage_rows = render_recent_coverage_rows(&s.recent_coverage_ids);
+    let recent_triage_rows = render_recent_triage_rows(&s.data_dir, &s.recent_triage_ids);
+    let recent_report_rows = render_recent_report_rows(&s.data_dir, &s.recent_report_ids);
+    let recent_coverage_rows = render_recent_coverage_rows(&s.data_dir, &s.recent_coverage_ids);
 
     dashboard_html_template()
         .replace("{{generated_at}}", &s.generated_at.to_string())
@@ -761,14 +761,16 @@ fn file_link(path: &str, label: &str) -> String {
     )
 }
 
-fn render_recent_triage_rows(ids: &[String]) -> String {
+// The links were built from the literal "./data/...", so under a data dir other
+// than the default every one of them 500'd on /file?path=.
+fn render_recent_triage_rows(data_dir: &str, ids: &[String]) -> String {
     if ids.is_empty() {
         return "<li>not_available</li>".to_string();
     }
     ids.iter()
         .map(|id| {
             let route = id_to_route_link(id, "triage");
-            let summary = format!("./data/triage/{id}/summary.json");
+            let summary = format!("{data_dir}/triage/{id}/summary.json");
             let summary_link = file_link(&summary, "summary.json");
             format!("<li>{route} <span class=\"sep\">|</span> {summary_link}</li>")
         })
@@ -776,16 +778,16 @@ fn render_recent_triage_rows(ids: &[String]) -> String {
         .join("")
 }
 
-fn render_recent_report_rows(ids: &[String]) -> String {
+fn render_recent_report_rows(data_dir: &str, ids: &[String]) -> String {
     if ids.is_empty() {
         return "<li>not_available</li>".to_string();
     }
     ids.iter()
         .map(|id| {
             let route = id_to_route_link(id, "report");
-            let report_md = format!("./data/reports/{id}/report.md");
-            let manifest = format!("./data/reports/{id}/manifest.json");
-            let bundle = format!("./data/reports/{id}/{id}-evidence.zip");
+            let report_md = format!("{data_dir}/reports/{id}/report.md");
+            let manifest = format!("{data_dir}/reports/{id}/manifest.json");
+            let bundle = format!("{data_dir}/reports/{id}/{id}-evidence.zip");
             let report_link = file_link(&report_md, "report.md");
             let manifest_link = file_link(&manifest, "manifest.json");
             let bundle_link = file_link(&bundle, "evidence.zip");
@@ -797,14 +799,14 @@ fn render_recent_report_rows(ids: &[String]) -> String {
         .join("")
 }
 
-fn render_recent_coverage_rows(ids: &[String]) -> String {
+fn render_recent_coverage_rows(data_dir: &str, ids: &[String]) -> String {
     if ids.is_empty() {
         return "<li>not_available</li>".to_string();
     }
     ids.iter()
         .map(|id| {
             let route = id_to_route_link(id, "coverage");
-            let summary = format!("./data/coverage/{id}/summary.json");
+            let summary = format!("{data_dir}/coverage/{id}/summary.json");
             let summary_link = file_link(&summary, "summary.json");
             format!("<li>{route} <span class=\"sep\">|</span> {summary_link}</li>")
         })

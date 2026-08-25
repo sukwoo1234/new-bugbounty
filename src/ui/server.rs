@@ -1880,25 +1880,37 @@ fn now_unix() -> u64 {
 }
 
 fn handle_entity_view(app_paths: &AppPaths, kind: &str, id: &str) -> Result<Response, String> {
+    // These were literal "./data/..." strings resolved against the working
+    // directory, so every detail page 500'd under `tool --data-dir X ui-serve`
+    // while the list page above it still linked to them.
+    let entity = |dir: &str, file: &str| {
+        app_paths
+            .data_dir
+            .join(dir)
+            .join(id)
+            .join(file)
+            .display()
+            .to_string()
+    };
     let (title, main_rel_path, extra_rel_paths) = match kind {
         "run" => (
             format!("Run Detail: {id}"),
-            format!("./data/runs/{id}/status.json"),
-            vec![format!("./data/runs/{id}/logs/backend-engine-w1.log")],
+            entity("runs", "status.json"),
+            vec![entity("runs", "logs/backend-engine-w1.log")],
         ),
         "triage" => (
             format!("Triage Detail: {id}"),
-            format!("./data/triage/{id}/summary.json"),
-            vec![format!("./data/triage/{id}/attempt-1.log")],
+            entity("triage", "summary.json"),
+            vec![entity("triage", "attempt-1.log")],
         ),
         "report" => (
             format!("Report Detail: {id}"),
-            format!("./data/reports/{id}/report.md"),
-            vec![format!("./data/reports/{id}/meta.json")],
+            entity("reports", "report.md"),
+            vec![entity("reports", "meta.json")],
         ),
         "coverage" => (
             format!("Coverage Detail: {id}"),
-            format!("./data/coverage/{id}/summary.json"),
+            entity("coverage", "summary.json"),
             vec![],
         ),
         _ => return respond("404 Not Found", "text/plain; charset=utf-8", "not found\n"),
@@ -2709,6 +2721,40 @@ mod tests {
         assert!(!secret_eq("abc", "ab"));
         assert!(!secret_eq("", "a"));
         assert!(secret_eq("", ""));
+    }
+
+    // The entity routes and the dashboard's file links were built from the literal
+    // "./data/...", resolved against the working directory - so `tool --data-dir X
+    // ui-serve` served 500s for every run, triage, report and coverage detail page
+    // while the list pages above them still showed the entries.
+    #[test]
+    fn entity_routes_follow_the_configured_data_dir() {
+        let root = unique_tmp_dir("entity-data-dir");
+        let app_paths = AppPaths {
+            data_dir: root.join("elsewhere"),
+            seeds_dir: root.join("seeds"),
+        };
+        let triage_dir = app_paths.data_dir.join("triage").join("triage-x");
+        fs::create_dir_all(&triage_dir).expect("triage dir");
+        fs::write(
+            triage_dir.join("summary.json"),
+            "{\"verdict\": \"marker-9f3a\"}",
+        )
+        .expect("write summary");
+        let run_dir = app_paths.data_dir.join("runs").join("run-7");
+        fs::create_dir_all(&run_dir).expect("run dir");
+        fs::write(run_dir.join("status.json"), "{\"total\": 41}").expect("write status");
+
+        let sec = secured("tok");
+        let triage = respond_to_request(&app_paths, &sec, &request("GET", "/triage/triage-x"));
+        assert_eq!(triage.status, "200 OK", "{}", triage.body);
+        assert!(triage.body.contains("marker-9f3a"), "{}", triage.body);
+
+        let run = respond_to_request(&app_paths, &sec, &request("GET", "/run/run-7"));
+        assert_eq!(run.status, "200 OK", "{}", run.body);
+        assert!(run.body.contains("41"), "{}", run.body);
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     fn request(method: &str, path: &str) -> super::RequestHead {
