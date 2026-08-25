@@ -165,6 +165,21 @@ fn run_to_deadline(
     stdout_path: &Path,
     stderr_path: &Path,
 ) -> std::io::Result<(Output, bool)> {
+    // R1: the deadline used to kill only the direct child, so a probe's own child -
+    // the python interpreter an onnx/safetensors probe starts, or llama-gguf-hash -
+    // was orphaned and kept running long after the job it belonged to was over. Over
+    // a multi-day campaign those accumulate. Leading its own process group lets the
+    // whole job be signalled at once.
+    //
+    // The trade-off, the same one the dashboard's jobs have (README, R7): a child in
+    // its own group is no longer in the terminal's foreground group, so Ctrl-C
+    // reaches `tool` but not the harness it is waiting on. Campaign runs are under
+    // systemd or nohup, where that is not the stop mechanism anyway.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::from(create_capture_file(stdout_path)?))
@@ -184,6 +199,7 @@ fn run_to_deadline(
                 break status;
             }
             timed_out = true;
+            kill_process_group(child.id());
             let _ = child.kill();
             break child.wait()?;
         }
@@ -199,6 +215,26 @@ fn run_to_deadline(
         timed_out,
     ))
 }
+
+/// Signal the whole group the timed-out child leads, so its own children go too.
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    const SIGKILL: i32 = 9;
+    // The child was spawned with process_group(0), so its pid is the group id and a
+    // negative pid addresses the group. Never signal group 0 - that is our own.
+    if pid == 0 {
+        return;
+    }
+    unsafe {
+        kill(-(pid as i32), SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_pid: u32) {}
 
 // create_new refuses an existing path, so a pre-planted symlink in a shared /tmp cannot
 // redirect the capture into someone else's file.
@@ -437,6 +473,68 @@ mod tests {
         );
     }
 
+    // R1: the deadline killed only the direct child, so a probe's own child - the
+    // python interpreter the harness starts - was left orphaned and kept running
+    // after the job it belonged to was over. Over a multi-day campaign those pile up.
+    #[cfg(unix)]
+    #[test]
+    fn the_deadline_kills_the_whole_process_group_not_just_the_child() {
+        use super::output_with_deadline;
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tool-r1-{}-{}",
+            std::process::id(),
+            super::now_unix_millis()
+        ));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let marker = dir.join("grandchild.pid");
+
+        // The child starts a grandchild that outlives it, exactly like a probe
+        // starting python, then hangs so the deadline has to step in.
+        let script = dir.join("spawner.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n\
+                 sh -c 'echo $$ > {marker}; sleep 60' &\n\
+                 sleep 60\n",
+                marker = marker.display()
+            ),
+        )
+        .expect("write script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let mut cmd = Command::new(&script);
+        let (_, timed_out) = output_with_deadline(cmd_ref(&mut cmd), 1).expect("run");
+        assert!(timed_out, "the script should have hit the deadline");
+
+        let pid = std::fs::read_to_string(&marker)
+            .expect("grandchild pid")
+            .trim()
+            .to_string();
+        // Give the group kill a moment to be reaped.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let alive = Command::new("kill")
+            .arg("-0")
+            .arg(&pid)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if alive {
+            let _ = Command::new("kill").arg("-KILL").arg(&pid).status();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(!alive, "the grandchild outlived the job that started it");
+    }
+
+    fn cmd_ref(cmd: &mut std::process::Command) -> std::process::Command {
+        let mut fresh = std::process::Command::new(cmd.get_program());
+        fresh.args(cmd.get_args());
+        fresh
+    }
 
     // A25 / the same hole in `run`: `--max-jobs 0` truncated the input list to
     // nothing AFTER the "no inputs" check, so a run that executed nothing still
