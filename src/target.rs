@@ -554,6 +554,41 @@ fn read_le_u64(bytes: &[u8]) -> Result<u64, String> {
 
 // --- Library connect probes ---
 
+/// Where `cmd` would actually run from, or None if nothing executable answers to it.
+///
+/// A34: deciding "this candidate does not exist" from the spawn error meant a file
+/// that exists but is not executable ended the search, and a candidate missing on a
+/// non-English host was reported as an invocation instead of skipped. Checking
+/// first makes both cases the same: not a candidate.
+#[cfg(unix)]
+fn resolve_executable(cmd: &std::ffi::OsStr) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let is_executable = |path: &Path| {
+        path.metadata()
+            .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    };
+
+    let candidate = Path::new(cmd);
+    if cmd.as_bytes().contains(&b'/') {
+        return is_executable(candidate).then(|| candidate.to_path_buf());
+    }
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|dir| dir.join(candidate))
+        .find(|path| is_executable(path))
+}
+
+#[cfg(not(unix))]
+fn resolve_executable(cmd: &std::ffi::OsStr) -> Option<PathBuf> {
+    let candidate = PathBuf::from(cmd);
+    candidate.is_file().then_some(candidate)
+}
+
 fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
     let mut candidates = Vec::new();
     if let Some(custom) = std::env::var_os("TOOL_LLAMA_CLI_BIN") {
@@ -568,7 +603,11 @@ fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
     candidates.push(OsString::from("tools/llama.cpp/build/bin/llama-gguf-hash"));
     candidates.push(OsString::from("./tools/llama.cpp/build/bin/llama-gguf-hash"));
 
+    let mut last_error = String::new();
     for cmd in candidates {
+        if resolve_executable(&cmd).is_none() {
+            continue;
+        }
         let result = command_with_core_dump_off(&cmd)
             .arg("--sha256")
             .arg(input)
@@ -588,12 +627,10 @@ fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                let lower = stderr.to_ascii_lowercase();
                 // A13: prlimit reports its own exec failure (127/126) instead of
-                // Err(NotFound); either way this candidate does not exist, so try the next.
-                if is_core_dump_wrapper_exec_failure(output.status.code(), &stderr)
-                    || (lower.contains("failed to execute") && lower.contains("no such file"))
-                {
+                // Err(NotFound); either way this candidate did not run, so try the next.
+                if is_core_dump_wrapper_exec_failure(output.status.code(), &stderr) {
+                    last_error = first_line(&stderr).to_string();
                     continue;
                 }
                 if let Some(result) =
@@ -609,18 +646,22 @@ fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
                     outcome: LibraryConnectOutcome::Invoked,
                 };
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            // A candidate that cannot be spawned is not a verdict on the probe:
+            // remember why and let the remaining candidates answer.
             Err(e) => {
-                return LibraryConnectResult {
-                    step: format!("llama.cpp parser error ({e})"),
-                    outcome: LibraryConnectOutcome::Unavailable,
-                }
+                last_error = e.to_string();
+                continue;
             }
         }
     }
 
+    let step = if last_error.is_empty() {
+        "llama.cpp parser unavailable (llama-gguf-hash not installed)".to_string()
+    } else {
+        format!("llama.cpp parser unavailable (last error: {last_error})")
+    };
     LibraryConnectResult {
-        step: "llama.cpp parser unavailable (llama-cli not installed)".to_string(),
+        step,
         outcome: LibraryConnectOutcome::Unavailable,
     }
 }
@@ -849,6 +890,89 @@ fn exit_signal(_status: &ExitStatus) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    // A34: a candidate that exists but cannot be executed returned Unavailable for
+    // the whole probe, so a stale TOOL_LLAMA_CLI_BIN hid a perfectly good
+    // llama-gguf-hash further down the list. The strict gate then fails every GGUF
+    // input on a host where the parser is in fact installed.
+    #[cfg(unix)]
+    #[test]
+    fn a_gguf_candidate_that_cannot_be_executed_falls_through_to_the_next() {
+        use super::{gguf_library_connect, LibraryConnectOutcome};
+        use std::os::unix::fs::PermissionsExt;
+
+        let _guard = env_lock();
+        let root = std::env::temp_dir().join(format!(
+            "tool-a34-{}-{}",
+            std::process::id(),
+            crate::common::now_unix_millis()
+        ));
+        let dir_a = root.join("a");
+        let dir_b = root.join("b");
+        std::fs::create_dir_all(&dir_a).expect("create dir a");
+        std::fs::create_dir_all(&dir_b).expect("create dir b");
+
+        // Present but not executable: the candidate the stale override points at.
+        std::fs::write(dir_a.join("llama-gguf-hash"), "#!/bin/sh\nexit 0\n").expect("write a");
+        std::fs::set_permissions(
+            dir_a.join("llama-gguf-hash"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .expect("chmod a");
+
+        let good = dir_b.join("llama-gguf-hash");
+        std::fs::write(&good, "#!/bin/sh\necho 'sha256: dead'\n").expect("write b");
+        std::fs::set_permissions(&good, std::fs::Permissions::from_mode(0o755)).expect("chmod b");
+
+        let input = root.join("model.gguf");
+        std::fs::write(&input, b"gguf").expect("write input");
+
+        let previous_path = std::env::var_os("PATH");
+        // Without prlimit on PATH the wrapper spawns the program directly, which is
+        // how a real host without util-linux behaves.
+        std::env::set_var("PATH", &dir_b);
+        std::env::set_var("TOOL_LLAMA_CLI_BIN", dir_a.join("llama-cli"));
+        let result = gguf_library_connect(&input);
+        std::env::remove_var("TOOL_LLAMA_CLI_BIN");
+        match previous_path {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
+
+        assert!(
+            matches!(result.outcome, LibraryConnectOutcome::SessionOk),
+            "the working candidate was never reached: {} / {}",
+            result.step,
+            result.outcome.as_str()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_executable_refuses_a_file_without_the_execute_bit() {
+        use super::resolve_executable;
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "tool-resolve-exec-{}-{}",
+            std::process::id(),
+            crate::common::now_unix_millis()
+        ));
+        std::fs::create_dir_all(&root).expect("create root");
+        let plain = root.join("plain");
+        std::fs::write(&plain, "x").expect("write");
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        assert!(resolve_executable(plain.as_os_str()).is_none());
+
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        assert_eq!(resolve_executable(plain.as_os_str()), Some(plain.clone()));
+
+        assert!(resolve_executable(root.join("missing").as_os_str()).is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     // A35: a non-UTF-8 input path was handed to child processes through
     // display().to_string(), which substitutes U+FFFD. The child then opened a
     // path that does not exist and reported "not a model file", so a real seed was
