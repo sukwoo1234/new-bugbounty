@@ -348,6 +348,75 @@ fn render_meta_json(meta: &TargetMeta) -> String {
     )
 }
 
+/// Split a configured command line the way a shell would.
+///
+/// A33: `split_whitespace()` cut a quoted program path in half at its space, so a
+/// correctly configured harness looked permanently unavailable - and when the
+/// mangled prefix still resolved to something, its non-zero exit was filed as a
+/// library crash. Handles single quotes (literal), double quotes (`\"` and `\\`
+/// escapes) and a bare backslash; an unbalanced quote is an error rather than a
+/// silently different command.
+fn split_command_line(line: &str) -> Result<Vec<String>, String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut started = false;
+    let mut chars = line.chars();
+
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                if started {
+                    parts.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            '\'' => {
+                started = true;
+                loop {
+                    match chars.next() {
+                        Some('\'') => break,
+                        Some(c) => current.push(c),
+                        None => return Err("unbalanced single quote".to_string()),
+                    }
+                }
+            }
+            '"' => {
+                started = true;
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        Some('\\') => match chars.next() {
+                            Some(escaped @ ('"' | '\\')) => current.push(escaped),
+                            Some(other) => {
+                                current.push('\\');
+                                current.push(other);
+                            }
+                            None => return Err("unbalanced double quote".to_string()),
+                        },
+                        Some(c) => current.push(c),
+                        None => return Err("unbalanced double quote".to_string()),
+                    }
+                }
+            }
+            '\\' => match chars.next() {
+                Some(escaped) => {
+                    current.push(escaped);
+                    started = true;
+                }
+                None => return Err("trailing backslash".to_string()),
+            },
+            c => {
+                current.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        parts.push(current);
+    }
+    Ok(parts)
+}
+
 fn maybe_run_external_harness(target: &TargetKind, input: &Path) -> Result<String, HarnessError> {
     let env_key = match target {
         TargetKind::Gguf => "TOOL_GGUF_HARNESS_CMD",
@@ -362,16 +431,18 @@ fn maybe_run_external_harness(target: &TargetKind, input: &Path) -> Result<Strin
         return Ok(format!("{env_key} empty (external harness skipped)"));
     }
 
-    let mut parts = command_line.split_whitespace().collect::<Vec<_>>();
+    let mut parts = split_command_line(&command_line).map_err(|e| {
+        HarnessError::Unavailable(format!("{env_key} is not a valid command line: {e}"))
+    })?;
     if parts.is_empty() {
         return Ok(format!("{env_key} invalid (external harness skipped)"));
     }
 
     let cmd = parts.remove(0);
-    let mut args = parts.into_iter().map(str::to_string).collect::<Vec<_>>();
+    let mut args = parts;
     args.push(input.display().to_string());
 
-    let output = command_with_core_dump_off(cmd)
+    let output = command_with_core_dump_off(&cmd)
         .args(&args)
         .output()
         .map_err(|e| HarnessError::Unavailable(format!("{env_key} could not be executed: {e}")))?;
@@ -762,6 +833,35 @@ fn exit_signal(_status: &ExitStatus) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    // A33: the external harness command line was tokenized with split_whitespace(),
+    // so a quoted program path containing a space was cut in half. The harness then
+    // looked permanently unavailable, and when the mangled prefix happened to
+    // resolve, its non-zero exit was filed as a library crash.
+    #[test]
+    fn harness_command_line_is_split_like_a_shell() {
+        use super::split_command_line;
+
+        assert_eq!(
+            split_command_line("\"/tmp/my dir/replay\" --flag 'a b'").expect("split"),
+            vec!["/tmp/my dir/replay", "--flag", "a b"]
+        );
+        assert_eq!(
+            split_command_line("/usr/bin/env python3 x.py").expect("split"),
+            vec!["/usr/bin/env", "python3", "x.py"]
+        );
+        assert_eq!(
+            split_command_line("/tmp/my\\ dir/replay").expect("split"),
+            vec!["/tmp/my dir/replay"]
+        );
+        assert_eq!(
+            split_command_line("  spaced   out  ").expect("split"),
+            vec!["spaced", "out"]
+        );
+        assert!(split_command_line("\"unterminated").is_err());
+        assert!(split_command_line("'unterminated").is_err());
+        assert!(split_command_line("").expect("split").is_empty());
+    }
+
     use super::{crash_status_detail, exit_code_signal_name};
 
     // cargo runs #[test]s in parallel threads and TOOL_PYTHON_BIN /
