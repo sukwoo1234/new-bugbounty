@@ -65,6 +65,11 @@ assert_not_contains() {
   esac
 }
 
+# The Environment= lines a shipped systemd unit hands the loop, as VAR=VALUE arguments.
+unit_env() {
+  sed -n 's/^Environment=//p' "$1"
+}
+
 log "libfuzzer: missing native driver must warn and label blackbox"
 cp "$WORK/bin/tool" "$WORK/harnesses/libfuzzer/tool_harness_driver"
 rm -f "$WORK/harnesses/libfuzzer/onnxruntime_loader_fuzzer"
@@ -117,6 +122,16 @@ log "aflpp: instrumented replay binary must label instrumented and drop -n"
 chmod +x "$WORK/harnesses/aflpp/onnxruntime_loader_replay"
 run_loop fuzz-loop-aflpp.sh
 [ "$LOOP_EXIT" -eq 0 ] || fail "aflpp instrumented loop exited $LOOP_EXIT"
+assert_contains "aflpp_mode=instrumented"
+assert_not_contains "afl-fuzz -n "
+
+# The loop treats an operator-set AFLPP_CONTAINER_TOOL as a deliberate override and will
+# not replace it with the instrumented replay. A shipped unit that sets it - even to the
+# value the loop already defaults to - therefore pins the arm to blackbox_n forever.
+log "aflpp: the shipped systemd unit must not disable the native path"
+# shellcheck disable=SC2046
+run_loop fuzz-loop-aflpp.sh $(unit_env "$PROJECT_ROOT/ops/systemd/tool-fuzz-onnx-aflpp.service")
+[ "$LOOP_EXIT" -eq 0 ] || fail "aflpp systemd-env loop exited $LOOP_EXIT"
 assert_contains "aflpp_mode=instrumented"
 assert_not_contains "afl-fuzz -n "
 

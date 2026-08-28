@@ -12,12 +12,15 @@ Group=ssw
 WorkingDirectory=/home/ssw/bugbounty
 
 # Continuous AFL++ fuzzing via wrapper (run -> sleep -> repeat).
-# AFL++는 hardened Docker(aflplusplus/aflplusplus) -n dumb 모드로 `tool harness`를 구동 (black-box).
+# AFL++는 hardened Docker(aflplusplus/aflplusplus)로 구동. 계측된 native replay 바이너리가 있으면
+# coverage-guided(instrumented), 없으면 -n dumb 모드로 `tool harness`를 구동(black-box).
 # 기본 매개변수 (wrapper 안에 정의, systemctl edit으로 ENV override):
 # - WORKERS=1 (컨테이너당 --cpus 2 / --memory 4g. WSL 8GB급 환경의 안전 기본값)
 # - BACKEND=aflpp
 # - TIMEOUT_SEC=30, RESTART_LIMIT=1, ITERATION_SLEEP_SEC=2
-# - AFLPP_CONTAINER_TOOL=target/release/tool (in-container 타깃)
+# - AFLPP_CONTAINER_TOOL (in-container 타깃; 기본 target/release/tool). 여기서 설정하지 말 것 —
+#   wrapper는 이 변수가 설정돼 있으면 운영자의 의도적 override로 보고 계측 replay로 교체하지 않는다
+#   (fuzz-loop-aflpp.sh의 AFLPP_CONTAINER_TOOL_WAS_SET). 기본값과 같은 값을 넣어도 arm이 blackbox_n에 고정된다.
 # - AFLPP_MAX_RUN_DIRS_KEEP=20 (status/fuzzer_stats/crash metadata만 archive 후 old run dirs cleanup)
 # - CORPUS_DIR=seeds/onnx (AFL++가 -i 시드로 사용; queue는 run-<id>/afl-out 안에서 자체 관리)
 ExecStart=/home/ssw/bugbounty/ops/scripts/fuzz-loop-aflpp.sh
@@ -31,7 +34,6 @@ ExecStartPre=/usr/bin/docker run --rm aflplusplus/aflplusplus bash -lc 'command 
 # 6h 검증 시 status.json / afl-out/default/fuzzer_stats 로 실제 동작 확인.
 Environment=TOOL_REQUIRE_LIBRARY_CONNECT=1
 Environment=WORKERS=1
-Environment=AFLPP_CONTAINER_TOOL=target/release/tool
 Environment=AFLPP_MAX_RUN_DIRS_KEEP=20
 
 # BLAS thread pool 폭주 방지 (workers x BLAS threads 곱셈으로 CPU 과점유 차단).
