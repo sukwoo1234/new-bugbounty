@@ -52,6 +52,14 @@ fi
 
 EXTRACT_DIR="$VERSION_ROOT/build-src"
 BUILD_DIR="$VERSION_ROOT/build-out"
+# gguf gets built from the same version more than once - this plain reference build,
+# the ASan+sancov one from build_libfuzzer_gguf_native.sh, the AFL++ one - and this
+# script rm -rf's its extract dir. Keep the build kind in the directory name so the
+# builds cannot overwrite each other.
+if [[ "$TARGET" == gguf ]]; then
+  EXTRACT_DIR="$VERSION_ROOT/build-src-plain"
+  BUILD_DIR="$VERSION_ROOT/build-out-plain"
+fi
 rm -rf "$EXTRACT_DIR"
 mkdir -p "$EXTRACT_DIR"
 
@@ -69,11 +77,40 @@ fi
 
 case "$TARGET" in
   gguf)
-    cmake -S "$SRC_ROOT" -B "$BUILD_DIR" -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=ON
-    cmake --build "$BUILD_DIR" -j2
-    ARTIFACT="$BUILD_DIR/bin/llama-cli"
+    # Build what the fuzz harness links - the ggml-base archive holding gguf.cpp -
+    # not llama-cli. (The legacy llama-gguf-hash probe still comes from the separate
+    # tools/llama.cpp checkout; it was never taken from here.)
+    cmake -S "$SRC_ROOT" -B "$BUILD_DIR" \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DLLAMA_BUILD_TESTS=OFF \
+      -DLLAMA_BUILD_EXAMPLES=OFF \
+      -DLLAMA_BUILD_TOOLS=OFF \
+      -DLLAMA_BUILD_SERVER=OFF
+    cmake --build "$BUILD_DIR" --target ggml-base -j2
+    ARTIFACT="$BUILD_DIR/ggml/src/libggml-base.a"
     if [[ ! -f "$ARTIFACT" ]]; then
       echo "[target-build] expected artifact missing: $ARTIFACT" >&2
+      exit 6
+    fi
+    # The archive is produced even if gguf.cpp drops out of the target, so its
+    # existence proves nothing. Check for the parser's own symbol (C++-mangled,
+    # hence the substring). The listing goes to a file, not a pipe: grep -q would
+    # close the pipe on its first match and pipefail would read the resulting
+    # SIGPIPE as a missing symbol.
+    NM_BIN="${LLVM_NM:-}"
+    if [[ -z "$NM_BIN" ]]; then
+      NM_BIN="$(command -v llvm-nm || command -v nm || true)"
+    fi
+    if [[ -z "$NM_BIN" ]]; then
+      echo "[target-build] no llvm-nm/nm to verify $ARTIFACT" >&2
+      exit 6
+    fi
+    if ! "$NM_BIN" "$ARTIFACT" >"$BUILD_DIR/nm-ggml-base.txt" 2>/dev/null; then
+      echo "[target-build] could not read symbols from $ARTIFACT" >&2
+      exit 6
+    fi
+    if ! grep -q 'gguf_init_from_file_impl' "$BUILD_DIR/nm-ggml-base.txt"; then
+      echo "[target-build] gguf.cpp is not in $ARTIFACT (no gguf_init_from_file_impl)" >&2
       exit 6
     fi
     ;;

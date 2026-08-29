@@ -146,6 +146,15 @@ else
   log "skip contrast: legacy probe not built at $LEGACY_PROBE"
 fi
 
+# prepare-target has to produce the same thing the harness links, and prove the
+# parser is in it: libggml-base.a is produced even when gguf.cpp drops out of the
+# target, so checking that the file exists checks nothing.
+log "prepared target must build the archive the harness links, and prove gguf.cpp is in it"
+grep -q 'ggml-base' "$PROJECT_ROOT/scripts/build_prepared_target.sh" \
+  || fail "build_prepared_target.sh still builds llama-cli for gguf"
+grep -q 'gguf_init_from_file_impl' "$PROJECT_ROOT/scripts/build_prepared_target.sh" \
+  || fail "build_prepared_target.sh does not verify the gguf symbol"
+
 if [[ "$FAILURES" -ne 0 ]]; then
   fail "$FAILURES check(s) failed; run log: $RUN_LOG"
 fi
