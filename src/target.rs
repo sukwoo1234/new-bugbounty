@@ -470,7 +470,7 @@ fn maybe_run_external_harness(target: &TargetKind, input: &Path) -> Result<Strin
     Err(HarnessError::LibraryCrash(format!(
         "{env_key} executed but failed with status {} ({})",
         output.status,
-        first_line(&stderr)
+        first_evidence_line(&stderr)
     )))
 }
 
@@ -626,10 +626,40 @@ fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
 }
 
 fn gguf_native_connect(input: &Path) -> LibraryConnectResult {
-    let bin = std::env::var_os(GGUF_NATIVE_BIN)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| OsString::from(GGUF_NATIVE_DEFAULT_BIN));
+    if let Some(custom) = std::env::var_os(GGUF_NATIVE_BIN).filter(|value| !value.is_empty()) {
+        return gguf_native_connect_with_bin(&custom, input);
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let bin = gguf_native_bin_from(std::env::current_exe().ok().as_deref(), &cwd);
     gguf_native_connect_with_bin(&bin, input)
+}
+
+/// A36 again, for the gguf harness: GGUF_NATIVE_DEFAULT_BIN is a relative path, so a
+/// `tool` invoked from anywhere but the project root - a systemd unit, a campaign
+/// script, triage re-executing from a run directory - looked beside the wrong cwd and
+/// reported the harness missing. Look next to the binary too, but only under a
+/// directory that actually looks like this project, so an unrelated tree cannot bind
+/// the probe to a harness that is not ours.
+fn gguf_native_bin_from(exe: Option<&Path>, cwd: &Path) -> OsString {
+    if let Some(found) = native_replay_under(cwd) {
+        return found.into_os_string();
+    }
+    if let Some(exe) = exe {
+        for root in exe.ancestors().skip(1).take(3) {
+            if !is_project_root(root) {
+                continue;
+            }
+            if let Some(found) = native_replay_under(root) {
+                return found.into_os_string();
+            }
+        }
+    }
+    OsString::from(GGUF_NATIVE_DEFAULT_BIN)
+}
+
+fn native_replay_under(root: &Path) -> Option<PathBuf> {
+    let candidate = root.join(GGUF_NATIVE_DEFAULT_BIN);
+    candidate.is_file().then_some(candidate)
 }
 
 /// The replay harness answers with the same exit-code vocabulary the tool uses
@@ -708,13 +738,22 @@ fn gguf_native_connect_with_bin(bin: &std::ffi::OsStr, input: &Path) -> LibraryC
             if let Some(result) = crashed_connect_result("gguf parser", "native harness", &output) {
                 return result;
             }
+            // Off the contract entirely: 0/9/10 and a signal are the whole vocabulary.
+            // Anything else means this is not the harness we think it is - a stale
+            // binary, a wrapper script, a shell error - and calling it "invoked" would
+            // report every crashing input as clean while keeping the strict connect
+            // gate quiet. Unavailable is what makes that gate fire.
             LibraryConnectResult {
                 step: format!(
-                    "gguf native harness invoked (unexpected exit {:?}: {})",
-                    output.status.code(),
-                    first_line(&stderr)
+                    "gguf native harness unavailable (off-contract exit {}: {})",
+                    output
+                        .status
+                        .code()
+                        .map(|code| code.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    first_evidence_line(&stderr)
                 ),
-                outcome: LibraryConnectOutcome::Invoked,
+                outcome: LibraryConnectOutcome::Unavailable,
             }
         }
     }
@@ -1263,6 +1302,57 @@ mod tests {
     fn an_unknown_gguf_probe_selector_is_an_error_not_a_silent_default() {
         let err = super::resolve_gguf_probe_kind(Some("nativ")).unwrap_err();
         assert!(err.contains(super::GGUF_PROBE_KIND), "err was: {err}");
+    }
+
+    // An exit code outside the contract means the harness is not the program we
+    // think it is - a stale binary, a wrapper script, a shell error. Reading that as
+    // "invoked, nothing wrong" makes every crashing input look clean AND keeps the
+    // strict connect gate from firing, which is the quiet-zero-findings failure.
+    #[cfg(unix)]
+    #[test]
+    fn an_off_contract_exit_from_the_native_gguf_harness_is_unavailable_not_invoked() {
+        let _guard = env_lock();
+        let result = gguf_probe_with_native_stub("gguf-native-offcontract", "exit 3");
+        assert!(
+            matches!(result.outcome, super::LibraryConnectOutcome::Unavailable),
+            "outcome was {} / {}",
+            result.outcome.as_str(),
+            result.step
+        );
+        assert!(result.step.contains('3'), "step must name the exit: {}", result.step);
+    }
+
+    // A36 again, for the gguf harness: the default path is relative, so `tool` run
+    // from a systemd unit, a campaign script, or a run directory looked for the
+    // harness beside the wrong cwd and called it missing.
+    #[cfg(unix)]
+    #[test]
+    fn the_native_gguf_harness_is_found_from_the_executable_not_only_the_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = gguf_probe_dir("gguf-native-cwd");
+        let project = root.join("proj");
+        let harness_dir = project.join("harnesses").join("libfuzzer");
+        let exe_dir = project.join("target").join("debug");
+        std::fs::create_dir_all(&harness_dir).expect("create harness dir");
+        std::fs::create_dir_all(&exe_dir).expect("create exe dir");
+        std::fs::write(project.join("Cargo.toml"), "[package]").expect("write marker");
+        let replay = harness_dir.join("gguf_loader_replay");
+        std::fs::write(&replay, "#!/bin/sh\nexit 0\n").expect("write replay");
+        std::fs::set_permissions(&replay, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let exe = exe_dir.join("tool");
+        std::fs::write(&exe, "").expect("write exe");
+
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("create elsewhere");
+
+        assert_eq!(
+            super::gguf_native_bin_from(Some(&exe), &elsewhere),
+            replay.into_os_string(),
+            "the harness next to the binary was not found"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // The harness binary is gitignored, so a fresh checkout and the fuzzing host
