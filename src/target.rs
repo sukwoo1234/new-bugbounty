@@ -1040,6 +1040,18 @@ fn is_gguf_parser_rejection(status: &ExitStatus, stderr: &str) -> bool {
 
 const SIGSEGV: i32 = 11;
 
+/// The first line of a sanitizer report is a rule of '=' characters, so first_line()
+/// reduces the whole report to punctuation and the evidence that reaches triage says
+/// nothing at all. Skip blank lines and rules made only of '=' or '-', and fall back
+/// to first_line() when the text holds nothing else.
+fn first_evidence_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.chars().all(|c| c == '=' || c == '-'))
+        .map(str::to_string)
+        .unwrap_or_else(|| first_line(text))
+}
+
 fn crashed_connect_result(
     component: &str,
     action: &str,
@@ -1051,8 +1063,8 @@ fn crashed_connect_result(
     Some(LibraryConnectResult {
         step: format!(
             "{component} {action} crashed ({detail}; stdout: {}; stderr: {})",
-            first_line(&stdout),
-            first_line(&stderr)
+            first_evidence_line(&stdout),
+            first_evidence_line(&stderr)
         ),
         outcome: LibraryConnectOutcome::Crashed,
     })
@@ -1711,6 +1723,21 @@ mod tests {
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    // A sanitizer report opens with a rule of '=' characters, so reducing it with
+    // first_line() hands triage a line of punctuation and nothing else.
+    #[test]
+    fn an_asan_report_keeps_its_error_line_instead_of_the_banner() {
+        let text = "=================================================================\n\
+                    ==12345==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x60200000eff0\n";
+        assert_eq!(
+            super::first_evidence_line(text),
+            "==12345==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x60200000eff0"
+        );
+        // Nothing but rules and blanks: behave exactly like first_line().
+        assert_eq!(super::first_evidence_line("=====\n\n"), "=====");
+        assert_eq!(super::first_evidence_line(""), "no output");
     }
 
     #[test]
