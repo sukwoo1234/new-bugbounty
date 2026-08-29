@@ -23,6 +23,14 @@ ExecStart=/home/ssw/bugbounty/ops/scripts/fuzz-loop-aflpp.sh
 # 시작 전 1회: tool 바이너리 + docker + aflplusplus 이미지 + 계측 replay 존재 확인.
 ExecStartPre=/usr/bin/test -x /home/ssw/bugbounty/target/release/tool
 ExecStartPre=/usr/bin/test -x /home/ssw/bugbounty/harnesses/aflpp/gguf_loader_replay
+# TOOL_REQUIRE_LIBRARY_CONNECT=1 below applies to `tool triage` too, and the gguf probe
+# uses the LIBFUZZER replay (GGUF_NATIVE_DEFAULT_BIN = harnesses/libfuzzer/gguf_loader_replay),
+# not the AFL++ one. Without this line the arm fuzzes happily and then fails to triage
+# every crash it finds.
+ExecStartPre=/usr/bin/test -x /home/ssw/bugbounty/harnesses/libfuzzer/gguf_loader_replay
+# seeds/ is gitignored: an empty corpus makes afl-fuzz refuse every iteration while the
+# unit still reports active(running), i.e. a campaign that quietly does nothing.
+ExecStartPre=/bin/sh -c 'test -n "$(ls -A /home/ssw/bugbounty/seeds/gguf 2>/dev/null)"'
 ExecStartPre=/usr/bin/docker run --rm aflplusplus/aflplusplus bash -lc 'command -v afl-fuzz >/dev/null'
 
 Environment=TARGET=gguf

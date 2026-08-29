@@ -22,7 +22,21 @@ BACKEND="${BACKEND:-libfuzzer}"
 WORKERS="${WORKERS:-12}"
 TIMEOUT_SEC="${TIMEOUT_SEC:-30}"
 RESTART_LIMIT="${RESTART_LIMIT:-1}"
-CORPUS_DIR="${CORPUS_DIR:-${PROJECT_ROOT}/seeds/${TARGET}}"
+# libFuzzer WRITES every interesting unit back into the directory it is given, so the
+# corpus it runs on cannot be a directory anything else depends on. For gguf that
+# matters twice over: seeds/gguf is the 19-file fixture Stage A's oracle check asserts
+# on (all 19 must parse cleanly at three depths), and the shipped gguf AFL++ unit reads
+# the same directory as its -i set - so a libFuzzer run would both break the fixture and
+# feed its own work into the other arm of the comparison.
+# onnx is deliberately left as it was: its arms have always shared seeds/onnx by design
+# (see ops/systemd/tool-fuzz-onnx-libfuzzer.service), and published Arm B/C numbers rest
+# on that. Changing it now would make old and new runs incomparable.
+if [ -z "${CORPUS_DIR:-}" ]; then
+    case "${TARGET}" in
+        gguf) CORPUS_DIR="${PROJECT_ROOT}/data/corpus/libfuzzer/${TARGET}" ;;
+        *)    CORPUS_DIR="${PROJECT_ROOT}/seeds/${TARGET}" ;;
+    esac
+fi
 ITERATION_SLEEP_SEC="${ITERATION_SLEEP_SEC:-2}"
 MAX_ITERATIONS="${FUZZ_LOOP_MAX_ITERATIONS:-0}"
 # G4: refuse the silent black-box fallback when the run is meant to be native.
@@ -56,10 +70,24 @@ log() {
 
 cd "${PROJECT_ROOT}"
 
+# A private corpus starts empty; seed it from the read-only fixture once. cp -n so a
+# later run never overwrites what the fuzzer has since produced, and the fixture itself
+# is only ever read.
+SEED_FIXTURE="${PROJECT_ROOT}/seeds/${TARGET}"
+if [ "${CORPUS_DIR}" != "${SEED_FIXTURE}" ]; then
+    mkdir -p "${CORPUS_DIR}"
+    if [ -d "${SEED_FIXTURE}" ]; then
+        cp -n "${SEED_FIXTURE}"/* "${CORPUS_DIR}/" 2>/dev/null || true
+    fi
+fi
+
 # G4: the loop used to fall back to the black-box tool wrapper without a word, so a
 # "libfuzzer onnx run" could silently stop being a native run. Label every run and say
 # so loudly; TOOL_LIBFUZZER_MODE is recorded in the run status by `tool run`.
-if [[ -n "${NATIVE_DRIVER}" && "${LIBFUZZER_DRIVER}" == "${NATIVE_DRIVER}" ]]; then
+# -x as well as the name match: an operator can point LIBFUZZER_DRIVER at the native
+# path before it has been built, and a label of "native" on a driver that cannot run
+# would defeat REQUIRE_NATIVE with no warning anywhere.
+if [[ -n "${NATIVE_DRIVER}" && "${LIBFUZZER_DRIVER}" == "${NATIVE_DRIVER}" && -x "${NATIVE_DRIVER}" ]]; then
     LIBFUZZER_MODE=native
 else
     LIBFUZZER_MODE=blackbox
@@ -83,13 +111,21 @@ stop_requested=0
 trap 'stop_requested=1; log "SIGTERM received, will exit after current iteration"' TERM INT
 
 # libfuzzer driver invocation contract (matches docs/experiment-ops.md §libfuzzer):
-#   {corpus_dir} is substituted by `tool run --backend libfuzzer` with the chosen
-#   workdir-local libfuzzer corpus path. {artifact_dir} is a per-worker run dir
+#   {corpus_dir} is substituted by `tool run --backend libfuzzer` with CORPUS_DIR
+#   verbatim (src/run.rs). It is NOT a copy: libFuzzer writes new units straight into
+#   it, which is why CORPUS_DIR above must not be a directory anything else owns. {artifact_dir} is a per-worker run dir
 #   for libFuzzer crash artifacts. -max_total_time bounds per-invocation runtime.
 if [[ "${LIBFUZZER_MODE}" == "native" ]]; then
-    # The profraw name carries the target: two arms writing onnx-native-%p.profraw into
-    # the same artifact dir would overwrite each other's coverage.
-    export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && LLVM_PROFILE_FILE={artifact_dir}/${TARGET}-native-%p.profraw ${LIBFUZZER_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=${LIBFUZZER_MAX_TOTAL_TIME} {corpus_dir} >/dev/null 2>&1"
+    # LLVM_PROFILE_FILE only helps a driver built with source-based coverage
+    # (-fprofile-instr-generate), which is the onnx coverage build. The gguf driver is
+    # sancov+ASan only, so setting it there just promises a .profraw that never appears.
+    # The name carries the target: two arms writing onnx-native-%p.profraw into the same
+    # artifact dir would overwrite each other.
+    case "${TARGET}" in
+        onnx) LIBFUZZER_PROFILE_PREFIX="LLVM_PROFILE_FILE={artifact_dir}/${TARGET}-native-%p.profraw " ;;
+        *)    LIBFUZZER_PROFILE_PREFIX="" ;;
+    esac
+    export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && ${LIBFUZZER_PROFILE_PREFIX}${LIBFUZZER_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=${LIBFUZZER_MAX_TOTAL_TIME} {corpus_dir} >/dev/null 2>&1"
 else
     export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && TOOL_HARNESS_TOOL=${TOOL_BIN} TOOL_HARNESS_TARGET=${TARGET} TOOL_HARNESS_EXT=${TARGET} ${LIBFUZZER_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=${LIBFUZZER_MAX_TOTAL_TIME} {corpus_dir} >/dev/null 2>&1"
 fi

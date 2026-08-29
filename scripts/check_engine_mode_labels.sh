@@ -246,6 +246,27 @@ assert_contains "gguf_loader_fuzzer"
 # the profile file name must follow the target, or two arms overwrite each other
 assert_not_contains "onnx-native-%p.profraw"
 
+# libFuzzer writes new units into the directory it is given. For gguf that directory
+# must NOT be seeds/gguf: that is the 19-file fixture the oracle check asserts on, and
+# the shipped gguf AFL++ unit reads the same path as its -i set.
+log "libfuzzer: the gguf arm must not fuzz out of the seed fixture"
+# CORPUS_DIR= (empty) so the loop takes its own default, which is the thing under test.
+run_loop fuzz-loop-libfuzzer.sh TARGET=gguf CORPUS_DIR=
+[ "$LOOP_EXIT" -eq 0 ] || fail "libfuzzer gguf default-corpus loop exited $LOOP_EXIT"
+assert_contains "data/corpus/libfuzzer/gguf"
+assert_not_contains "corpus=$WORK/seeds/gguf"
+# ...and the seed fixture must still be exactly what it was.
+seed_count_after="$(find "$WORK/seeds/gguf" -type f | wc -l | tr -d ' ')"
+[ "$seed_count_after" = "1" ] \
+  || fail "the seed fixture grew to $seed_count_after files; libFuzzer is writing into it"
+
+# onnx is deliberately unchanged: its arms have always shared seeds/onnx and the
+# published Arm B/C numbers rest on that.
+log "libfuzzer: the onnx arm keeps its historical corpus default"
+run_loop fuzz-loop-libfuzzer.sh TARGET=onnx CORPUS_DIR=
+[ "$LOOP_EXIT" -eq 0 ] || fail "libfuzzer onnx default-corpus loop exited $LOOP_EXIT"
+assert_contains "corpus=$WORK/seeds/onnx"
+
 log "libfuzzer: an unsupported target has no native driver and says so"
 run_loop fuzz-loop-libfuzzer.sh TARGET=safetensors CORPUS_DIR="$WORK/seeds/gguf"
 [ "$LOOP_EXIT" -eq 0 ] || fail "libfuzzer safetensors loop exited $LOOP_EXIT"

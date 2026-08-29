@@ -84,6 +84,12 @@ case "$BACKEND" in
         gguf) NATIVE_DRIVER="${WORKDIR}/harnesses/libfuzzer/gguf_loader_fuzzer" ;;
         *)    NATIVE_DRIVER="" ;;
       esac
+      # ops/scripts/fuzz-loop-libfuzzer.sh lets an operator name the driver directly;
+      # ignoring it here made the campaign path and the systemd path resolve different
+      # binaries - and different modes - for the same target.
+      if [[ -n "${LIBFUZZER_DRIVER:-}" ]]; then
+        NATIVE_DRIVER="$LIBFUZZER_DRIVER"
+      fi
       if [[ -n "$NATIVE_DRIVER" && -x "$NATIVE_DRIVER" ]]; then
         export TOOL_LIBFUZZER_MODE="native"
         export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && LLVM_PROFILE_FILE={artifact_dir}/${TARGET}-native-%p.profraw ${NATIVE_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=5 {corpus_dir} >/dev/null 2>&1"
