@@ -108,18 +108,43 @@ case "$BACKEND" in
     ;;
   aflpp)
     if [[ -z "${TOOL_AFLPP_CMD:-}" ]]; then
-      NATIVE_ONNX_AFLPP_DRIVER="${WORKDIR}/harnesses/aflpp/onnxruntime_loader_replay"
-      ONNX_AFLPP_LD_LIBRARY_PATH="{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/Linux/Release:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov-o0/RelWithDebInfo:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov/RelWithDebInfo"
+      # Same per-target resolution as ops/scripts/fuzz-loop-aflpp.sh; the campaign path
+      # and the systemd path must agree or the same label means two different runs.
+      case "$TARGET" in
+        onnx)
+          NATIVE_AFLPP_REPLAY_REL="harnesses/aflpp/onnxruntime_loader_replay"
+          AFLPP_LD_LIBRARY_PATH="{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/Linux/Release:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov-o0/RelWithDebInfo:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov/RelWithDebInfo"
+          ;;
+        gguf)
+          # ggml is linked statically into the replay, so there is no library path.
+          NATIVE_AFLPP_REPLAY_REL="harnesses/aflpp/gguf_loader_replay"
+          AFLPP_LD_LIBRARY_PATH=""
+          ;;
+        *)
+          NATIVE_AFLPP_REPLAY_REL=""
+          AFLPP_LD_LIBRARY_PATH=""
+          ;;
+      esac
+      NATIVE_AFLPP_DRIVER=""
+      [[ -n "$NATIVE_AFLPP_REPLAY_REL" ]] && NATIVE_AFLPP_DRIVER="${WORKDIR}/${NATIVE_AFLPP_REPLAY_REL}"
+      if [[ -n "$AFLPP_LD_LIBRARY_PATH" ]]; then
+        AFLPP_ENV_PREFIX="LD_LIBRARY_PATH=${AFLPP_LD_LIBRARY_PATH}:\\\$LD_LIBRARY_PATH "
+      else
+        AFLPP_ENV_PREFIX=""
+      fi
       # G2: only a binary carrying the AFL++ runtime may drive afl-fuzz without -n.
-      if [[ "$TARGET" == "onnx" ]] && has_afl_instrumentation "$NATIVE_ONNX_AFLPP_DRIVER"; then
+      if [[ -n "$NATIVE_AFLPP_DRIVER" ]] && has_afl_instrumentation "$NATIVE_AFLPP_DRIVER"; then
         export TOOL_AFLPP_MODE="instrumented"
-        export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"LD_LIBRARY_PATH=${ONNX_AFLPP_LD_LIBRARY_PATH}:\\\$LD_LIBRARY_PATH AFL_IGNORE_SEED_PROBLEMS=1 afl-fuzz -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/harnesses/aflpp/onnxruntime_loader_replay @@ >/dev/null 2>&1\""
+        echo "[run-long] aflpp_instrumentation_scope=$(instrumentation_scope "$NATIVE_AFLPP_DRIVER")"
+        export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"${AFLPP_ENV_PREFIX}AFL_IGNORE_SEED_PROBLEMS=1 afl-fuzz -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/${NATIVE_AFLPP_REPLAY_REL} @@ >/dev/null 2>&1\""
       else
         export TOOL_AFLPP_MODE="blackbox_n"
-        if [[ -x "$NATIVE_ONNX_AFLPP_DRIVER" ]]; then
-          echo "[run-long] WARN: ${NATIVE_ONNX_AFLPP_DRIVER} has no AFL++ instrumentation; falling back to -n black-box mode. This run is NOT coverage-guided." >&2
+        if [[ -z "$NATIVE_AFLPP_DRIVER" ]]; then
+          echo "[run-long] WARN: target ${TARGET} has no native AFL++ replay binary; running -n black-box mode over 'tool harness'. This run is NOT coverage-guided." >&2
+        elif [[ -x "$NATIVE_AFLPP_DRIVER" ]]; then
+          echo "[run-long] WARN: ${NATIVE_AFLPP_DRIVER} has no AFL++ instrumentation; falling back to -n black-box mode. This run is NOT coverage-guided." >&2
         else
-          echo "[run-long] WARN: no native AFL++ replay binary; running -n black-box mode over 'tool harness'. This run is NOT coverage-guided." >&2
+          echo "[run-long] WARN: no native AFL++ replay binary at ${NATIVE_AFLPP_DRIVER}; running -n black-box mode over 'tool harness'. This run is NOT coverage-guided." >&2
         fi
         if [[ "$REQUIRE_INSTRUMENTED" == "1" ]]; then
           echo "[run-long] REQUIRE_INSTRUMENTED=1 is set; refusing to run without instrumentation" >&2

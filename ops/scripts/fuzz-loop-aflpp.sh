@@ -65,9 +65,18 @@ AFLPP_ARCHIVE_MAX_CRASH_FILES="${AFLPP_ARCHIVE_MAX_CRASH_FILES:-200}"
 # In-container target binary path (relative to {container_workdir}=/work).
 AFLPP_CONTAINER_TOOL_WAS_SET="${AFLPP_CONTAINER_TOOL+x}"
 AFLPP_CONTAINER_TOOL="${AFLPP_CONTAINER_TOOL:-target/release/tool}"
-AFLPP_NATIVE_ONNX_DRIVER="harnesses/aflpp/onnxruntime_loader_replay"
-AFLPP_NATIVE_ONNX_MODE=0
+# The native replay is per target, not per project. Hardcoding onnx here meant the
+# gguf arm could never be anything but blackbox_n no matter what had been built.
+# An empty value means "this target has no native replay at all", which is a different
+# statement from "it is not built yet" and gets a different warning.
+case "${TARGET}" in
+    onnx) AFLPP_NATIVE_DRIVER="harnesses/aflpp/onnxruntime_loader_replay" ;;
+    gguf) AFLPP_NATIVE_DRIVER="harnesses/aflpp/gguf_loader_replay" ;;
+    *)    AFLPP_NATIVE_DRIVER="" ;;
+esac
+AFLPP_NATIVE_MODE=0
 AFLPP_MODE=blackbox_n
+AFLPP_SCOPE=none
 
 # G2: a replay binary without the AFL++ runtime carries no feedback, so driving it
 # without -n is not coverage-guided (afl-fuzz may even abort with "No instrumentation
@@ -76,13 +85,24 @@ AFLPP_MODE=blackbox_n
 # shellcheck source=../../scripts/lib/engine_mode.sh
 . "${SCRIPT_DIR}/../../scripts/lib/engine_mode.sh"
 
-if [ -z "${AFLPP_CONTAINER_TOOL_WAS_SET}" ] && [ "${TARGET}" = "onnx" ] \
-    && has_afl_instrumentation "${PROJECT_ROOT}/${AFLPP_NATIVE_ONNX_DRIVER}"; then
-    AFLPP_CONTAINER_TOOL="${AFLPP_NATIVE_ONNX_DRIVER}"
-    AFLPP_NATIVE_ONNX_MODE=1
+if [ -z "${AFLPP_CONTAINER_TOOL_WAS_SET}" ] && [ -n "${AFLPP_NATIVE_DRIVER}" ] \
+    && has_afl_instrumentation "${PROJECT_ROOT}/${AFLPP_NATIVE_DRIVER}"; then
+    AFLPP_CONTAINER_TOOL="${AFLPP_NATIVE_DRIVER}"
+    AFLPP_NATIVE_MODE=1
     AFLPP_MODE=instrumented
+    # "instrumented" alone does not say WHAT was instrumented. ONNX drives an
+    # uninstrumented libonnxruntime.so, so its scope is driver_only; gguf links ggml
+    # statically, so its scope is library. Record which one this run actually got.
+    AFLPP_SCOPE="$(instrumentation_scope "${PROJECT_ROOT}/${AFLPP_NATIVE_DRIVER}")"
 fi
-ONNX_AFLPP_LD_LIBRARY_PATH="{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/Linux/Release:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov-o0/RelWithDebInfo:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov/RelWithDebInfo"
+
+# onnxruntime lives in a .so the loader must find inside the container. gguf links ggml
+# statically and needs nothing - and pointing a gguf run at the onnxruntime tree would
+# be a copy-paste tell that the two arms were never really separated.
+case "${TARGET}" in
+    onnx) AFLPP_LD_LIBRARY_PATH="{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/Linux/Release:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov-o0/RelWithDebInfo:{container_workdir}/data/targets/onnxruntime/v1.23.2/onnxruntime-1.23.2/build/cov/RelWithDebInfo" ;;
+    *)    AFLPP_LD_LIBRARY_PATH="" ;;
+esac
 
 TOOL_BIN="${TOOL_BIN:-${PROJECT_ROOT}/target/release/tool}"
 
@@ -104,10 +124,12 @@ mkdir -p "${AFLPP_RUN_SUMMARY_ROOT}" || {
 export TOOL_AFLPP_MODE="${AFLPP_MODE}"
 
 if [ "${AFLPP_MODE}" != "instrumented" ]; then
-    if [ -x "${PROJECT_ROOT}/${AFLPP_NATIVE_ONNX_DRIVER}" ]; then
-        log "WARN: ${AFLPP_NATIVE_ONNX_DRIVER} has no AFL++/sancov instrumentation; falling back to -n black-box mode. This run is NOT coverage-guided."
+    if [ -z "${AFLPP_NATIVE_DRIVER}" ]; then
+        log "WARN: target ${TARGET} has no native AFL++ replay binary; running -n black-box mode over 'tool harness'. This run is NOT coverage-guided."
+    elif [ -x "${PROJECT_ROOT}/${AFLPP_NATIVE_DRIVER}" ]; then
+        log "WARN: ${AFLPP_NATIVE_DRIVER} has no AFL++/sancov instrumentation; falling back to -n black-box mode. This run is NOT coverage-guided."
     else
-        log "WARN: no native AFL++ replay binary at ${AFLPP_NATIVE_ONNX_DRIVER}; running -n black-box mode over 'tool harness'. This run is NOT coverage-guided."
+        log "WARN: no native AFL++ replay binary at ${AFLPP_NATIVE_DRIVER}; running -n black-box mode over 'tool harness'. This run is NOT coverage-guided."
     fi
     if [ "${REQUIRE_INSTRUMENTED}" = "1" ]; then
         log "REQUIRE_INSTRUMENTED=1 is set; refusing to run without instrumentation"
@@ -115,6 +137,7 @@ if [ "${AFLPP_MODE}" != "instrumented" ]; then
     fi
 fi
 log "aflpp_mode=${AFLPP_MODE}"
+log "aflpp_instrumentation_scope=${AFLPP_SCOPE}"
 
 stop_requested=0
 trap 'stop_requested=1; log "SIGTERM received, will exit after current iteration"' TERM INT
@@ -265,8 +288,13 @@ mark_latest_aflpp_run() {
 #   {docker_hardening_flags}= --network none --memory 4g --cpus 2 --pids-limit 512
 #   {docker_readonly_flags} = --read-only --tmpfs /tmp:rw,size=1g --tmpfs /dev/shm:rw,size=1g
 #   {workdir_abs}/{corpus_dir_abs}/{run_dir_abs} = host mounts; {container_*} = in-container paths
-if [ "${AFLPP_NATIVE_ONNX_MODE}" = "1" ]; then
-    export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"LD_LIBRARY_PATH=${ONNX_AFLPP_LD_LIBRARY_PATH}:\\\$LD_LIBRARY_PATH AFL_IGNORE_SEED_PROBLEMS=1 afl-fuzz -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/${AFLPP_CONTAINER_TOOL} @@ >/dev/null 2>&1\""
+if [ "${AFLPP_NATIVE_MODE}" = "1" ]; then
+    if [ -n "${AFLPP_LD_LIBRARY_PATH}" ]; then
+        AFLPP_ENV_PREFIX="LD_LIBRARY_PATH=${AFLPP_LD_LIBRARY_PATH}:\\\$LD_LIBRARY_PATH "
+    else
+        AFLPP_ENV_PREFIX=""
+    fi
+    export TOOL_AFLPP_CMD="docker run --rm {docker_user_flag} {docker_hardening_flags} {docker_readonly_flags} -v {workdir_abs}:/work:ro -v {corpus_dir_abs}:/corpus:ro -v {run_dir_abs}:/out -w /work aflplusplus/aflplusplus bash -lc \"${AFLPP_ENV_PREFIX}AFL_IGNORE_SEED_PROBLEMS=1 afl-fuzz -V 5 -i {container_corpus_dir} -o {container_run_dir}/afl-out -- {container_workdir}/${AFLPP_CONTAINER_TOOL} @@ >/dev/null 2>&1\""
 else
     # G3: in -n black-box mode AFL++ only records signal deaths, but the tool wrapper
     # never dies by signal - it reports a library crash as exit 4 (rejected inputs use 9

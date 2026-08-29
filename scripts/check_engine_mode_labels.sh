@@ -248,6 +248,40 @@ run_loop fuzz-loop-aflpp.sh $(unit_env "$PROJECT_ROOT/ops/systemd/tool-fuzz-onnx
 assert_contains "aflpp_mode=instrumented"
 assert_not_contains "afl-fuzz -n "
 
+# B3: the AFL++ arm resolved its native replay for onnx only, so gguf could never be
+# anything but blackbox_n no matter what was built. And because the gguf harness links
+# ggml statically, its instrumentation scope is library-wide - the thing ONNX cannot
+# claim - so the loop must say which one it got.
+log "aflpp: a gguf run without a native replay must warn and label blackbox_n"
+rm -f "$WORK/harnesses/aflpp/gguf_loader_replay"
+run_loop fuzz-loop-aflpp.sh TARGET=gguf CORPUS_DIR="$WORK/seeds/gguf"
+[ "$LOOP_EXIT" -eq 0 ] || fail "aflpp gguf blackbox loop exited $LOOP_EXIT"
+assert_contains "WARN"
+assert_contains "aflpp_mode=blackbox_n"
+assert_contains "gguf_loader_replay"
+
+if [ -x "$GGUF_REPLAY" ]; then
+  log "aflpp: an instrumented gguf replay must label instrumented with library scope"
+  afl_marked_copy "$GGUF_REPLAY" "$WORK/harnesses/aflpp/gguf_loader_replay"
+  run_loop fuzz-loop-aflpp.sh TARGET=gguf CORPUS_DIR="$WORK/seeds/gguf"
+  [ "$LOOP_EXIT" -eq 0 ] || fail "aflpp gguf native loop exited $LOOP_EXIT"
+  assert_contains "aflpp_mode=instrumented"
+  assert_contains "aflpp_instrumentation_scope=library"
+  assert_not_contains "afl-fuzz -n "
+  # gguf links ggml statically; dragging the onnxruntime library path into a gguf
+  # command line would be a copy-paste tell that the arms were never separated.
+  assert_not_contains "onnxruntime-1.23.2"
+
+  log "aflpp: the shipped gguf unit must not disable the native path"
+  # shellcheck disable=SC2046
+  run_loop fuzz-loop-aflpp.sh $(unit_env "$PROJECT_ROOT/ops/systemd/tool-fuzz-gguf-aflpp.service")
+  [ "$LOOP_EXIT" -eq 0 ] || fail "aflpp gguf systemd-env loop exited $LOOP_EXIT"
+  assert_contains "aflpp_mode=instrumented"
+  assert_not_contains "afl-fuzz -n "
+else
+  log "skip gguf aflpp native cases: no gguf replay at $GGUF_REPLAY (build it first)"
+fi
+
 # scripts/run_long.sh is the path the campaign runners take (run_campaign.sh /
 # run_onnx_abc_week.sh), so it must make the same decision as the systemd loops.
 ln -s "$PROJECT_ROOT/scripts" "$WORK/scripts"
