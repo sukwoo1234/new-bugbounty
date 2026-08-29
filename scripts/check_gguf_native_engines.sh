@@ -70,9 +70,13 @@ rc=0
 "$FUZZER" -runs=1 "${LIBFUZZER_LIMITS[@]}" -artifact_prefix="$clean_dir/" "$SEED" \
   >"$OUT_DIR/libfuzzer-clean.log" 2>&1 || rc=$?
 [[ "$rc" -eq 0 ]] || fail "libFuzzer target exited $rc on a good seed; see $OUT_DIR/libfuzzer-clean.log"
+# "exit 0 and no artifacts" is also what a fuzzer that never ran the input looks like -
+# the fd-starvation failure Stage A had to fix. Require proof the input was executed.
+grep -q "Executed .*$(basename "$SEED")" "$OUT_DIR/libfuzzer-clean.log" \
+  || fail "the libFuzzer target exited 0 without executing $SEED; see $OUT_DIR/libfuzzer-clean.log"
 artifacts="$(find "$clean_dir" -type f | wc -l | tr -d ' ')"
 [[ "$artifacts" -eq 0 ]] || fail "a good seed produced $artifacts crash artifact(s) in $clean_dir"
-log "OK   good seed: exit 0, no artifacts"
+log "OK   good seed: executed, exit 0, no artifacts"
 
 # Two separate claims, because libFuzzer treats them differently. Handed an input
 # FILE it crashes but writes no artifact - the bytes are already on disk. Handed a
@@ -127,10 +131,18 @@ if command -v afl-clang-fast++ >/dev/null 2>&1 && command -v afl-showmap >/dev/n
 
   log "afl-showmap must report coverage"
   AFL_MAP="$OUT_DIR/afl-showmap.txt"
-  afl-showmap -q -o "$AFL_MAP" -- "$AFLPP_REPLAY" "$SEED" >"$OUT_DIR/afl-showmap.log" 2>&1 || true
-  tuples="$(wc -l < "$AFL_MAP" 2>/dev/null | tr -d ' ' || echo 0)"
-  [[ "$tuples" -gt 0 ]] || fail "afl-showmap produced zero tuples; see $OUT_DIR/afl-showmap.log"
-  log "OK   afl-showmap tuples=$tuples"
+  # Remove it first and keep the exit status: `|| true` over a map file left by an
+  # earlier run means a completely failed afl-showmap still counts its tuples.
+  rm -f "$AFL_MAP"
+  showmap_rc=0
+  afl-showmap -q -o "$AFL_MAP" -- "$AFLPP_REPLAY" "$SEED" >"$OUT_DIR/afl-showmap.log" 2>&1 \
+    || showmap_rc=$?
+  [[ -f "$AFL_MAP" ]] \
+    || fail "afl-showmap wrote no map (rc=$showmap_rc); see $OUT_DIR/afl-showmap.log"
+  tuples="$(wc -l < "$AFL_MAP" | tr -d ' ')"
+  [[ "$tuples" -gt 0 ]] \
+    || fail "afl-showmap produced zero tuples (rc=$showmap_rc); see $OUT_DIR/afl-showmap.log"
+  log "OK   afl-showmap tuples=$tuples (rc=$showmap_rc)"
 else
   msg="AFL++ tools missing: afl-clang-fast++ and/or afl-showmap"
   if [[ "$REQUIRE_AFLPP" -eq 1 ]]; then
