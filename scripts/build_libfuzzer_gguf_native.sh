@@ -85,6 +85,16 @@ log "archive verified: $LLAMA_VER sha256=$actual_sha"
 # ---------------------------------------------------------------------------
 # 2. extract into a build-only tree
 # ---------------------------------------------------------------------------
+# Re-extract when the patch itself changed: the guard below is a marker check on the
+# tree, so without this an edited patches/gguf_asan_clamp.patch would be a permanent
+# no-op against a tree some older version had already marked.
+PATCH_STAMP="$SRC_DIR/.patch-sha256"
+PATCH_SHA="$(sha256sum "$PATCH" | cut -d' ' -f1)"
+if [[ -f "$SRC_DIR/.extract-ok" && "$(cat "$PATCH_STAMP" 2>/dev/null || true)" != "$PATCH_SHA" ]]; then
+  log "clamp patch changed since this tree was built; re-extracting"
+  rm -f "$SRC_DIR/.extract-ok"
+fi
+
 if [[ ! -f "$SRC_DIR/.extract-ok" ]]; then
   log "extracting into $SRC_DIR"
   rm -rf "$SRC_DIR"
@@ -101,13 +111,41 @@ GGUF_CPP="$SRC_DIR/ggml/src/gguf.cpp"
 # ---------------------------------------------------------------------------
 # 3. apply the clamp patch, idempotently
 # ---------------------------------------------------------------------------
-if grep -q "$PATCH_MARKER" "$GGUF_CPP"; then
-  log "clamp patch already applied"
+# `patch` applies the hunks it can BEFORE it exits non-zero, so a partial application
+# leaves the marker in the file. A bare "is the marker present" guard then reports
+# "already applied" on the next run and ships a half-patched parser - which is the
+# false-crash factory this whole harness exists to remove. Count the markers instead,
+# refuse a tree carrying rejects, and drop .extract-ok on any failure so the next run
+# starts from a pristine tree rather than the wreckage.
+expected_markers="$(grep -c "^+.*$PATCH_MARKER" "$PATCH" || true)"
+[[ "$expected_markers" -gt 0 ]] || fail "patch $PATCH carries no $PATCH_MARKER marker lines"
+
+reject_file="$(find "$SRC_DIR" -name '*.rej' -print -quit)"
+if [[ -n "$reject_file" ]]; then
+  rm -f "$SRC_DIR/.extract-ok"
+  fail "build tree holds a patch reject ($reject_file): it was left half-patched. Re-run to re-extract."
+fi
+
+found_markers="$(grep -c "$PATCH_MARKER" "$GGUF_CPP" || true)"
+if [[ "$found_markers" -eq "$expected_markers" ]]; then
+  log "clamp patch already applied ($found_markers markers)"
+elif [[ "$found_markers" -ne 0 ]]; then
+  rm -f "$SRC_DIR/.extract-ok"
+  fail "build tree is half-patched ($found_markers of $expected_markers markers). Re-run to re-extract."
 else
   log "applying clamp patch"
-  patch -p1 -d "$SRC_DIR" <"$PATCH" >/dev/null || fail "clamp patch did not apply"
-  grep -q "$PATCH_MARKER" "$GGUF_CPP" || fail "clamp patch applied but marker is missing"
+  if ! patch -p1 -d "$SRC_DIR" >"$BUILD_ROOT/patch.log" 2>&1 <"$PATCH"; then
+    rm -f "$SRC_DIR/.extract-ok"
+    cat "$BUILD_ROOT/patch.log" >&2
+    fail "clamp patch did not apply; the tree will be re-extracted on the next run"
+  fi
+  found_markers="$(grep -c "$PATCH_MARKER" "$GGUF_CPP" || true)"
+  if [[ "$found_markers" -ne "$expected_markers" ]]; then
+    rm -f "$SRC_DIR/.extract-ok"
+    fail "clamp patch reported success but left $found_markers of $expected_markers markers"
+  fi
 fi
+echo "$PATCH_SHA" >"$PATCH_STAMP"
 
 # ---------------------------------------------------------------------------
 # 4. build ggml-base
@@ -146,7 +184,15 @@ NM_LIST="$BUILD_ROOT/nm-ggml-base.txt"
 "$LLVM_NM" "$LIB_A" >"$NM_LIST" 2>/dev/null || fail "llvm-nm could not read $LIB_A"
 grep -q 'gguf_init_from_file_impl' "$NM_LIST" \
   || fail "gguf.cpp is not in $LIB_A (no gguf_init_from_file_impl symbol; see $NM_LIST)"
-log "symbol check ok: gguf_init_from_file_impl present"
+# An uninstrumented archive links and runs perfectly well - it just cannot report a
+# memory error or feed the fuzzer a single edge. Nothing downstream would notice, so
+# check here: GGML_SANITIZE_ADDRESS gives the __asan_ symbols, -fsanitize=fuzzer-no-link
+# gives the coverage callbacks.
+grep -q '__asan_report' "$NM_LIST" \
+  || fail "$LIB_A is not ASan-instrumented (no __asan_report symbols; see $NM_LIST)"
+grep -q '__sanitizer_cov' "$NM_LIST" \
+  || fail "$LIB_A has no coverage instrumentation (no __sanitizer_cov symbols; see $NM_LIST)"
+log "symbol check ok: parser present, ASan and coverage instrumentation present"
 
 # ---------------------------------------------------------------------------
 # 6. link both binaries from the one source
