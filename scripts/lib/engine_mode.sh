@@ -41,6 +41,13 @@ has_afl_instrumentation() {
 # Undecidable means driver_only. Claiming a coverage scope we did not verify is the
 # error that costs a result, and a stripped binary is undecidable by construction.
 #
+# LIMIT, on purpose: "the parser is in this binary" is a proxy for "the parser was
+# instrumented". A binary that statically links an UNinstrumented archive answers
+# `library` here. That gap is closed where it is actually checkable - in
+# scripts/build_aflpp_gguf_native.sh, which verifies the archive itself carries the
+# AFL++ and ASan symbols before it is ever linked. This function only ever sees the
+# finished binary, where the two facts are no longer separable.
+#
 # has_afl_instrumentation() is deliberately left untouched: three callers depend on it.
 TOOL_PARSER_SYMBOLS="${TOOL_PARSER_SYMBOLS:-gguf_init_from_file_impl|onnxruntime::|OrtGetApiBase}"
 
@@ -64,8 +71,12 @@ instrumentation_scope() {
     # "symbol not found". Measured on a 398 KB symbol listing, not theorised: the pipe
     # form returns 141 where the here-string form returns 0, and it turned the gguf
     # replay's library scope into driver_only.
+    # -C demangles: without it the "onnxruntime::" alternative below can never match,
+    # because a C++ symbol reaches us as _ZN11onnxruntime... . gguf_init_from_file_impl
+    # matches either way (its mangled form contains the readable name), which is why
+    # the gap went unnoticed.
     local symbols
-    symbols="$(nm --defined-only "${bin}" 2>/dev/null || true)"
+    symbols="$(nm -C --defined-only "${bin}" 2>/dev/null || true)"
     if grep -qE "${TOOL_PARSER_SYMBOLS}" <<<"${symbols}"; then
         echo "library"
         return 0
