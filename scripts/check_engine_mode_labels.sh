@@ -21,6 +21,16 @@ fail() {
   exit 1
 }
 
+# A case that does not run is not a case that passed. Every skip is recorded and, by
+# default, fails the script at the end: the gguf cases used to self-disable whenever a
+# gitignored build artifact was missing, which silently switched off the regression test
+# for the systemd defect this project has already shipped once (1e8261f).
+SKIPPED=""
+note_skip() {
+  SKIPPED="${SKIPPED}|$*"
+  echo "[engine-mode-check] SKIP: $*"
+}
+
 mkdir -p "$WORK/bin" "$WORK/seeds/onnx" "$WORK/harnesses/libfuzzer" "$WORK/harnesses/aflpp"
 printf 'seed' > "$WORK/seeds/onnx/seed.onnx"
 
@@ -86,6 +96,26 @@ afl_marked_copy() {
   chmod +x "$2"
 }
 
+SCOPE_CC="${SCOPE_CC:-$PROJECT_ROOT/data/toolchains/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04/bin/clang}"
+[ -x "$SCOPE_CC" ] || SCOPE_CC="$(command -v cc || command -v gcc || command -v clang || true)"
+
+# build_scope_fixture <dst> <with_parser_symbol:0|1>
+# A real ELF that carries the AFL marker and either does or does not DEFINE a parser
+# symbol. Built here rather than copied from harnesses/, which is gitignored: borrowing
+# it made every case below vanish on a fresh clone.
+build_scope_fixture() {
+  local dst="$1" with_parser="$2" src="$WORK/fixture_${2}.c"
+  [ -n "$SCOPE_CC" ] && [ -x "$SCOPE_CC" ] || return 1
+  {
+    printf 'long fixture_pad_a = 1;\nlong fixture_pad_b = 2;\n'
+    [ "$with_parser" = "1" ] && printf 'void gguf_init_from_file_impl(void) { }\n'
+    printf 'int main(void) { return 0; }\n'
+  } > "$src"
+  "$SCOPE_CC" -O0 "$src" -o "$dst" 2>/dev/null || return 1
+  printf '__AFL_SHM_ID __afl_area_ptr' >>"$dst"
+  chmod +x "$dst"
+}
+
 # has_afl_instrumentation() decides whether the AFL++ arm runs instrumented or
 # black-box, and its nm branch matches symbols (__afl_prev_loc, __afl_shm, __afl_fuzz)
 # that the raw-bytes fallback below it does NOT list. All three callers run under
@@ -121,10 +151,18 @@ cp /bin/true "$WORK/harnesses/aflpp/plain_bin"
 scope="$(instrumentation_scope "$WORK/harnesses/aflpp/plain_bin")"
 [ "$scope" = "none" ] || fail "expected none, got '$scope'"
 
+# /bin/true is stripped, so it would answer driver_only even if the logic were broken.
+# The compiled fixture HAS symbols and simply does not define the parser: that makes the
+# case pass for the reason it claims.
 log "instrumentation_scope: a driver whose parser is not linked in is driver_only"
-afl_marked_copy /bin/true "$WORK/harnesses/aflpp/dyn_replay"
-scope="$(instrumentation_scope "$WORK/harnesses/aflpp/dyn_replay")"
-[ "$scope" = "driver_only" ] || fail "expected driver_only, got '$scope'"
+if build_scope_fixture "$WORK/harnesses/aflpp/dyn_replay" 0; then
+  [ "$(nm --defined-only "$WORK/harnesses/aflpp/dyn_replay" 2>/dev/null | wc -l)" -gt 0 ] \
+    || fail "the driver_only fixture has no symbols; it cannot exercise the logic"
+  scope="$(instrumentation_scope "$WORK/harnesses/aflpp/dyn_replay")"
+  [ "$scope" = "driver_only" ] || fail "expected driver_only, got '$scope'"
+else
+  note_skip "instrumentation_scope driver_only case (no C compiler at ${SCOPE_CC:-<none>})"
+fi
 
 log "instrumentation_scope: a missing binary is none, not a crash"
 scope="$(instrumentation_scope "$WORK/harnesses/aflpp/does-not-exist")"
@@ -134,13 +172,25 @@ scope="$(instrumentation_scope "$WORK/harnesses/aflpp/does-not-exist")"
 # is inside the binary - that is what makes library-wide scope claimable for gguf and
 # not for onnx.
 GGUF_REPLAY="$PROJECT_ROOT/harnesses/libfuzzer/gguf_loader_replay"
-if [ -x "$GGUF_REPLAY" ]; then
-  log "instrumentation_scope: a statically linked parser is library scope"
+log "instrumentation_scope: a statically linked parser is library scope"
+if build_scope_fixture "$WORK/harnesses/aflpp/static_replay" 1; then
+  scope="$(instrumentation_scope "$WORK/harnesses/aflpp/static_replay")"
+  [ "$scope" = "library" ] || fail "expected library, got '$scope'"
+elif [ -x "$GGUF_REPLAY" ]; then
   afl_marked_copy "$GGUF_REPLAY" "$WORK/harnesses/aflpp/static_replay"
   scope="$(instrumentation_scope "$WORK/harnesses/aflpp/static_replay")"
   [ "$scope" = "library" ] || fail "expected library, got '$scope'"
 else
-  log "skip library-scope case: no gguf replay at $GGUF_REPLAY (build it first)"
+  note_skip "instrumentation_scope library case (no C compiler and no built gguf replay)"
+fi
+
+# The real shipped binary, when it happens to be built, is worth checking too: it is the
+# one whose scope the campaign will actually claim.
+if [ -x "$GGUF_REPLAY" ]; then
+  log "instrumentation_scope: the shipped gguf replay is library scope once instrumented"
+  afl_marked_copy "$GGUF_REPLAY" "$WORK/harnesses/aflpp/shipped_replay"
+  scope="$(instrumentation_scope "$WORK/harnesses/aflpp/shipped_replay")"
+  [ "$scope" = "library" ] || fail "expected library for the shipped replay, got '$scope'"
 fi
 
 # The shipped ONNX drivers must NOT claim library scope: onnxruntime is a .so.
@@ -260,9 +310,19 @@ assert_contains "WARN"
 assert_contains "aflpp_mode=blackbox_n"
 assert_contains "gguf_loader_replay"
 
-if [ -x "$GGUF_REPLAY" ]; then
-  log "aflpp: an instrumented gguf replay must label instrumented with library scope"
+# The fixture is BUILT, not borrowed from the gitignored harnesses/ tree: borrowing it
+# switched this whole block off on any machine that had not built the libFuzzer arm -
+# including the regression test for the unit defect of 1e8261f.
+GGUF_AFLPP_FIXTURE_OK=0
+if build_scope_fixture "$WORK/harnesses/aflpp/gguf_loader_replay" 1; then
+  GGUF_AFLPP_FIXTURE_OK=1
+elif [ -x "$GGUF_REPLAY" ]; then
   afl_marked_copy "$GGUF_REPLAY" "$WORK/harnesses/aflpp/gguf_loader_replay"
+  GGUF_AFLPP_FIXTURE_OK=1
+fi
+
+if [ "$GGUF_AFLPP_FIXTURE_OK" = "1" ]; then
+  log "aflpp: an instrumented gguf replay must label instrumented with library scope"
   run_loop fuzz-loop-aflpp.sh TARGET=gguf CORPUS_DIR="$WORK/seeds/gguf"
   [ "$LOOP_EXIT" -eq 0 ] || fail "aflpp gguf native loop exited $LOOP_EXIT"
   assert_contains "aflpp_mode=instrumented"
@@ -272,14 +332,23 @@ if [ -x "$GGUF_REPLAY" ]; then
   # command line would be a copy-paste tell that the arms were never separated.
   assert_not_contains "onnxruntime-1.23.2"
 
+  # 1e8261f: a unit that sets AFLPP_CONTAINER_TOOL - even to the loop's own default -
+  # reads as an operator override and pins the arm to blackbox_n forever.
   log "aflpp: the shipped gguf unit must not disable the native path"
+  GGUF_UNIT="$PROJECT_ROOT/ops/systemd/tool-fuzz-gguf-aflpp.service"
+  [ -f "$GGUF_UNIT" ] || fail "shipped gguf unit not found: $GGUF_UNIT"
+  # Without this the case would pass on a unit that never selects gguf at all: the loop
+  # would default to TARGET=onnx and happily report instrumented for the onnx fixture.
+  unit_env "$GGUF_UNIT" | grep -qx 'TARGET=gguf' \
+    || fail "$GGUF_UNIT does not set TARGET=gguf; this case would be testing the onnx arm"
   # shellcheck disable=SC2046
-  run_loop fuzz-loop-aflpp.sh $(unit_env "$PROJECT_ROOT/ops/systemd/tool-fuzz-gguf-aflpp.service")
+  run_loop fuzz-loop-aflpp.sh $(unit_env "$GGUF_UNIT")
   [ "$LOOP_EXIT" -eq 0 ] || fail "aflpp gguf systemd-env loop exited $LOOP_EXIT"
+  assert_contains "target=gguf"
   assert_contains "aflpp_mode=instrumented"
   assert_not_contains "afl-fuzz -n "
 else
-  log "skip gguf aflpp native cases: no gguf replay at $GGUF_REPLAY (build it first)"
+  note_skip "gguf aflpp cases incl. the 1e8261f unit regression (no C compiler and no built gguf replay)"
 fi
 
 # scripts/run_long.sh is the path the campaign runners take (run_campaign.sh /
@@ -313,6 +382,24 @@ set -e
 
 # run_long is the campaign path; it must resolve the gguf driver exactly as the systemd
 # loop does, or a campaign and its unit fuzz different things under the same label.
+# run_long is the campaign path for the AFL++ arm too, and a74314d changed it as well.
+# (This lives here, not with the loop cases above, because run_long needs $WORK/scripts.)
+if [ "$GGUF_AFLPP_FIXTURE_OK" = "1" ]; then
+  log "run_long: an instrumented gguf aflpp replay must label instrumented with library scope"
+  set +e
+  LOOP_OUT="$(env -u REQUIRE_INSTRUMENTED -u TOOL_AFLPP_CMD \
+    WORKDIR="$WORK" DATA_DIR="$WORK/data" TOOL_BIN="$WORK/bin/tool" LOOP_SLEEP_SEC=0 \
+    bash "$PROJECT_ROOT/scripts/run_long.sh" --target gguf --backend aflpp \
+      --duration-seconds 1 --tag engine-mode-check --corpus-dir "$WORK/seeds/gguf" 2>&1)"
+  LOOP_EXIT=$?
+  set -e
+  [ "$LOOP_EXIT" -eq 0 ] || fail "run_long gguf aflpp exited $LOOP_EXIT: $LOOP_OUT"
+  assert_contains "aflpp_mode=instrumented"
+  assert_contains "aflpp_instrumentation_scope=library"
+  assert_contains "harnesses/aflpp/gguf_loader_replay"
+  assert_not_contains "onnxruntime-1.23.2"
+fi
+
 log "run_long: a native gguf driver must label native"
 cp "$WORK/bin/tool" "$WORK/harnesses/libfuzzer/gguf_loader_fuzzer"
 set +e
@@ -339,4 +426,12 @@ set -e
 assert_contains "WARN"
 assert_contains "libfuzzer_mode=blackbox"
 
+if [ -n "$SKIPPED" ]; then
+  echo "[engine-mode-check] these cases did NOT run:" >&2
+  printf '%s\n' "$SKIPPED" | tr '|' '\n' | sed '/^$/d;s/^/  - /' >&2
+  if [ "${ALLOW_SKIPPED_CASES:-0}" != "1" ]; then
+    fail "some cases were skipped; set ALLOW_SKIPPED_CASES=1 only if you accept an unverified run"
+  fi
+  echo "[engine-mode-check] WARN: continuing with skipped cases (ALLOW_SKIPPED_CASES=1)" >&2
+fi
 log "done: engine mode labels verified"
