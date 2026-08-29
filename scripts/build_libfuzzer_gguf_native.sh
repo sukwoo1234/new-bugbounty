@@ -165,6 +165,12 @@ log "configuring ($("$CMAKE" --version | head -1))"
   -DLLAMA_BUILD_SERVER=OFF \
   >"$BUILD_ROOT/configure.log" 2>&1 || fail "cmake configure failed; see $BUILD_ROOT/configure.log"
 
+# A cmake cache wipe (or any configure that silently drops the target) leaves the
+# previous archive in place, and the link step below would happily reuse it while the
+# scope gate reported success on stale objects. Remove it so "the file exists" means
+# "this run built it".
+LIB_A_PRE="$BUILD_DIR/ggml/src/libggml-base.a"
+rm -f "$LIB_A_PRE"
 log "building ggml-base (jobs=$JOBS)"
 "$CMAKE" --build "$BUILD_DIR" --target ggml-base -j"$JOBS" \
   >"$BUILD_ROOT/build.log" 2>&1 || fail "ggml-base build failed; see $BUILD_ROOT/build.log"

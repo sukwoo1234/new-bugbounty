@@ -146,12 +146,53 @@ AFL_USE_ASAN=1 "$CMAKE" -S "$SRC_DIR" -B "$BUILD_DIR" \
   -DLLAMA_CURL=OFF \
   >"$BUILD_ROOT/configure.log" 2>&1 || fail "cmake configure failed; see $BUILD_ROOT/configure.log"
 
+# A cmake cache wipe (or any configure that silently drops the target) leaves the
+# previous archive in place, and the link step below would happily reuse it while the
+# scope gate reported success on stale objects. Remove it so "the file exists" means
+# "this run built it".
+LIB_A_PRE="$BUILD_DIR/ggml/src/libggml-base.a"
+rm -f "$LIB_A_PRE"
 log "building ggml-base (jobs=$JOBS)"
 AFL_USE_ASAN=1 "$CMAKE" --build "$BUILD_DIR" --target ggml-base -j"$JOBS" \
   >"$BUILD_ROOT/build.log" 2>&1 || fail "ggml-base build failed; see $BUILD_ROOT/build.log"
 
 LIB_A="$BUILD_DIR/ggml/src/libggml-base.a"
 [[ -f "$LIB_A" ]] || fail "static library not produced: $LIB_A"
+
+# The twin (build_libfuzzer_gguf_native.sh) checks the ARCHIVE, not just the finished
+# binary, and the copy that produced this script dropped those checks. They matter more
+# here: instrumentation_scope() can only see the linked binary, where "the parser is
+# present" and "the parser was instrumented" are no longer separable facts. In the
+# archive they still are.
+NM_BIN="${LLVM_NM:-}"
+if [[ -z "$NM_BIN" ]]; then
+  NM_BIN="$(command -v llvm-nm || command -v nm || true)"
+fi
+[[ -n "$NM_BIN" ]] || fail "no llvm-nm/nm to verify $LIB_A"
+NM_LIST="$BUILD_ROOT/nm-ggml-base.txt"
+# A file, not a pipe: grep -q closes the pipe on its first match and pipefail would read
+# the resulting SIGPIPE as a missing symbol.
+"$NM_BIN" "$LIB_A" >"$NM_LIST" 2>/dev/null || fail "llvm-nm could not read $LIB_A"
+
+grep -q 'gguf_init_from_file_impl' "$NM_LIST" \
+  || fail "gguf.cpp is not in $LIB_A (no gguf_init_from_file_impl symbol; see $NM_LIST)"
+
+# The AFL++ runtime references land in the archive's objects as undefined symbols; the
+# runtime itself is linked in at the final link. Same for ASan under AFL_USE_ASAN.
+afl_refs="$(grep -c '__afl_' "$NM_LIST" || true)"
+asan_refs="$(grep -c '__asan_' "$NM_LIST" || true)"
+log "archive symbols: __afl_=$afl_refs __asan_=$asan_refs (listing: $NM_LIST)"
+if [[ "$afl_refs" -eq 0 || "$asan_refs" -eq 0 ]]; then
+  if [[ "${ALLOW_UNINSTRUMENTED:-0}" == "1" ]]; then
+    log "WARN: $LIB_A carries __afl_=$afl_refs __asan_=$asan_refs (ALLOW_UNINSTRUMENTED=1)"
+  else
+    echo "[build-aflpp-gguf] $LIB_A does not look instrumented: __afl_=$afl_refs __asan_=$asan_refs" >&2
+    echo "[build-aflpp-gguf] the parser objects must carry AFL++ instrumentation and (AFL_USE_ASAN=1) ASan," >&2
+    echo "[build-aflpp-gguf] or afl-fuzz sees the harness's edges only - the ONNX G2 situation." >&2
+    echo "[build-aflpp-gguf] inspect $NM_LIST; set ALLOW_UNINSTRUMENTED=1 for a deliberate baseline build" >&2
+    exit 1
+  fi
+fi
 
 mkdir -p "$(dirname "$OUT")"
 log "linking standalone replay"
