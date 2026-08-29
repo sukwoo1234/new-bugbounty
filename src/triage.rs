@@ -875,6 +875,13 @@ fn classify_crash_kind(
             return kind.to_string();
         }
     }
+    // The sanitizer's allocation ceiling, not the kernel's OOM killer (that is
+    // infra_oom, exit 137). ASan cannot honour allocator_may_return_null for a
+    // throwing operator new, so it aborts on a huge length before the parser's own
+    // length_error handler runs - a property of the build, not a target bug.
+    if lower.contains("allocation-size-too-big") || lower.contains("out of memory: allocator") {
+        return "sanitizer_alloc_limit".to_string();
+    }
     if sanitizer != "none" {
         sanitizer.to_string()
     } else if signal != "none" {
@@ -896,7 +903,11 @@ fn requires_manual_review(crash_kind: &str) -> bool {
     // verdict that feeds the report pipeline.
     matches!(
         crash_kind,
-        "manual_review" | "parser_or_runtime_error" | "sigkill" | "sigterm"
+        "manual_review"
+            | "parser_or_runtime_error"
+            | "sigkill"
+            | "sigterm"
+            | "sanitizer_alloc_limit"
     )
 }
 
@@ -1338,6 +1349,19 @@ library_step: onnxruntime loader crashed (SIGSEGV (signal: 11); stdout: no outpu
     );
 
     #[test]
+    // The sanitizer's own allocation ceiling is a property of the sanitizer, not of
+    // the target: ASan aborts on a huge size before the parser's own length_error
+    // handler can run. Classified as "asan" it reaches verdict "reproduced" and
+    // report.rs drafts a submission for something upstream never did wrong.
+    #[test]
+    fn a_sanitizer_allocation_limit_is_not_a_reproduced_finding() {
+        let output = "==1==ERROR: AddressSanitizer: allocation-size-too-big on 0xfdffffffff03 bytes\n\
+                      SUMMARY: AddressSanitizer: allocation-size-too-big";
+        let kind = super::classify_crash_kind(output, "asan", "SIGABRT", false, false);
+        assert_eq!(kind, "sanitizer_alloc_limit");
+        assert!(super::requires_manual_review(&kind));
+    }
+
     fn classify_crash_kind_table_keeps_branch_order() {
         let cases: &[CrashKindCase] = &[
             (
