@@ -18,3 +18,48 @@ has_afl_instrumentation() {
     fi
     grep -qaE '__AFL_SHM_ID|__AFL_SHM_FUZZ_ID|__afl_area_initial|__afl_area_ptr' "${bin}" 2>/dev/null
 }
+
+# Which layer AFL++ actually instrumented. has_afl_instrumentation() answers "does this
+# binary carry the forkserver", which is a different question: a driver that is
+# instrumented but reaches its parser through a separate, uninstrumented .so gives
+# driver-level coverage only. The ONNX arm was labelled "instrumented" on exactly that
+# basis, and the paper had to say "driver-level" after the fact.
+#
+#   library      instrumented AND the parser is defined inside this binary
+#   driver_only  instrumented, but the parser is not in here - or we cannot tell
+#   none         no AFL++ instrumentation at all
+#
+# Undecidable means driver_only. Claiming a coverage scope we did not verify is the
+# error that costs a result, and a stripped binary is undecidable by construction.
+#
+# has_afl_instrumentation() is deliberately left untouched: three callers depend on it.
+TOOL_PARSER_SYMBOLS="${TOOL_PARSER_SYMBOLS:-gguf_init_from_file_impl|onnxruntime::|OrtGetApiBase}"
+
+instrumentation_scope() {
+    local bin="$1"
+
+    if ! has_afl_instrumentation "${bin}"; then
+        echo "none"
+        return 0
+    fi
+    command -v nm >/dev/null 2>&1 || { echo "driver_only"; return 0; }
+
+    # --defined-only is the whole point: a dynamically linked driver still carries the
+    # parser's name in .dynsym as an UNDEFINED reference, so a plain symbol grep - or
+    # the raw-bytes fallback has_afl_instrumentation uses - would call every ONNX
+    # driver "library".
+    #
+    # The listing is captured and fed as a here-string, never through a pipe.
+    # `nm ... | grep -q` closes the pipe on the first match, nm dies of SIGPIPE, and
+    # every caller of this file runs under `set -o pipefail`, which reads that 141 as
+    # "symbol not found". Measured on a 398 KB symbol listing, not theorised: the pipe
+    # form returns 141 where the here-string form returns 0, and it turned the gguf
+    # replay's library scope into driver_only.
+    local symbols
+    symbols="$(nm --defined-only "${bin}" 2>/dev/null || true)"
+    if grep -qE "${TOOL_PARSER_SYMBOLS}" <<<"${symbols}"; then
+        echo "library"
+        return 0
+    fi
+    echo "driver_only"
+}

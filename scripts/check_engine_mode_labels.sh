@@ -70,6 +70,61 @@ unit_env() {
   sed -n 's/^Environment=//p' "$1"
 }
 
+# --- instrumentation_scope (B1) -------------------------------------------------
+# G2 again, one level deeper. has_afl_instrumentation() answers "does this binary
+# carry the forkserver", which is NOT "is the parser instrumented": a driver that is
+# instrumented but reaches its parser through a separate .so gives driver-level
+# coverage only. That is exactly what the ONNX arm was labelled "instrumented" for.
+# The fixtures are real ELF binaries with the AFL marker appended, because the
+# decision turns on DEFINED symbols and a shell script has none.
+. "$PROJECT_ROOT/scripts/lib/engine_mode.sh"
+
+afl_marked_copy() {
+  # afl_marked_copy <src> <dst>: a real binary that also looks AFL-instrumented.
+  cp "$1" "$2"
+  printf '__AFL_SHM_ID __afl_area_ptr' >>"$2"
+  chmod +x "$2"
+}
+
+log "instrumentation_scope: a binary without the forkserver is none"
+cp /bin/true "$WORK/harnesses/aflpp/plain_bin"
+scope="$(instrumentation_scope "$WORK/harnesses/aflpp/plain_bin")"
+[ "$scope" = "none" ] || fail "expected none, got '$scope'"
+
+log "instrumentation_scope: a driver whose parser is not linked in is driver_only"
+afl_marked_copy /bin/true "$WORK/harnesses/aflpp/dyn_replay"
+scope="$(instrumentation_scope "$WORK/harnesses/aflpp/dyn_replay")"
+[ "$scope" = "driver_only" ] || fail "expected driver_only, got '$scope'"
+
+log "instrumentation_scope: a missing binary is none, not a crash"
+scope="$(instrumentation_scope "$WORK/harnesses/aflpp/does-not-exist")"
+[ "$scope" = "none" ] || fail "expected none for a missing binary, got '$scope'"
+
+# The gguf harness links ggml statically (BUILD_SHARED_LIBS=OFF), so the parser really
+# is inside the binary - that is what makes library-wide scope claimable for gguf and
+# not for onnx.
+GGUF_REPLAY="$PROJECT_ROOT/harnesses/libfuzzer/gguf_loader_replay"
+if [ -x "$GGUF_REPLAY" ]; then
+  log "instrumentation_scope: a statically linked parser is library scope"
+  afl_marked_copy "$GGUF_REPLAY" "$WORK/harnesses/aflpp/static_replay"
+  scope="$(instrumentation_scope "$WORK/harnesses/aflpp/static_replay")"
+  [ "$scope" = "library" ] || fail "expected library, got '$scope'"
+else
+  log "skip library-scope case: no gguf replay at $GGUF_REPLAY (build it first)"
+fi
+
+# The shipped ONNX drivers must NOT claim library scope: onnxruntime is a .so.
+for onnx_driver in \
+  "$PROJECT_ROOT/harnesses/libfuzzer/onnxruntime_loader_fuzzer" \
+  "$PROJECT_ROOT/harnesses/aflpp/onnxruntime_loader_replay"
+do
+  [ -x "$onnx_driver" ] || continue
+  log "instrumentation_scope: $(basename "$onnx_driver") must not claim library scope"
+  afl_marked_copy "$onnx_driver" "$WORK/harnesses/aflpp/onnx_scope_probe"
+  scope="$(instrumentation_scope "$WORK/harnesses/aflpp/onnx_scope_probe")"
+  [ "$scope" = "driver_only" ] || fail "expected driver_only for $onnx_driver, got '$scope'"
+done
+
 log "libfuzzer: missing native driver must warn and label blackbox"
 cp "$WORK/bin/tool" "$WORK/harnesses/libfuzzer/tool_harness_driver"
 rm -f "$WORK/harnesses/libfuzzer/onnxruntime_loader_fuzzer"
