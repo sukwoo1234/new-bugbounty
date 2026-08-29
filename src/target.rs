@@ -589,7 +589,126 @@ fn resolve_executable(cmd: &std::ffi::OsStr) -> Option<PathBuf> {
     candidate.is_file().then_some(candidate)
 }
 
+/// Which probe answers `library_connect` for GGUF.
+///
+/// `native` is the harness built by scripts/build_libfuzzer_gguf_native.sh: it checks
+/// what gguf_init_from_file actually returned, so a file the parser rejects comes back
+/// as a rejection instead of a crash. `legacy_hash` is llama-gguf-hash, kept selectable
+/// because measuring how often it fakes a crash needs it to still be runnable.
+#[derive(Debug)]
+enum GgufProbeKind {
+    Native,
+    LegacyHash,
+}
+
+fn resolve_gguf_probe_kind(raw: Option<&str>) -> Result<GgufProbeKind, String> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        None | Some("native") => Ok(GgufProbeKind::Native),
+        Some("legacy_hash") => Ok(GgufProbeKind::LegacyHash),
+        // Falling back to a default here would hand a typo'd campaign back to the
+        // legacy probe and quietly restore its false crashes.
+        Some(other) => Err(format!(
+            "gguf probe unavailable (unknown {GGUF_PROBE_KIND}={other}; expected native or legacy_hash)"
+        )),
+    }
+}
+
 fn gguf_library_connect(input: &Path) -> LibraryConnectResult {
+    let selector = std::env::var(GGUF_PROBE_KIND).ok();
+    match resolve_gguf_probe_kind(selector.as_deref()) {
+        Ok(GgufProbeKind::Native) => gguf_native_connect(input),
+        Ok(GgufProbeKind::LegacyHash) => gguf_legacy_hash_connect(input),
+        Err(step) => LibraryConnectResult {
+            step,
+            outcome: LibraryConnectOutcome::Unavailable,
+        },
+    }
+}
+
+fn gguf_native_connect(input: &Path) -> LibraryConnectResult {
+    let bin = std::env::var_os(GGUF_NATIVE_BIN)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| OsString::from(GGUF_NATIVE_DEFAULT_BIN));
+    gguf_native_connect_with_bin(&bin, input)
+}
+
+/// The replay harness answers with the same exit-code vocabulary the tool uses
+/// (src/main.rs:45-47): 0 parsed, 9 the parser rejected the input, 10 the harness
+/// itself could not run. Anything else is the target really dying.
+fn gguf_native_connect_with_bin(bin: &std::ffi::OsStr, input: &Path) -> LibraryConnectResult {
+    if resolve_executable(bin).is_none() {
+        return LibraryConnectResult {
+            step: format!(
+                "gguf native harness unavailable (not executable: {})",
+                bin.to_string_lossy()
+            ),
+            outcome: LibraryConnectOutcome::Unavailable,
+        };
+    }
+
+    let output = match command_with_core_dump_off(bin).arg(input).output() {
+        Ok(output) => output,
+        Err(e) => {
+            return LibraryConnectResult {
+                step: format!(
+                    "gguf native harness unavailable ({}: {e})",
+                    bin.to_string_lossy()
+                ),
+                outcome: LibraryConnectOutcome::Unavailable,
+            }
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if output.status.success() {
+        return LibraryConnectResult {
+            step: format!("gguf parser connected (native: parsed {})", first_line(&stdout)),
+            outcome: LibraryConnectOutcome::SessionOk,
+        };
+    }
+
+    // A13: prlimit reporting its own exec failure as 126/127 means the harness never
+    // ran. Reading that as a crash is exactly the fake-crash bug we removed once.
+    if is_core_dump_wrapper_exec_failure(output.status.code(), &stderr) {
+        return LibraryConnectResult {
+            step: format!("gguf native harness unavailable ({})", first_line(&stderr)),
+            outcome: LibraryConnectOutcome::Unavailable,
+        };
+    }
+
+    match output.status.code() {
+        Some(code) if code == i32::from(crate::EXIT_HARNESS_INPUT_REJECTED) => {
+            LibraryConnectResult {
+                step: format!(
+                    "gguf parser rejected the file (native: {})",
+                    first_line(&stderr)
+                ),
+                outcome: LibraryConnectOutcome::Invoked,
+            }
+        }
+        Some(code) if code == i32::from(crate::EXIT_HARNESS_UNAVAILABLE) => LibraryConnectResult {
+            step: format!("gguf native harness unavailable ({})", first_line(&stderr)),
+            outcome: LibraryConnectOutcome::Unavailable,
+        },
+        _ => {
+            if let Some(result) = crashed_connect_result("gguf parser", "native harness", &output) {
+                return result;
+            }
+            LibraryConnectResult {
+                step: format!(
+                    "gguf native harness invoked (unexpected exit {:?}: {})",
+                    output.status.code(),
+                    first_line(&stderr)
+                ),
+                outcome: LibraryConnectOutcome::Invoked,
+            }
+        }
+    }
+}
+
+fn gguf_legacy_hash_connect(input: &Path) -> LibraryConnectResult {
     let mut candidates = Vec::new();
     if let Some(custom) = std::env::var_os("TOOL_LLAMA_CLI_BIN") {
         if !custom.is_empty() {
@@ -861,6 +980,9 @@ fn is_project_root(root: &Path) -> bool {
 
 /// Env switch for the carve-out below. Unset means "report every crash".
 pub(crate) const GGUF_SUPPRESS_REJECTION_CRASHES: &str = "TOOL_GGUF_SUPPRESS_REJECTION_CRASHES";
+pub(crate) const GGUF_PROBE_KIND: &str = "TOOL_GGUF_PROBE";
+pub(crate) const GGUF_NATIVE_BIN: &str = "TOOL_GGUF_NATIVE_BIN";
+const GGUF_NATIVE_DEFAULT_BIN: &str = "harnesses/libfuzzer/gguf_loader_replay";
 
 /// Whether the probe died because llama.cpp's parser cleanly refused the file.
 ///
@@ -1012,11 +1134,97 @@ mod tests {
         let input = dir.join("sample.gguf");
         std::fs::write(&input, &gguf).expect("write input");
 
+        // The default probe is the native harness now, so a test about the old
+        // llama-gguf-hash behaviour has to ask for it by name.
+        std::env::set_var(super::GGUF_PROBE_KIND, "legacy_hash");
         std::env::set_var("TOOL_LLAMA_CLI_BIN", bin.join("llama-cli"));
         let result = super::gguf_library_connect(&input);
         std::env::remove_var("TOOL_LLAMA_CLI_BIN");
+        std::env::remove_var(super::GGUF_PROBE_KIND);
         let _ = std::fs::remove_dir_all(&dir);
         result
+    }
+
+    // The native harness reports its verdict as an exit code, so its stub is a
+    // different file under a different env var. TOOL_GGUF_PROBE is cleared rather
+    // than set: these tests are also what pins `native` as the default.
+    #[cfg(unix)]
+    fn gguf_probe_with_native_stub(label: &str, body: &str) -> super::LibraryConnectResult {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = gguf_probe_dir(label);
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("create bin dir");
+        let stub = bin.join("gguf_loader_replay");
+        std::fs::write(&stub, format!("#!/bin/sh\n{body}\n")).expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let mut gguf = Vec::new();
+        gguf.extend_from_slice(b"GGUF");
+        gguf.extend_from_slice(&3u32.to_le_bytes());
+        gguf.extend_from_slice(&1u64.to_le_bytes());
+        gguf.extend_from_slice(&0u64.to_le_bytes());
+        let input = dir.join("sample.gguf");
+        std::fs::write(&input, &gguf).expect("write input");
+
+        std::env::remove_var(super::GGUF_PROBE_KIND);
+        std::env::set_var(super::GGUF_NATIVE_BIN, &stub);
+        let result = super::gguf_library_connect(&input);
+        std::env::remove_var(super::GGUF_NATIVE_BIN);
+        let _ = std::fs::remove_dir_all(&dir);
+        result
+    }
+
+    // Exit 9 is the whole reason this harness exists: the parser turned the file
+    // down on purpose. The legacy probe turned the same answer into a SIGSEGV.
+    #[cfg(unix)]
+    #[test]
+    fn the_native_gguf_probe_reports_a_rejected_file_as_invoked_not_crashed() {
+        let _guard = env_lock();
+        let result = gguf_probe_with_native_stub("gguf-native-reject", "exit 9");
+        assert!(
+            matches!(result.outcome, super::LibraryConnectOutcome::Invoked),
+            "outcome was {} / {}",
+            result.outcome.as_str(),
+            result.step
+        );
+        assert!(result.step.contains("rejected"), "step was: {}", result.step);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_native_gguf_probe_reports_a_signal_death_as_a_crash() {
+        let _guard = env_lock();
+        let result = gguf_probe_with_native_stub("gguf-native-abort", "kill -ABRT \"$$\"");
+        assert!(
+            matches!(result.outcome, super::LibraryConnectOutcome::Crashed),
+            "outcome was {} / {}",
+            result.outcome.as_str(),
+            result.step
+        );
+    }
+
+    // Exit 10 means the harness could not run at all. That says nothing about the
+    // input, so it must not be counted as a finding or as a clean parse.
+    #[cfg(unix)]
+    #[test]
+    fn the_native_gguf_probe_reports_its_own_unavailability_as_unavailable() {
+        let _guard = env_lock();
+        let result = gguf_probe_with_native_stub("gguf-native-unavail", "exit 10");
+        assert!(
+            matches!(result.outcome, super::LibraryConnectOutcome::Unavailable),
+            "outcome was {} / {}",
+            result.outcome.as_str(),
+            result.step
+        );
+    }
+
+    // A typo in the selector must not quietly hand the campaign back to the old
+    // probe, which would put the false crashes back without anyone noticing.
+    #[test]
+    fn an_unknown_gguf_probe_selector_is_an_error_not_a_silent_default() {
+        let err = super::resolve_gguf_probe_kind(Some("nativ")).unwrap_err();
+        assert!(err.contains(super::GGUF_PROBE_KIND), "err was: {err}");
     }
 
     // The probe binary is llama.cpp's gguf-hash example, which does not NULL-check
@@ -1162,10 +1370,12 @@ mod tests {
         let input = dir.join("sample.gguf");
         std::fs::write(&input, &gguf).expect("write input");
 
+        std::env::set_var(super::GGUF_PROBE_KIND, "legacy_hash");
         std::env::set_var("TOOL_LLAMA_CLI_BIN", bin.join("llama-cli"));
         std::env::remove_var("TOOL_GGUF_HARNESS_CMD");
         let result = run_harness(&TargetKind::Gguf, &input);
         std::env::remove_var("TOOL_LLAMA_CLI_BIN");
+        std::env::remove_var(super::GGUF_PROBE_KIND);
         let _ = std::fs::remove_dir_all(&dir);
 
         let err = result.expect_err("a signal-killed gguf probe must not be Ok");
@@ -1339,9 +1549,11 @@ mod tests {
 
         let previous_path = std::env::var_os("PATH");
         std::env::set_var("PATH", &dir_b);
+        std::env::set_var(super::GGUF_PROBE_KIND, "legacy_hash");
         std::env::set_var("TOOL_LLAMA_CLI_BIN", dir_a.join("llama-cli"));
         let result = gguf_library_connect(&input);
         std::env::remove_var("TOOL_LLAMA_CLI_BIN");
+        std::env::remove_var(super::GGUF_PROBE_KIND);
         match previous_path {
             Some(path) => std::env::set_var("PATH", path),
             None => std::env::remove_var("PATH"),
