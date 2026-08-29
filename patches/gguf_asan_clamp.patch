@@ -11,14 +11,22 @@ harness artifact rather than a target bug. The clamp rejects a length that
 cannot fit in the bytes remaining in the file, which is a parse failure the
 parser would have reached anyway.
 
+Three clamps, all of the same shape - reject a length the file cannot hold,
+before the allocation rather than after it:
+  1. read(std::vector<T>&, n)  - array element counts
+  2. read(std::string&)        - string lengths
+  3. the tensor data section   - ctx->size, read from the file a few lines later.
+     Only when the blob is really read (no_alloc off): with no_alloc upstream
+     never touches the file there and accepts the input, so the patched parser
+     must accept it too.
+
 The clamp is disabled for non-seekable inputs, where the remaining size is
 unknown; behaviour there is identical to the unpatched reader.
 
 diff --git a/ggml/src/gguf.cpp b/ggml/src/gguf.cpp
-index ed0d7f2..058d821 100644
 --- a/ggml/src/gguf.cpp
 +++ b/ggml/src/gguf.cpp
-@@ -219,7 +219,42 @@ struct gguf_context {
+@@ -219,7 +219,42 @@
  struct gguf_reader {
      FILE * file;
  
@@ -62,7 +70,7 @@ index ed0d7f2..058d821 100644
  
      template <typename T>
      bool read(T & dst) const {
-@@ -228,6 +263,15 @@ struct gguf_reader {
+@@ -228,6 +263,15 @@
  
      template <typename T>
      bool read(std::vector<T> & dst, const size_t n) const {
@@ -78,7 +86,7 @@ index ed0d7f2..058d821 100644
          dst.resize(n);
          for (size_t i = 0; i < dst.size(); ++i) {
              if constexpr (std::is_same<T, bool>::value) {
-@@ -277,6 +321,11 @@ struct gguf_reader {
+@@ -277,6 +321,11 @@
          if (!read(size)) {
              return false;
          }
@@ -90,3 +98,26 @@ index ed0d7f2..058d821 100644
          dst.resize(size);
          return fread(dst.data(), 1, dst.length(), file) == dst.length();
      }
+@@ -650,6 +699,22 @@
+         }
+     }
+ 
++    // BUILD-TIME FUZZING PATCH: the data section is read straight out of the file
++    // (gr.read(data->data, ctx->size) below), so it cannot be larger than the bytes
++    // the file still holds. Upstream discovers that only after allocating ctx->size,
++    // which under ASan is an allocation-size-too-big abort attributed to a target
++    // that did nothing wrong (and without ASan is a multi-GB RSS spike). Reject here
++    // and the caller gets the same NULL the short read would have produced anyway.
++    // Only when the blob is actually read: with no_alloc the file is never touched,
++    // and upstream accepts it, so we must too.
++    if (params.ctx != nullptr && !params.no_alloc && ctx->size > gr.fuzz_remaining()) {
++        GGML_LOG_ERROR("%s: tensor data section of %zu bytes exceeds the rest of the file\n",
++            __func__, ctx->size);
++        GGML_LOG_ERROR("%s: failed to read tensor data\n", __func__);
++        gguf_free(ctx);
++        return nullptr;
++    }
++
+     // load the tensor data only if requested
+     if (params.ctx != nullptr) {
+         // if the provided gguf_context is no_alloc, then we create "empty" tensors and do not read the binary blob

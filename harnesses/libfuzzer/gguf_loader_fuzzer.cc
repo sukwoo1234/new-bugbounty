@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <strings.h>
 #include <string>
 #include <vector>
 
@@ -79,12 +80,43 @@ enum Verdict {
     VERDICT_UNAVAILABLE = 10,  // the harness itself cannot run; says nothing about the input
 };
 
-// __asan_default_options() is only a default. An ASAN_OPTIONS in the
-// environment overrides it, and abort_on_error=0 there would turn every real
-// memory finding into a quiet exit(1). Refuse to run rather than fuzz blind.
+// A sanitizer bool flag is on only for 1/true/yes/on. Anything else - including a
+// spelling we do not recognise - counts as off here, because guessing "on" is the
+// mistake that silently loses findings.
+bool flag_value_is_on(const char *value, size_t len) {
+    const char *const on[] = {"1", "true", "yes", "on"};
+    for (const char *candidate : on) {
+        if (strlen(candidate) == len && strncasecmp(value, candidate, len) == 0) return true;
+    }
+    return false;
+}
+
+// __asan_default_options() is only a default. An ASAN_OPTIONS in the environment
+// overrides it, and an abort_on_error that is off turns every real memory finding
+// into a quiet exit(1) that the tool does not count as a crash at all. Refuse to
+// run rather than fuzz blind.
+//
+// Matching the literal "abort_on_error=0" is not enough: ASan also accepts "false",
+// and it takes the LAST occurrence when a flag is repeated. Parse it the way ASan
+// does, and only accept a match at a flag boundary so "no_abort_on_error=1" cannot
+// be mistaken for the flag itself.
 bool asan_abort_disabled_by_env(void) {
     const char *opts = getenv("ASAN_OPTIONS");
-    return opts != nullptr && strstr(opts, "abort_on_error=0") != nullptr;
+    if (opts == nullptr) return false;
+
+    static const char kFlag[] = "abort_on_error=";
+    const size_t flag_len = sizeof(kFlag) - 1;
+    const char *separators = ":, \t";
+
+    bool disabled = false;
+    for (const char *p = strstr(opts, kFlag); p != nullptr; p = strstr(p + flag_len, kFlag)) {
+        if (p != opts && strchr(separators, p[-1]) == nullptr) continue;
+        const char *value = p + flag_len;
+        size_t len = 0;
+        while (value[len] != '\0' && strchr(separators, value[len]) == nullptr) ++len;
+        disabled = !flag_value_is_on(value, len);
+    }
+    return disabled;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,13 +129,46 @@ enum Depth {
     DEPTH_FULL,          // ctx set, no_alloc=false : + tensor data blob read
 };
 
-Depth depth_from_env(void) {
+// Returns false when GGUF_FUZZ_DEPTH is set to something unrecognised. Falling back
+// to the default there would let a typo'd campaign run for hours against a depth it
+// never selected - "full" misspelt means the tensor blob is never touched at all.
+bool depth_from_env(Depth *out) {
+    *out = DEPTH_TENSOR_INFO;
     const char *value = getenv("GGUF_FUZZ_DEPTH");
-    if (value == nullptr || *value == '\0') return DEPTH_TENSOR_INFO;
-    if (strcmp(value, "metadata") == 0 || strcmp(value, "0") == 0) return DEPTH_METADATA;
-    if (strcmp(value, "tensor-info") == 0 || strcmp(value, "1") == 0) return DEPTH_TENSOR_INFO;
-    if (strcmp(value, "full") == 0 || strcmp(value, "2") == 0) return DEPTH_FULL;
-    return DEPTH_TENSOR_INFO;
+    if (value == nullptr || *value == '\0') return true;
+    if (strcmp(value, "metadata") == 0 || strcmp(value, "0") == 0) {
+        *out = DEPTH_METADATA;
+        return true;
+    }
+    if (strcmp(value, "tensor-info") == 0 || strcmp(value, "1") == 0) {
+        *out = DEPTH_TENSOR_INFO;
+        return true;
+    }
+    if (strcmp(value, "full") == 0 || strcmp(value, "2") == 0) {
+        *out = DEPTH_FULL;
+        return true;
+    }
+    return false;
+}
+
+// The two ways this process can be configured into uselessness, checked in one
+// place so both entry points refuse identically. Returns a Verdict, or -1 when the
+// environment is fine.
+int unusable_environment(Depth *depth) {
+    if (asan_abort_disabled_by_env()) {
+        fprintf(stderr,
+                "gguf-harness: ASAN_OPTIONS turns abort_on_error off; findings would be "
+                "discarded silently. Refusing to run.\n");
+        return VERDICT_UNAVAILABLE;
+    }
+    if (!depth_from_env(depth)) {
+        fprintf(stderr,
+                "gguf-harness: unrecognised GGUF_FUZZ_DEPTH=%s (expected metadata, "
+                "tensor-info or full). Refusing to run.\n",
+                getenv("GGUF_FUZZ_DEPTH"));
+        return VERDICT_UNAVAILABLE;
+    }
+    return -1;
 }
 
 const char *depth_name(Depth depth) {
@@ -315,9 +380,23 @@ void run_one_buffer(const unsigned char *data, size_t size, Depth depth) {
 
 }  // namespace
 
+namespace {
+Depth g_depth = DEPTH_TENSOR_INFO;
+}  // namespace
+
+// libFuzzer calls this once before fuzzing. Checking the environment here rather
+// than per-exec means a session that would silently discard findings never starts.
+extern "C" int LLVMFuzzerInitialize(int *argc, char ***argv) {
+    (void)argc;
+    (void)argv;
+    const int refusal = unusable_environment(&g_depth);
+    if (refusal >= 0) exit(refusal);
+    return 0;
+}
+
 extern "C" int LLVMFuzzerTestOneInput(const unsigned char *data, size_t size) {
     if (data == nullptr || size == 0) return 0;
-    run_one_buffer(data, size, depth_from_env());
+    run_one_buffer(data, size, g_depth);
     return 0;
 }
 
@@ -330,7 +409,9 @@ void print_selftest(void) {
     printf("gguf-harness: asan=%s\n", GGUF_FUZZ_ASAN ? "on" : "off");
     printf("gguf-harness: asan_default_options=%s\n", __asan_default_options());
     printf("gguf-harness: clamp_patch=%s\n", GGUF_FUZZ_CLAMP_PATCH ? "applied" : "absent");
-    printf("gguf-harness: depth=%s\n", depth_name(depth_from_env()));
+    Depth depth = DEPTH_TENSOR_INFO;
+    const bool depth_ok = depth_from_env(&depth);
+    printf("gguf-harness: depth=%s\n", depth_ok ? depth_name(depth) : "INVALID");
     printf("gguf-harness: exit_codes ok=%d rejected=%d unavailable=%d\n",
            VERDICT_OK, VERDICT_REJECTED, VERDICT_UNAVAILABLE);
 }
@@ -338,12 +419,9 @@ void print_selftest(void) {
 }  // namespace
 
 int main(int argc, char **argv) {
-    if (asan_abort_disabled_by_env()) {
-        fprintf(stderr,
-                "gguf-harness: ASAN_OPTIONS sets abort_on_error=0; findings would be "
-                "discarded silently. Refusing to run.\n");
-        return VERDICT_UNAVAILABLE;
-    }
+    Depth depth = DEPTH_TENSOR_INFO;
+    const int refusal = unusable_environment(&depth);
+    if (refusal >= 0) return refusal;
 
     if (argc >= 2 && strcmp(argv[1], "--selftest") == 0) {
         print_selftest();
@@ -355,7 +433,6 @@ int main(int argc, char **argv) {
         return VERDICT_REJECTED;
     }
 
-    const Depth depth = depth_from_env();
     int worst = VERDICT_OK;
     for (int i = 1; i < argc; ++i) {
         // The replay path hands ggml the real file on disk rather than a memfd
