@@ -3,6 +3,7 @@ set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
 REPLAY="${REPLAY:-$PROJECT_ROOT/harnesses/libfuzzer/gguf_loader_replay}"
+FUZZER="${FUZZER:-$PROJECT_ROOT/harnesses/libfuzzer/gguf_loader_fuzzer}"
 LEGACY_PROBE="${LEGACY_PROBE:-$PROJECT_ROOT/tools/llama.cpp/build/bin/llama-gguf-hash}"
 SEED_ROOT="${SEED_ROOT:-$PROJECT_ROOT/seeds}"
 SEED_DIR="$SEED_ROOT/gguf"
@@ -188,6 +189,25 @@ for poc in align_wrongtype:183 align_array2:864 emptykey:132; do
     FAILURES=$((FAILURES + 1))
   fi
 done
+
+# The fuzzer stages each input in a memfd and hands ggml /proc/self/fd/N. ggml
+# reports "could not open" as the same NULL it reports for "rejected", so a process
+# that cannot open its own staged path would run at full speed reporting clean execs
+# forever. Starving it of file descriptors is the cheapest way to force that state.
+if [[ -x "$FUZZER" ]]; then
+  log "a fuzzer that cannot open its own staged input must not report clean execs"
+  starved_rc=0
+  bash -c "ulimit -n 4; exec '$FUZZER' -runs=1 '$MALFORMED_DIR/align_wrongtype.gguf'" \
+    >>"$RUN_LOG" 2>&1 || starved_rc=$?
+  if [[ "$starved_rc" -eq 0 ]]; then
+    log "FAIL fd-starved fuzzer called a known abort a clean exec"
+    FAILURES=$((FAILURES + 1))
+  else
+    log "OK   fd-starved fuzzer refuses to call a known abort clean (rc=$starved_rc)"
+  fi
+else
+  log "skip fd-starvation check: no libFuzzer target at $FUZZER"
+fi
 
 log "well-formed seeds must pass at every depth"
 shopt -s nullglob

@@ -373,6 +373,23 @@ void run_one_buffer(const unsigned char *data, size_t size, Depth depth) {
 
     char path[64];
     snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+
+    // gguf_init_from_file returns NULL for "could not open the file" exactly as it
+    // does for "the parser rejected it", and the fuzzer entry point cannot tell them
+    // apart from the outside. So a staged path this process cannot open - fd
+    // exhaustion, /proc not mounted, an LSM policy - would turn every exec into a
+    // silent no-op reporting success at full speed, with no coverage and no findings:
+    // the inverted oracle again, in the direction that hides real crashes. Prove the
+    // path is openable here, where a failure is unambiguously ours and not the
+    // target's.
+    FILE *probe = fopen(path, "rb");
+    if (probe == nullptr) {
+        fprintf(stderr, "gguf-harness: staged input %s is not openable: %s\n", path,
+                strerror(errno));
+        abort();
+    }
+    fclose(probe);
+
     run_one_path(path, depth);
 
     close(fd);
