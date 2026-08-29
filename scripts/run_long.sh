@@ -76,13 +76,24 @@ case "$BACKEND" in
     ;;
   libfuzzer)
     if [[ -z "${TOOL_LIBFUZZER_CMD:-}" ]]; then
-      NATIVE_ONNX_DRIVER="${WORKDIR}/harnesses/libfuzzer/onnxruntime_loader_fuzzer"
-      if [[ "$TARGET" == "onnx" && -x "$NATIVE_ONNX_DRIVER" ]]; then
+      # Same per-target resolution as ops/scripts/fuzz-loop-libfuzzer.sh: this is the
+      # path the campaign runners take, and the two must decide identically or a
+      # campaign and its systemd twin fuzz different things under the same label.
+      case "$TARGET" in
+        onnx) NATIVE_DRIVER="${WORKDIR}/harnesses/libfuzzer/onnxruntime_loader_fuzzer" ;;
+        gguf) NATIVE_DRIVER="${WORKDIR}/harnesses/libfuzzer/gguf_loader_fuzzer" ;;
+        *)    NATIVE_DRIVER="" ;;
+      esac
+      if [[ -n "$NATIVE_DRIVER" && -x "$NATIVE_DRIVER" ]]; then
         export TOOL_LIBFUZZER_MODE="native"
-        export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && LLVM_PROFILE_FILE={artifact_dir}/onnx-native-%p.profraw ${NATIVE_ONNX_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=5 {corpus_dir} >/dev/null 2>&1"
+        export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && LLVM_PROFILE_FILE={artifact_dir}/${TARGET}-native-%p.profraw ${NATIVE_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=5 {corpus_dir} >/dev/null 2>&1"
       else
         export TOOL_LIBFUZZER_MODE="blackbox"
-        echo "[run-long] WARN: no native libFuzzer driver at ${NATIVE_ONNX_DRIVER}; running the black-box tool wrapper. This run is NOT a native libFuzzer run." >&2
+        if [[ -n "$NATIVE_DRIVER" ]]; then
+          echo "[run-long] WARN: no native libFuzzer driver at ${NATIVE_DRIVER}; running the black-box tool wrapper. This run is NOT a native libFuzzer run." >&2
+        else
+          echo "[run-long] WARN: target ${TARGET} has no native libFuzzer driver; running the black-box tool wrapper. This run is NOT a native libFuzzer run." >&2
+        fi
         if [[ "$REQUIRE_NATIVE" == "1" ]]; then
           echo "[run-long] REQUIRE_NATIVE=1 is set; refusing to run in black-box mode" >&2
           exit 3

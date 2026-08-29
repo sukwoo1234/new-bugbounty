@@ -173,6 +173,34 @@ run_loop fuzz-loop-libfuzzer.sh
 [ "$LOOP_EXIT" -eq 0 ] || fail "libfuzzer native loop exited $LOOP_EXIT"
 assert_contains "libfuzzer_mode=native"
 
+# B2: the native-driver decision was hardcoded to onnx, so a gguf run with a perfectly
+# good native driver sitting right there was labelled blackbox and ran through the
+# black-box tool wrapper - a campaign that looks healthy and fuzzes the wrong thing.
+mkdir -p "$WORK/seeds/gguf"
+printf 'GGUF' > "$WORK/seeds/gguf/seed.gguf"
+
+log "libfuzzer: a missing native gguf driver must still warn and label blackbox"
+rm -f "$WORK/harnesses/libfuzzer/gguf_loader_fuzzer"
+run_loop fuzz-loop-libfuzzer.sh TARGET=gguf CORPUS_DIR="$WORK/seeds/gguf"
+[ "$LOOP_EXIT" -eq 0 ] || fail "libfuzzer gguf blackbox loop exited $LOOP_EXIT"
+assert_contains "WARN"
+assert_contains "libfuzzer_mode=blackbox"
+assert_contains "gguf_loader_fuzzer"
+
+log "libfuzzer: a native gguf driver must label native, not blackbox"
+cp "$WORK/bin/tool" "$WORK/harnesses/libfuzzer/gguf_loader_fuzzer"
+run_loop fuzz-loop-libfuzzer.sh TARGET=gguf CORPUS_DIR="$WORK/seeds/gguf"
+[ "$LOOP_EXIT" -eq 0 ] || fail "libfuzzer gguf native loop exited $LOOP_EXIT"
+assert_contains "libfuzzer_mode=native"
+assert_contains "gguf_loader_fuzzer"
+# the profile file name must follow the target, or two arms overwrite each other
+assert_not_contains "onnx-native-%p.profraw"
+
+log "libfuzzer: an unsupported target has no native driver and says so"
+run_loop fuzz-loop-libfuzzer.sh TARGET=safetensors CORPUS_DIR="$WORK/seeds/gguf"
+[ "$LOOP_EXIT" -eq 0 ] || fail "libfuzzer safetensors loop exited $LOOP_EXIT"
+assert_contains "libfuzzer_mode=blackbox"
+
 log "aflpp: non-instrumented replay binary must warn and label blackbox_n"
 cp "$WORK/bin/tool" "$WORK/harnesses/aflpp/onnxruntime_loader_replay"
 run_loop fuzz-loop-aflpp.sh
@@ -248,6 +276,21 @@ LOOP_OUT="$(env -u TOOL_AFLPP_CMD REQUIRE_INSTRUMENTED=1 \
 LOOP_EXIT=$?
 set -e
 [ "$LOOP_EXIT" -ne 0 ] || fail "run_long REQUIRE_INSTRUMENTED=1 must exit non-zero: $LOOP_OUT"
+
+# run_long is the campaign path; it must resolve the gguf driver exactly as the systemd
+# loop does, or a campaign and its unit fuzz different things under the same label.
+log "run_long: a native gguf driver must label native"
+cp "$WORK/bin/tool" "$WORK/harnesses/libfuzzer/gguf_loader_fuzzer"
+set +e
+LOOP_OUT="$(env -u REQUIRE_NATIVE -u TOOL_LIBFUZZER_CMD \
+  WORKDIR="$WORK" DATA_DIR="$WORK/data" TOOL_BIN="$WORK/bin/tool" LOOP_SLEEP_SEC=0 \
+  bash "$PROJECT_ROOT/scripts/run_long.sh" --target gguf --backend libfuzzer \
+    --duration-seconds 1 --tag engine-mode-check --corpus-dir "$WORK/seeds/gguf" 2>&1)"
+LOOP_EXIT=$?
+set -e
+[ "$LOOP_EXIT" -eq 0 ] || fail "run_long gguf libfuzzer exited $LOOP_EXIT: $LOOP_OUT"
+assert_contains "libfuzzer_mode=native"
+assert_contains "gguf-native-%p.profraw"
 
 log "run_long: missing native libfuzzer driver must warn and label blackbox"
 rm -f "$WORK/harnesses/libfuzzer/onnxruntime_loader_fuzzer"

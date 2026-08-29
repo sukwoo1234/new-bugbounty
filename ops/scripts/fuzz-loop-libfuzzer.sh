@@ -29,12 +29,20 @@ MAX_ITERATIONS="${FUZZ_LOOP_MAX_ITERATIONS:-0}"
 REQUIRE_NATIVE="${REQUIRE_NATIVE:-0}"
 
 LIBFUZZER_MAX_TOTAL_TIME="${LIBFUZZER_MAX_TOTAL_TIME:-30}"
-NATIVE_ONNX_DRIVER="${PROJECT_ROOT}/harnesses/libfuzzer/onnxruntime_loader_fuzzer"
+# The native driver is per target, not per project: hardcoding onnx here meant a gguf
+# run with a perfectly good native driver next to it was labelled blackbox and fuzzed
+# through the tool wrapper instead. An empty NATIVE_DRIVER means "no native driver
+# exists for this target", which is a different thing from "it is not built yet".
+case "${TARGET}" in
+    onnx) NATIVE_DRIVER="${PROJECT_ROOT}/harnesses/libfuzzer/onnxruntime_loader_fuzzer" ;;
+    gguf) NATIVE_DRIVER="${PROJECT_ROOT}/harnesses/libfuzzer/gguf_loader_fuzzer" ;;
+    *)    NATIVE_DRIVER="" ;;
+esac
 TOOL_DRIVER="${PROJECT_ROOT}/harnesses/libfuzzer/tool_harness_driver"
 
 if [[ -z "${LIBFUZZER_DRIVER:-}" ]]; then
-    if [[ "${TARGET}" == "onnx" && -x "${NATIVE_ONNX_DRIVER}" ]]; then
-        LIBFUZZER_DRIVER="${NATIVE_ONNX_DRIVER}"
+    if [[ -n "${NATIVE_DRIVER}" && -x "${NATIVE_DRIVER}" ]]; then
+        LIBFUZZER_DRIVER="${NATIVE_DRIVER}"
     else
         LIBFUZZER_DRIVER="${TOOL_DRIVER}"
     fi
@@ -51,7 +59,7 @@ cd "${PROJECT_ROOT}"
 # G4: the loop used to fall back to the black-box tool wrapper without a word, so a
 # "libfuzzer onnx run" could silently stop being a native run. Label every run and say
 # so loudly; TOOL_LIBFUZZER_MODE is recorded in the run status by `tool run`.
-if [[ "${TARGET}" == "onnx" && "${LIBFUZZER_DRIVER}" == "${NATIVE_ONNX_DRIVER}" ]]; then
+if [[ -n "${NATIVE_DRIVER}" && "${LIBFUZZER_DRIVER}" == "${NATIVE_DRIVER}" ]]; then
     LIBFUZZER_MODE=native
 else
     LIBFUZZER_MODE=blackbox
@@ -59,7 +67,11 @@ fi
 export TOOL_LIBFUZZER_MODE="${LIBFUZZER_MODE}"
 
 if [[ "${LIBFUZZER_MODE}" == "blackbox" ]]; then
-    log "WARN: no native libFuzzer driver at ${NATIVE_ONNX_DRIVER}; running the black-box tool wrapper (${LIBFUZZER_DRIVER}). This run is NOT a native libFuzzer run."
+    if [[ -n "${NATIVE_DRIVER}" ]]; then
+        log "WARN: no native libFuzzer driver at ${NATIVE_DRIVER}; running the black-box tool wrapper (${LIBFUZZER_DRIVER}). This run is NOT a native libFuzzer run."
+    else
+        log "WARN: target ${TARGET} has no native libFuzzer driver; running the black-box tool wrapper (${LIBFUZZER_DRIVER}). This run is NOT a native libFuzzer run."
+    fi
     if [[ "${REQUIRE_NATIVE}" == "1" ]]; then
         log "REQUIRE_NATIVE=1 is set; refusing to run in black-box mode"
         exit 3
@@ -74,8 +86,10 @@ trap 'stop_requested=1; log "SIGTERM received, will exit after current iteration
 #   {corpus_dir} is substituted by `tool run --backend libfuzzer` with the chosen
 #   workdir-local libfuzzer corpus path. {artifact_dir} is a per-worker run dir
 #   for libFuzzer crash artifacts. -max_total_time bounds per-invocation runtime.
-if [[ "${TARGET}" == "onnx" && "${LIBFUZZER_DRIVER}" == "${NATIVE_ONNX_DRIVER}" ]]; then
-    export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && LLVM_PROFILE_FILE={artifact_dir}/onnx-native-%p.profraw ${LIBFUZZER_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=${LIBFUZZER_MAX_TOTAL_TIME} {corpus_dir} >/dev/null 2>&1"
+if [[ "${LIBFUZZER_MODE}" == "native" ]]; then
+    # The profraw name carries the target: two arms writing onnx-native-%p.profraw into
+    # the same artifact dir would overwrite each other's coverage.
+    export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && LLVM_PROFILE_FILE={artifact_dir}/${TARGET}-native-%p.profraw ${LIBFUZZER_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=${LIBFUZZER_MAX_TOTAL_TIME} {corpus_dir} >/dev/null 2>&1"
 else
     export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && TOOL_HARNESS_TOOL=${TOOL_BIN} TOOL_HARNESS_TARGET=${TARGET} TOOL_HARNESS_EXT=${TARGET} ${LIBFUZZER_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=${LIBFUZZER_MAX_TOTAL_TIME} {corpus_dir} >/dev/null 2>&1"
 fi
