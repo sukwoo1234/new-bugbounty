@@ -668,8 +668,15 @@ fn gguf_native_connect_with_bin(bin: &std::ffi::OsStr, input: &Path) -> LibraryC
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if output.status.success() {
+        // A clean parse is normally silent, and first_line() turns silence into the
+        // literal words "no output"; only quote the harness when it said something.
+        let step = if stdout.trim().is_empty() {
+            "gguf parser connected (native: parsed)".to_string()
+        } else {
+            format!("gguf parser connected (native: parsed; {})", first_line(&stdout))
+        };
         return LibraryConnectResult {
-            step: format!("gguf parser connected (native: parsed {})", first_line(&stdout)),
+            step,
             outcome: LibraryConnectOutcome::SessionOk,
         };
     }
@@ -1206,6 +1213,20 @@ mod tests {
             result.step
         );
         assert!(result.step.contains("rejected"), "step was: {}", result.step);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_clean_native_gguf_parse_does_not_report_empty_output_as_a_detail() {
+        let _guard = env_lock();
+        let result = gguf_probe_with_native_stub("gguf-native-ok", "exit 0");
+        assert!(
+            matches!(result.outcome, super::LibraryConnectOutcome::SessionOk),
+            "outcome was {} / {}",
+            result.outcome.as_str(),
+            result.step
+        );
+        assert_eq!(result.step, "gguf parser connected (native: parsed)");
     }
 
     #[cfg(unix)]
