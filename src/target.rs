@@ -636,10 +636,15 @@ fn gguf_native_connect(input: &Path) -> LibraryConnectResult {
 /// (src/main.rs:45-47): 0 parsed, 9 the parser rejected the input, 10 the harness
 /// itself could not run. Anything else is the target really dying.
 fn gguf_native_connect_with_bin(bin: &std::ffi::OsStr, input: &Path) -> LibraryConnectResult {
+    // The binary is a build artifact, so it is absent on a fresh checkout and on the
+    // fuzzing host until someone builds it. Name the path that was tried and the
+    // script that produces it; under TOOL_REQUIRE_LIBRARY_CONNECT=1 the existing gate
+    // turns this into exit 10 rather than a campaign that finds nothing and looks fine.
     if resolve_executable(bin).is_none() {
         return LibraryConnectResult {
             step: format!(
-                "gguf native harness unavailable (not executable: {})",
+                "gguf native harness unavailable (not executable: {}; build it with \
+                 scripts/build_libfuzzer_gguf_native.sh)",
                 bin.to_string_lossy()
             ),
             outcome: LibraryConnectOutcome::Unavailable,
@@ -1225,6 +1230,35 @@ mod tests {
     fn an_unknown_gguf_probe_selector_is_an_error_not_a_silent_default() {
         let err = super::resolve_gguf_probe_kind(Some("nativ")).unwrap_err();
         assert!(err.contains(super::GGUF_PROBE_KIND), "err was: {err}");
+    }
+
+    // The harness binary is gitignored, so a fresh checkout and the fuzzing host
+    // both start without it. If that read as "nothing to report", a campaign would
+    // run to completion with zero findings and look perfectly healthy.
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_native_gguf_harness_is_reported_not_silently_skipped() {
+        let input = gguf_probe_dir("gguf-native-missing").join("sample.gguf");
+        let result = super::gguf_native_connect_with_bin(
+            std::ffi::OsStr::new("/nonexistent/harnesses/libfuzzer/gguf_loader_replay"),
+            &input,
+        );
+        assert!(
+            matches!(result.outcome, super::LibraryConnectOutcome::Unavailable),
+            "outcome was {} / {}",
+            result.outcome.as_str(),
+            result.step
+        );
+        assert!(
+            result.step.contains("gguf_loader_replay"),
+            "step must name the path it looked at: {}",
+            result.step
+        );
+        assert!(
+            result.step.contains("build_libfuzzer_gguf_native.sh"),
+            "step must say how to fix it: {}",
+            result.step
+        );
     }
 
     // The probe binary is llama.cpp's gguf-hash example, which does not NULL-check
