@@ -879,7 +879,16 @@ fn classify_crash_kind(
     // infra_oom, exit 137). ASan cannot honour allocator_may_return_null for a
     // throwing operator new, so it aborts on a huge length before the parser's own
     // length_error handler runs - a property of the build, not a target bug.
-    if lower.contains("allocation-size-too-big") || lower.contains("out of memory: allocator") {
+    //
+    // Both wordings are needed: ASan's ERROR line - the one line that survives
+    // first_evidence_line and reaches triage - says "requested allocation size ...
+    // exceeds maximum supported size", while "allocation-size-too-big" appears only
+    // on the trailing SUMMARY line. There is deliberately no "out of memory" marker
+    // here: contains_oom() matches that phrase and the infra_oom branch above has
+    // already returned by then.
+    if (lower.contains("requested allocation size") && lower.contains("exceeds maximum supported size"))
+        || lower.contains("allocation-size-too-big")
+    {
         return "sanitizer_alloc_limit".to_string();
     }
     if sanitizer != "none" {
@@ -1348,20 +1357,36 @@ library_step: onnxruntime loader crashed (SIGSEGV (signal: 11); stdout: no outpu
         &'static str,
     );
 
-    #[test]
     // The sanitizer's own allocation ceiling is a property of the sanitizer, not of
     // the target: ASan aborts on a huge size before the parser's own length_error
     // handler can run. Classified as "asan" it reaches verdict "reproduced" and
     // report.rs drafts a submission for something upstream never did wrong.
+    //
+    // The text below is a real clang-17 ASan report, captured from a program that
+    // resizes a string to 0x1000000000001. Note where the words actually are: the
+    // ERROR line says "requested allocation size ... exceeds maximum supported
+    // size", and "allocation-size-too-big" appears ONLY on the trailing SUMMARY
+    // line. Triage sees one line (first_evidence_line), so a classifier keyed on
+    // the SUMMARY wording alone would never fire on a real report.
     #[test]
     fn a_sanitizer_allocation_limit_is_not_a_reproduced_finding() {
-        let output = "==1==ERROR: AddressSanitizer: allocation-size-too-big on 0xfdffffffff03 bytes\n\
-                      SUMMARY: AddressSanitizer: allocation-size-too-big";
-        let kind = super::classify_crash_kind(output, "asan", "SIGABRT", false, false);
+        let error_line = "==16177==ERROR: AddressSanitizer: requested allocation size \
+                          0x1000000000001 (0x1000000001008 after adjustments for alignment, \
+                          red zones etc.) exceeds maximum supported size of 0x10000000000 \
+                          (thread T0)";
+        let kind = super::classify_crash_kind(error_line, "asan", "SIGABRT", false, false);
         assert_eq!(kind, "sanitizer_alloc_limit");
         assert!(super::requires_manual_review(&kind));
+
+        // The SUMMARY wording still classifies, for callers that keep the full report.
+        let summary = "SUMMARY: AddressSanitizer: allocation-size-too-big";
+        assert_eq!(
+            super::classify_crash_kind(summary, "asan", "SIGABRT", false, false),
+            "sanitizer_alloc_limit"
+        );
     }
 
+    #[test]
     fn classify_crash_kind_table_keeps_branch_order() {
         let cases: &[CrashKindCase] = &[
             (
@@ -1435,6 +1460,41 @@ library_step: onnxruntime loader crashed (SIGSEGV (signal: 11); stdout: no outpu
                 false,
                 false,
                 "manual_review",
+            ),
+            // The sanitizer's allocation ceiling must outrank the bare sanitizer name,
+            // or it goes back to being a "reproduced" asan finding.
+            (
+                "alloc_limit_over_sanitizer_name",
+                "==1==ERROR: AddressSanitizer: requested allocation size 0x1000000000001 \
+                 exceeds maximum supported size of 0x10000000000",
+                "asan",
+                "SIGABRT",
+                false,
+                false,
+                "sanitizer_alloc_limit",
+            ),
+            // ...but the kernel OOM killer still outranks it. These are different
+            // things and Task A6 said not to conflate them.
+            (
+                "infra_oom_over_alloc_limit",
+                "SUMMARY: AddressSanitizer: allocation-size-too-big",
+                "asan",
+                "SIGABRT",
+                false,
+                true,
+                "infra_oom",
+            ),
+            // A named memory-safety bug still wins: a heap overflow whose report also
+            // mentions an allocation size is a real finding, not a build artifact.
+            (
+                "named_memory_bug_over_alloc_limit",
+                "==1==ERROR: AddressSanitizer: heap-buffer-overflow; requested allocation \
+                 size 0x10 exceeds maximum supported size of 0x8",
+                "asan",
+                "SIGABRT",
+                false,
+                false,
+                "heap-buffer-overflow",
             ),
         ];
 
