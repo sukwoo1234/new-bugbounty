@@ -23,10 +23,19 @@ before the allocation rather than after it:
 The clamp is disabled for non-seekable inputs, where the remaining size is
 unknown; behaviour there is identical to the unpatched reader.
 
+Each inserted block is followed by a `#line` directive restoring the upstream
+line numbering. GGML_ASSERT prints __FILE__:__LINE__, so without it every assert
+below an insertion would be reported at a line that does not exist in the
+upstream file - gguf.cpp:864 came out as :929 - and an upstream report written
+from our evidence would cite the wrong place. The directives carry no filename,
+so __FILE__ still shows the build tree and a reader can still tell this was our
+build. scripts/check_gguf_harness_oracle.sh pins the three PoC line numbers so a
+future edit that breaks the mapping fails the check.
+
 diff --git a/ggml/src/gguf.cpp b/ggml/src/gguf.cpp
 --- a/ggml/src/gguf.cpp
 +++ b/ggml/src/gguf.cpp
-@@ -219,7 +219,42 @@
+@@ -219,7 +219,43 @@
  struct gguf_reader {
      FILE * file;
  
@@ -35,7 +44,7 @@ diff --git a/ggml/src/gguf.cpp b/ggml/src/gguf.cpp
 +    // (seekable) input so length fields read from the file can be clamped to the
 +    // bytes that actually remain, before any std::vector/std::string allocation.
 +    // This turns a doomed huge allocation into a clean parse failure instead of an
-+    // ASan allocation-size-too-big abort. long_size < 0 means "size unknown" and
++    // ASan allocation-size-too-big abort. file_size < 0 means "size unknown" and
 +    // disables the clamp (behaviour identical to the unpatched reader).
 +    long file_size;
 +
@@ -67,10 +76,11 @@ diff --git a/ggml/src/gguf.cpp b/ggml/src/gguf.cpp
 +    }
 +
 +    gguf_reader(FILE * file) : file(file), file_size(fuzz_file_size(file)) {}
++#line 223
  
      template <typename T>
      bool read(T & dst) const {
-@@ -228,6 +263,15 @@
+@@ -228,6 +264,16 @@
  
      template <typename T>
      bool read(std::vector<T> & dst, const size_t n) const {
@@ -83,10 +93,11 @@ diff --git a/ggml/src/gguf.cpp b/ggml/src/gguf.cpp
 +        if (fuzz_elem_min != 0 && n > fuzz_remaining() / fuzz_elem_min) {
 +            return false;
 +        }
++#line 231
          dst.resize(n);
          for (size_t i = 0; i < dst.size(); ++i) {
              if constexpr (std::is_same<T, bool>::value) {
-@@ -277,6 +321,11 @@
+@@ -277,6 +323,12 @@
          if (!read(size)) {
              return false;
          }
@@ -95,10 +106,11 @@ diff --git a/ggml/src/gguf.cpp b/ggml/src/gguf.cpp
 +        if (size > fuzz_remaining()) {
 +            return false;
 +        }
++#line 280
          dst.resize(size);
          return fread(dst.data(), 1, dst.length(), file) == dst.length();
      }
-@@ -650,6 +699,22 @@
+@@ -650,6 +702,23 @@
          }
      }
  
@@ -109,7 +121,7 @@ diff --git a/ggml/src/gguf.cpp b/ggml/src/gguf.cpp
 +    // that did nothing wrong (and without ASan is a multi-GB RSS spike). Reject here
 +    // and the caller gets the same NULL the short read would have produced anyway.
 +    // Only when the blob is actually read: with no_alloc the file is never touched,
-+    // and upstream accepts it, so we must too.
++    // upstream accepts it, so the patched parser must accept it too.
 +    if (params.ctx != nullptr && !params.no_alloc && ctx->size > gr.fuzz_remaining()) {
 +        GGML_LOG_ERROR("%s: tensor data section of %zu bytes exceeds the rest of the file\n",
 +            __func__, ctx->size);
@@ -118,6 +130,7 @@ diff --git a/ggml/src/gguf.cpp b/ggml/src/gguf.cpp
 +        return nullptr;
 +    }
 +
++#line 653
      // load the tensor data only if requested
      if (params.ctx != nullptr) {
          // if the provided gguf_context is no_alloc, then we create "empty" tensors and do not read the binary blob

@@ -166,11 +166,27 @@ done
 log "an unrecognised depth must fail loudly, not fall back to the default"
 check "guard: GGUF_FUZZ_DEPTH=tensorinfo" 10 "$(GGUF_FUZZ_DEPTH=tensorinfo rc_of "$REPLAY" "$SEED_DIR/align_ok.gguf")"
 
-log "assert-tripping inputs must really die (SIGABRT = 134)"
-for name in align_wrongtype align_array2 emptykey; do
-  poc="$MALFORMED_DIR/$name.gguf"
-  [[ -f "$poc" ]] || fail "malformed seed missing: $poc"
-  check "crash: $name" 134 "$(rc_of "$REPLAY" "$poc")"
+# The line numbers matter as much as the exit status: an upstream report is written
+# from this evidence. The clamp patch inserts code above two of these asserts, and its
+# #line directives put the numbering back, so what we print must be the line the
+# upstream file actually has (verified against tools/llama.cpp: 183, 864, 132).
+log "assert-tripping inputs must really die (SIGABRT = 134) at the upstream line"
+for poc in align_wrongtype:183 align_array2:864 emptykey:132; do
+  name="${poc%%:*}"
+  upstream_line="${poc##*:}"
+  path="$MALFORMED_DIR/$name.gguf"
+  [[ -f "$path" ]] || fail "malformed seed missing: $path"
+  err="$tmp_dir/$name.err"
+  rc=0
+  "$REPLAY" "$path" >>"$RUN_LOG" 2>"$err" || rc=$?
+  cat "$err" >>"$RUN_LOG"
+  check "crash: $name" 134 "$rc"
+  if grep -q "gguf\.cpp:$upstream_line" "$err"; then
+    log "OK   crash: $name cites the upstream line gguf.cpp:$upstream_line"
+  else
+    log "FAIL crash: $name must cite gguf.cpp:$upstream_line, said: $(head -1 "$err")"
+    FAILURES=$((FAILURES + 1))
+  fi
 done
 
 log "well-formed seeds must pass at every depth"
