@@ -86,6 +86,36 @@ afl_marked_copy() {
   chmod +x "$2"
 }
 
+# has_afl_instrumentation() decides whether the AFL++ arm runs instrumented or
+# black-box, and its nm branch matches symbols (__afl_prev_loc, __afl_shm, __afl_fuzz)
+# that the raw-bytes fallback below it does NOT list. All three callers run under
+# `set -o pipefail`, so if that branch loses its answer to a SIGPIPE the whole arm
+# silently drops to blackbox_n - G2 again. This fixture is a real binary carrying only
+# __afl_prev_loc, padded so nm's output is far larger than a pipe buffer.
+SCOPE_CC="${SCOPE_CC:-$PROJECT_ROOT/data/toolchains/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04/bin/clang}"
+[ -x "$SCOPE_CC" ] || SCOPE_CC="$(command -v cc || command -v gcc || command -v clang || true)"
+if [ -n "$SCOPE_CC" ] && [ -x "$SCOPE_CC" ]; then
+  log "has_afl_instrumentation: a large symbol table must not lose the answer to SIGPIPE"
+  {
+    printf 'void *__afl_prev_loc;\n'
+    awk 'BEGIN { for (i = 0; i < 4000; i++) printf "long pad_symbol_%d = %d;\n", i, i }'
+    printf 'int main(void) { return 0; }\n'
+  } > "$WORK/afl_symbols.c"
+  if "$SCOPE_CC" -O0 "$WORK/afl_symbols.c" -o "$WORK/harnesses/aflpp/big_symtab" 2>/dev/null; then
+    # The fallback list must NOT cover this binary, or the case proves nothing.
+    if grep -qaE '__AFL_SHM_ID|__AFL_SHM_FUZZ_ID|__afl_area_initial|__afl_area_ptr' \
+        "$WORK/harnesses/aflpp/big_symtab"; then
+      fail "fixture is covered by the raw-bytes fallback; it cannot exercise the nm branch"
+    fi
+    has_afl_instrumentation "$WORK/harnesses/aflpp/big_symtab" \
+      || fail "has_afl_instrumentation lost __afl_prev_loc on a large symbol table"
+  else
+    log "skip SIGPIPE case: $SCOPE_CC could not build the fixture"
+  fi
+else
+  log "skip SIGPIPE case: no C compiler available"
+fi
+
 log "instrumentation_scope: a binary without the forkserver is none"
 cp /bin/true "$WORK/harnesses/aflpp/plain_bin"
 scope="$(instrumentation_scope "$WORK/harnesses/aflpp/plain_bin")"

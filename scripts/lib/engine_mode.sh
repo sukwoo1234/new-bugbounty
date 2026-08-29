@@ -12,9 +12,18 @@ has_afl_instrumentation() {
     local bin="$1"
 
     [ -x "${bin}" ] || return 1
-    if command -v nm >/dev/null 2>&1 \
-        && nm -C "${bin}" 2>/dev/null | grep -qE '__afl_(area|prev_loc|shm|fuzz)'; then
-        return 0
+    if command -v nm >/dev/null 2>&1; then
+        # Captured and matched as a here-string, never piped: `nm | grep -q` makes grep
+        # close the pipe on its first match, nm dies of SIGPIPE, and all three callers
+        # run under `set -o pipefail`, which reads that 141 as "no instrumentation".
+        # The symbols matched here (__afl_prev_loc, __afl_shm, __afl_fuzz) are NOT in
+        # the raw-bytes list below, so the fallback cannot cover the loss - the arm
+        # would just drop to blackbox_n. Reproduced on a 140 KB symbol listing.
+        local afl_symbols
+        afl_symbols="$(nm -C "${bin}" 2>/dev/null || true)"
+        if grep -qE '__afl_(area|prev_loc|shm|fuzz)' <<<"${afl_symbols}"; then
+            return 0
+        fi
     fi
     grep -qaE '__AFL_SHM_ID|__AFL_SHM_FUZZ_ID|__afl_area_initial|__afl_area_ptr' "${bin}" 2>/dev/null
 }
