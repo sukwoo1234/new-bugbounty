@@ -44,10 +44,13 @@ const ARRAY_COUNTS: &[usize] = &[0, 1, 2, 3];
 const VALUE_TYPE_COUNT: usize = 13;
 
 /// An insert shifts the metadata, so the alignment padding in front of the tensor data
-/// has to be rebuilt. An inserted alignment of 4096 on a file whose data starts just
-/// past the header is already 4 KB of padding; without a ceiling a hostile value would
-/// make the mutator itself the thing that runs out of memory.
-const MAX_PADDING: usize = 64 * 1024;
+/// has to be rebuilt. A file may declare an alignment far larger than the file itself -
+/// our parser does not require the bytes to actually reach the data section - so
+/// without a ceiling a declared 4 GB alignment would make the mutator the thing that
+/// runs out of memory. The ceiling is relative to the input: padding a file to a
+/// multiple of its own alignment is affordable, inflating a 60-byte file to gigabytes
+/// is not.
+const PADDING_HEADROOM: usize = 64 * 1024;
 
 pub(crate) fn apply(
     bytes: &[u8],
@@ -90,11 +93,13 @@ pub(crate) fn apply(
     // Re-read the alignment from the file we just built: an inserted
     // `general.alignment` changes where the data section has to start, and the
     // tensor offsets are relative to that start, so they need no rewriting.
-    let (padding, alignment_used) = padding_for(&out, layout.alignment);
-    out.resize(out.len() + padding, 0);
-
     let data_start = layout.tensor_data_start.min(bytes.len());
-    out.extend_from_slice(&bytes[data_start..]);
+    let data = &bytes[data_start..];
+    let (padding, alignment_used) =
+        padding_for(&out, data, layout.alignment, bytes.len() + PADDING_HEADROOM)
+            .ok_or(OperatorError::NoApplicableField)?;
+    out.resize(out.len() + padding, 0);
+    out.extend_from_slice(data);
 
     let parse_preserving = if parse_gguf(&out).is_ok() { "yes" } else { "no" };
     Ok(MutationOutput {
@@ -167,18 +172,31 @@ fn scalar_bytes(width: usize, rng: &mut DeterministicRng) -> Vec<u8> {
 /// How many padding bytes put the tensor data back on an aligned boundary, and which
 /// alignment that answer used. `meta` is the header plus metadata plus tensor info of
 /// the file being built - everything before the padding.
-fn padding_for(meta: &[u8], fallback_alignment: u64) -> (usize, u64) {
-    let new_alignment = parse_gguf(meta)
+///
+/// Returns None when the file cannot be produced honestly: padding to the alignment the
+/// file itself declares would cost more than `ceiling`. Emitting it unpadded instead
+/// was the wrong answer - ggml re-derives the data offset with GGML_PAD (gguf.cpp:621)
+/// and then reads past the end of a file whose blob never moved, so the mutant is
+/// rejected at a depth where the seed it came from loads.
+fn padding_for(
+    meta: &[u8],
+    data: &[u8],
+    fallback_alignment: u64,
+    ceiling: usize,
+) -> Option<(usize, u64)> {
+    let alignment = parse_gguf(meta)
         .map(|l| l.alignment)
         .unwrap_or(fallback_alignment);
-    for alignment in [new_alignment, fallback_alignment] {
-        let padded = align_up(meta.len(), alignment as usize);
-        let pad = padded - meta.len();
-        if pad <= MAX_PADDING {
-            return (pad, alignment);
-        }
+    // No data section, nothing to align: ggml seeks to the padded offset and then reads
+    // zero bytes, so the padding is not part of the contract for a tensorless file.
+    if data.is_empty() {
+        return Some((0, alignment));
     }
-    (0, new_alignment)
+    let pad = align_up(meta.len(), alignment as usize) - meta.len();
+    if pad > ceiling {
+        return None;
+    }
+    Some((pad, alignment))
 }
 
 #[cfg(test)]
@@ -235,11 +253,13 @@ mod tests {
         // nothing: the file dies in the kv loop. build_minimal_gguf already carries
         // general.name and general.alignment.
         let seed = build_minimal_gguf();
+        let mut applied = 0usize;
         for s in 0..512u64 {
             let mut rng = DeterministicRng::new(s);
             let Ok(out) = apply(&seed, &mut rng) else {
                 continue;
             };
+            applied += 1;
             let layout = parse_gguf(&out.bytes).expect("mutant parses");
             let mut keys: Vec<&[u8]> = layout
                 .kvs
@@ -255,6 +275,8 @@ mod tests {
                 "seed {s} produced a duplicate key, which ggml rejects at gguf.cpp:431"
             );
         }
+        // Without this the test also passes when apply() never succeeds at all.
+        assert!(applied > 0, "apply() never produced a mutant to check");
     }
 
     #[test]
@@ -263,11 +285,13 @@ mod tests {
         // relative to the data start, so they can stay put - but the alignment padding
         // in front of the data has to be recomputed or the blob lands unaligned.
         let seed = build_gguf_without_alignment_key();
+        let mut applied = 0usize;
         for s in 0..128u64 {
             let mut rng = DeterministicRng::new(s);
             let Ok(out) = apply(&seed, &mut rng) else {
                 continue;
             };
+            applied += 1;
             let before = parse_gguf(&seed).expect("seed parses");
             let after = parse_gguf(&out.bytes).expect("mutant parses");
             assert_eq!(
@@ -286,5 +310,86 @@ mod tests {
                 "seed {s}: the tensor data blob was not carried over intact"
             );
         }
+        assert!(applied > 0, "apply() never produced a mutant to check");
+    }
+
+    // The padding ceiling used to give up and emit the file with NO alignment padding
+    // at all. ggml re-derives the data offset with GGML_PAD (gguf.cpp:621) and then
+    // reads past the end, so such a mutant is rejected at a depth where its own seed
+    // loads. A file whose alignment is affordable must still be padded correctly.
+    #[test]
+    fn a_large_but_affordable_alignment_is_still_padded_correctly() {
+        let seed = super::super::test_fixtures::build_gguf_with_large_alignment();
+        let mut applied = 0usize;
+        for s in 0..64u64 {
+            let mut rng = DeterministicRng::new(s);
+            let Ok(out) = apply(&seed, &mut rng) else {
+                continue;
+            };
+            applied += 1;
+            let after = parse_gguf(&out.bytes).expect("mutant parses");
+            assert_eq!(
+                after.tensor_data_start % after.alignment as usize,
+                0,
+                "seed {s}: data start not aligned"
+            );
+            assert!(
+                out.bytes.len() >= after.tensor_data_start,
+                "seed {s}: the file ends before the data section it declares"
+            );
+            let before = parse_gguf(&seed).expect("seed parses");
+            assert_eq!(
+                &out.bytes[after.tensor_data_start..],
+                &seed[before.tensor_data_start..],
+                "seed {s}: blob not carried over intact"
+            );
+        }
+        assert!(applied > 0, "apply() never produced a mutant to check");
+    }
+
+    // ...and one it cannot afford must be declined, not emitted unpadded.
+    #[test]
+    fn an_unaffordable_alignment_declines_instead_of_emitting_a_short_file() {
+        let seed = super::super::test_fixtures::build_gguf_with_absurd_alignment();
+        for s in 0..64u64 {
+            let mut rng = DeterministicRng::new(s);
+            match apply(&seed, &mut rng) {
+                Err(OperatorError::NoApplicableField) => {}
+                Ok(out) => {
+                    let after = parse_gguf(&out.bytes).expect("mutant parses");
+                    assert!(
+                        out.bytes.len() >= after.tensor_data_start,
+                        "seed {s}: emitted a file shorter than the data offset it declares"
+                    );
+                }
+            }
+        }
+    }
+
+    // Every key in the table is already present, so the operator has to fall back to a
+    // name of its own instead of dropping the mutation.
+    #[test]
+    fn a_file_holding_every_table_key_still_gets_an_insert() {
+        let seed = super::super::test_fixtures::build_gguf_with_every_insert_key();
+        let before = parse_gguf(&seed).expect("seed parses");
+        let mut applied = 0usize;
+        for s in 0..64u64 {
+            let mut rng = DeterministicRng::new(s);
+            let out = apply(&seed, &mut rng).expect("the synthetic-key fallback applies");
+            applied += 1;
+            let after = parse_gguf(&out.bytes).expect("mutant parses");
+            assert_eq!(after.kvs.len(), before.kvs.len() + 1);
+            let inserted = out
+                .operator_params
+                .iter()
+                .find(|(k, _)| *k == "inserted_key")
+                .map(|(_, v)| v.clone())
+                .expect("inserted_key recorded");
+            assert!(
+                inserted.starts_with("fuzz.kv."),
+                "seed {s}: expected the synthetic fallback, got {inserted}"
+            );
+        }
+        assert!(applied > 0);
     }
 }

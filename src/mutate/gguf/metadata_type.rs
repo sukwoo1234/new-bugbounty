@@ -48,7 +48,13 @@ pub(crate) fn apply_same_width(
     let kv = &layout.kvs[kv_idx];
     let alternatives = same_width_alternatives(kv.value_type);
     let new_type = alternatives[rng.index(alternatives.len())];
-    Ok(rewrite_type(bytes, kv.value_type_start, kv_idx, kv.value_type as u32, new_type as u32, "yes"))
+    Ok(rewrite_type(
+        bytes,
+        kv.value_type_start,
+        kv_idx,
+        kv.value_type as u32,
+        new_type as u32,
+    ))
 }
 
 /// Retype one metadata value to any other type, width included.
@@ -70,7 +76,13 @@ fn apply_any_width(
             break candidate;
         }
     };
-    Ok(rewrite_type(bytes, kv.value_type_start, kv_idx, current, new_type, "no"))
+    Ok(rewrite_type(
+        bytes,
+        kv.value_type_start,
+        kv_idx,
+        current,
+        new_type,
+    ))
 }
 
 fn same_width_alternatives(value_type: GgufValueType) -> Vec<GgufValueType> {
@@ -93,8 +105,17 @@ fn rewrite_type(
     kv_idx: usize,
     current: u32,
     new_type: u32,
-    width_preserved: &'static str,
 ) -> MutationOutput {
+    // Derived, not asserted: the any-width branch picks from all 13 types and lands on
+    // a same-width one about one time in four, so a hard-coded "no" mislabelled those
+    // rows - including mutants that go on to abort the library.
+    let width_of = |t: u32| GgufValueType::from_u32(t).and_then(|t| t.scalar_size());
+    let width_preserved = if width_of(current).is_some() && width_of(current) == width_of(new_type)
+    {
+        "yes"
+    } else {
+        "no"
+    };
     let mut out = bytes.to_vec();
     write_u32(&mut out, value_type_start, new_type);
     // A17/A18: derive the label instead of claiming one. A same-width retype leaves a

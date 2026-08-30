@@ -393,6 +393,101 @@ pub(crate) mod test_fixtures {
         buf
     }
 
+    /// A fixture declaring a 4096-byte alignment WITH a tensor blob behind it. Padding
+    /// this file correctly costs 4 KB - affordable - so an insert has to rebuild that
+    /// padding rather than give up and emit the blob at the wrong offset.
+    pub(crate) fn build_gguf_with_large_alignment() -> Vec<u8> {
+        build_aligned_fixture(4096, true)
+    }
+
+    /// A fixture declaring an alignment larger than any padding worth writing. The
+    /// honest answer here is to decline the mutation, not to emit a file whose data
+    /// section sits somewhere ggml will not look for it.
+    pub(crate) fn build_gguf_with_absurd_alignment() -> Vec<u8> {
+        build_aligned_fixture(1 << 24, true)
+    }
+
+    fn build_aligned_fixture(alignment: u32, with_tensor: bool) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&(if with_tensor { 1u64 } else { 0 }).to_le_bytes());
+        buf.extend_from_slice(&1u64.to_le_bytes());
+
+        let key = b"general.alignment";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&(GgufValueType::U32 as u32).to_le_bytes());
+        buf.extend_from_slice(&alignment.to_le_bytes());
+
+        if with_tensor {
+            let tname = b"w0";
+            buf.extend_from_slice(&(tname.len() as u64).to_le_bytes());
+            buf.extend_from_slice(tname);
+            buf.extend_from_slice(&1u32.to_le_bytes());
+            buf.extend_from_slice(&16u64.to_le_bytes());
+            buf.extend_from_slice(&0u32.to_le_bytes());
+            buf.extend_from_slice(&0u64.to_le_bytes());
+        }
+
+        buf.resize(align_up(buf.len(), alignment as usize), 0);
+        for i in 0..64u8 {
+            buf.push(i.wrapping_mul(3).wrapping_add(5));
+        }
+        buf
+    }
+
+    /// A fixture that already carries every key the insert table offers, so the
+    /// operator must fall back to a synthetic name instead of producing a duplicate.
+    pub(crate) fn build_gguf_with_every_insert_key() -> Vec<u8> {
+        let keys: [&[u8]; 4] = [
+            b"general.alignment",
+            b"general.architecture",
+            b"general.name",
+            b"split.no",
+        ];
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        buf.extend_from_slice(&(keys.len() as u64).to_le_bytes());
+        for key in keys {
+            buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key);
+            buf.extend_from_slice(&(GgufValueType::U32 as u32).to_le_bytes());
+            buf.extend_from_slice(&32u32.to_le_bytes());
+        }
+        buf
+    }
+
+    /// A fixture with THREE same-width scalar values, one of each 4-byte type
+    /// (U32, I32, F32), beside a string. The single-candidate fixtures could not show whether a
+    /// same-width retype can actually reach every alternative in its width group -
+    /// with one candidate and one reachable alternative, a broken chooser looks fine.
+    pub(crate) fn build_gguf_with_three_same_width_values() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        buf.extend_from_slice(&4u64.to_le_bytes());
+
+        let mut kv = |key: &[u8], vt: GgufValueType, payload: &[u8], buf: &mut Vec<u8>| {
+            buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+            buf.extend_from_slice(key);
+            buf.extend_from_slice(&(vt as u32).to_le_bytes());
+            buf.extend_from_slice(payload);
+        };
+        kv(b"general.name", GgufValueType::String, &{
+            let mut v = (4u64).to_le_bytes().to_vec();
+            v.extend_from_slice(b"test");
+            v
+        }, &mut buf);
+        kv(b"llama.block_count", GgufValueType::U32, &12u32.to_le_bytes(), &mut buf);
+        kv(b"llama.context_length", GgufValueType::I32, &2048i32.to_le_bytes(), &mut buf);
+        kv(b"llama.rope.freq_base", GgufValueType::F32, &10000f32.to_le_bytes(), &mut buf);
+        buf
+    }
+
     /// A fixture whose tensor name is not pure ASCII. Real models carry these, and
     /// a one-byte substitution inside a multi-byte sequence breaks the UTF-8 the
     /// GGUF format requires.
@@ -692,6 +787,83 @@ mod tests {
             "no"
         };
         assert_eq!(result.parse_preserving, expected);
+    }
+
+    // The width group has three members; a chooser that can only ever reach one of the
+    // two alternatives is the defect this pins. It was real: the raw LCG's low bit
+    // alternated, so a two-element alternatives table always returned the same entry.
+    #[test]
+    fn a_same_width_retype_reaches_every_alternative_in_its_group() {
+        let bytes = test_fixtures::build_gguf_with_three_same_width_values();
+        let before = parse_gguf(&bytes).expect("fixture parses");
+        let mut seen_pairs = std::collections::BTreeSet::new();
+        let mut seen_kvs = std::collections::BTreeSet::new();
+        for s in 0..512u64 {
+            let mut rng = DeterministicRng::new(s);
+            let out = metadata_type::apply_same_width(&bytes, &mut rng).expect("applies");
+            let after = parse_gguf(&out.bytes).expect("mutant parses");
+            let i = (0..before.kvs.len())
+                .find(|&i| before.kvs[i].value_type != after.kvs[i].value_type)
+                .expect("exactly one kv is retyped");
+            seen_kvs.insert(i);
+            seen_pairs.insert((
+                before.kvs[i].value_type as u32,
+                after.kvs[i].value_type as u32,
+            ));
+            assert_eq!(
+                out.operator_params
+                    .iter()
+                    .find(|(k, _)| *k == "width_preserved")
+                    .map(|(_, v)| v.as_str()),
+                Some("yes")
+            );
+        }
+        // three 4-byte KVs, each with two alternatives in {U32, I32, F32}
+        assert_eq!(seen_kvs.len(), 3, "not every same-width kv was ever chosen");
+        assert_eq!(
+            seen_pairs.len(),
+            6,
+            "not every (from, to) pair in the width group was reachable: {seen_pairs:?}"
+        );
+    }
+
+    // width_preserved was a hard-coded string per branch. The any-width branch picks
+    // from all 13 types, so roughly a quarter of its picks land on the same width and
+    // were labelled "no" while preserving the width.
+    #[test]
+    fn the_width_preserved_label_matches_what_the_retype_actually_did() {
+        let bytes = build_minimal_gguf();
+        let mut same_width_seen = 0usize;
+        for s in 0..256u64 {
+            let mut rng = DeterministicRng::new(s);
+            let result = metadata_type::apply(&bytes, &mut rng).expect("apply");
+            let before = parse_gguf(&bytes).expect("fixture parses");
+            let params: std::collections::HashMap<_, _> = result
+                .operator_params
+                .iter()
+                .map(|(k, v)| (*k, v.as_str()))
+                .collect();
+            let kv_idx: usize = params["kv_index"].parse().expect("kv_index");
+            let old_width = before.kvs[kv_idx].value_type.scalar_size();
+            let new_width = GgufValueType::from_u32(params["mutated_type"].parse().expect("type"))
+                .and_then(|t| t.scalar_size());
+            let expected = if old_width.is_some() && old_width == new_width {
+                "yes"
+            } else {
+                "no"
+            };
+            assert_eq!(
+                params["width_preserved"], expected,
+                "seed {s}: label disagrees with the widths it changed between"
+            );
+            if expected == "yes" {
+                same_width_seen += 1;
+            }
+        }
+        assert!(
+            same_width_seen > 0,
+            "no seed preserved the width, so the label was never exercised"
+        );
     }
 
     // C2 changed the DEFAULT set, so the mixed operator has to hold up over many seeds,

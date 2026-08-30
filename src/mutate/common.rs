@@ -340,7 +340,7 @@ mod rng_tests {
             let alternating: Vec<usize> = (0..32).map(|i| (i + 1) % 2).collect();
             assert_ne!(bits, alternating, "seed {seed}: index(2) still alternates");
             assert!(
-                bits.iter().any(|&b| b == 0) && bits.iter().any(|&b| b == 1),
+                bits.contains(&0) && bits.contains(&1),
                 "seed {seed}: index(2) never produced both values"
             );
         }
