@@ -24,7 +24,21 @@ impl DeterministicRng {
             .state
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        self.state
+        // The raw LCG state is unusable modulo a small number, and both failures were
+        // measured, not theorised:
+        //   - its low bit strictly alternates, so index(2) returned 1,0,1,0,... for
+        //     every seed. A two-way choice was decided by how many draws happened to
+        //     precede it, and a two-element table could only ever yield one entry.
+        //   - consecutive seeds give first outputs that differ by a constant, so a
+        //     batch seeding entry i with seed+i samples on a lattice: over 3000
+        //     mutations the gguf kv_insert value type came out chi2=98.6 against
+        //     uniform (12 dof), drawing the array type 6 times where 25 were due.
+        // Scrambling the state on the way out keeps the stream fully deterministic
+        // and reproducible from its seed, and makes every bit of it usable.
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
     }
 
     pub(crate) fn index(&mut self, len: usize) -> usize {
@@ -288,4 +302,80 @@ pub(crate) fn write_mutation_manifest(
         )
     })?;
     Ok(manifest_path.to_path_buf())
+}
+
+#[cfg(test)]
+mod rng_tests {
+    use super::DeterministicRng;
+
+    // The generator has to stay reproducible: a manifest records a seed, and that seed
+    // has to reproduce the same mutation later.
+    #[test]
+    fn the_same_seed_replays_the_same_stream() {
+        let a: Vec<u64> = {
+            let mut r = DeterministicRng::new(12345);
+            (0..16).map(|_| r.next_u64()).collect()
+        };
+        let b: Vec<u64> = {
+            let mut r = DeterministicRng::new(12345);
+            (0..16).map(|_| r.next_u64()).collect()
+        };
+        assert_eq!(a, b);
+        let c: Vec<u64> = {
+            let mut r = DeterministicRng::new(12346);
+            (0..16).map(|_| r.next_u64()).collect()
+        };
+        assert_ne!(a, c);
+    }
+
+    // Measured defect: the raw LCG's low bit alternates, so index(2) produced
+    // 1,0,1,0,... for every seed. A two-way choice was then decided by the parity of
+    // the draw count, and a two-element table could only ever return one of its
+    // entries - gguf's same-width retype could never pick its second alternative.
+    #[test]
+    fn a_two_way_choice_is_not_a_parity_counter() {
+        for seed in [1u64, 3, 7, 99, 4242] {
+            let mut rng = DeterministicRng::new(seed);
+            let bits: Vec<usize> = (0..32).map(|_| rng.index(2)).collect();
+            let alternating: Vec<usize> = (0..32).map(|i| (i + 1) % 2).collect();
+            assert_ne!(bits, alternating, "seed {seed}: index(2) still alternates");
+            assert!(
+                bits.iter().any(|&b| b == 0) && bits.iter().any(|&b| b == 1),
+                "seed {seed}: index(2) never produced both values"
+            );
+        }
+    }
+
+    // Measured defect: a batch seeds entry i with seed+i. With the raw LCG the third
+    // draw modulo 13 covered 4 of 13 values over a 300-entry batch and came out
+    // chi2=98.6 over 3000 - the gguf value type that reaches the array-arity assert
+    // was drawn 6 times where 25 were due.
+    #[test]
+    fn consecutive_seeds_do_not_sample_on_a_lattice() {
+        let mut counts = [0usize; 13];
+        for s in 0..3000u64 {
+            let mut rng = DeterministicRng::new(4242 + s);
+            rng.index(9); // operator choice
+            rng.index(2); // key choice
+            counts[rng.index(13)] += 1;
+        }
+        let total: usize = counts.iter().sum();
+        let expected = total as f64 / 13.0;
+        let chi2: f64 = counts
+            .iter()
+            .map(|&c| {
+                let d = c as f64 - expected;
+                d * d / expected
+            })
+            .sum();
+        assert!(
+            counts.iter().all(|&c| c > 0),
+            "a value was never drawn at all: {counts:?}"
+        );
+        // 32.9 is p=0.001 for 12 degrees of freedom.
+        assert!(
+            chi2 < 32.9,
+            "chi2 {chi2:.1} over 12 dof: the draws are not uniform ({counts:?})"
+        );
+    }
 }

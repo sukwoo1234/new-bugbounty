@@ -957,19 +957,39 @@ mod tests {
 
     #[test]
     fn writes_boundary_without_changing_wire_size() {
+        // This operator has candidates that resize on purpose (semantic_resize) and
+        // candidates that write a boundary value into the SAME varint width. Only the
+        // second kind is what this test is about, and picking it with one hard-coded
+        // seed was picking it by luck: the seed selected a resizing candidate as soon
+        // as the rng stream changed, and the test failed for a reason it does not name.
         let bytes = fixture_with_initializer_and_attr();
-        let mut rng = DeterministicRng::new(11);
-        let result = apply(&bytes, &mut rng).expect("aggressive candidate exists");
-        assert_eq!(result.parse_preserving, "yes");
-        assert_eq!(result.bytes.len(), bytes.len());
-        assert_ne!(result.bytes, bytes);
-        assert_eq!(
-            result
-                .operator_params
-                .iter()
-                .find(|(key, _)| *key == "mutation_level")
-                .map(|(_, value)| value.as_str()),
-            Some("3")
+        let mut checked = 0usize;
+        for seed in 0..256u64 {
+            let mut rng = DeterministicRng::new(seed);
+            let result = apply(&bytes, &mut rng).expect("aggressive candidate exists");
+            let param = |key: &str| {
+                result
+                    .operator_params
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| v.as_str())
+            };
+            if param("semantic_resize").is_some() || param("varint_width").is_none() {
+                continue;
+            }
+            assert_eq!(result.parse_preserving, "yes");
+            assert_eq!(
+                result.bytes.len(),
+                bytes.len(),
+                "seed {seed}: a same-width boundary write must not change the wire size"
+            );
+            assert_ne!(result.bytes, bytes);
+            assert_eq!(param("mutation_level"), Some("3"));
+            checked += 1;
+        }
+        assert!(
+            checked > 0,
+            "no seed produced a same-width boundary write, so this test proved nothing"
         );
     }
 
