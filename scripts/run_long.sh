@@ -10,6 +10,8 @@ EOF
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib/engine_mode.sh
 . "$SCRIPT_DIR/lib/engine_mode.sh"
+# shellcheck source=lib/gguf_corpus.sh
+. "$SCRIPT_DIR/lib/gguf_corpus.sh"
 
 WORKDIR="${WORKDIR:-$PWD}"
 DATA_DIR="${DATA_DIR:-$WORKDIR/data}"
@@ -64,6 +66,15 @@ fi
 
 if [[ -z "$CORPUS_DIR" ]]; then
   CORPUS_DIR="seeds/${TARGET}"
+  # C3: a gguf libFuzzer run seeds from the under-cap derivative when one is built.
+  # Only libFuzzer: AFL++ has no input-length cap and its arm keeps the originals.
+  if [[ "$TARGET" == gguf && "$BACKEND" == libfuzzer ]]; then
+    if CORPUS_DIR="$(gguf_libfuzzer_seed_fixture "$WORKDIR")"; then
+      :
+    else
+      echo "[run-long] WARN no usable libfuzzer-sized corpus at $WORKDIR/data/corpus/gguf-libfuzzer; using $CORPUS_DIR, whose oversized units libFuzzer can never reproduce (build it with scripts/build_gguf_libfuzzer_corpus.sh)" >&2
+    fi
+  fi
 fi
 
 if [[ ! -d "$CORPUS_DIR" ]]; then

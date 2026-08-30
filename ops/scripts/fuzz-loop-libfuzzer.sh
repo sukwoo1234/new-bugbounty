@@ -17,6 +17,9 @@
 set -uo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-/home/ssw/bugbounty}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=../../scripts/lib/gguf_corpus.sh
+. "${SCRIPT_DIR}/../../scripts/lib/gguf_corpus.sh"
 TARGET="${TARGET:-onnx}"
 BACKEND="${BACKEND:-libfuzzer}"
 WORKERS="${WORKERS:-12}"
@@ -70,32 +73,27 @@ log() {
 
 cd "${PROJECT_ROOT}"
 
-# A private corpus starts empty; seed it from the read-only fixture once. cp -n so a
-# later run never overwrites what the fuzzer has since produced, and the fixture itself
-# is only ever read.
-# C3: libFuzzer truncates the inputs it generates, and 15 of the 19 gguf seeds are over
-# that cap (627 KB - 10.9 MB). Such a seed is read but never reproduced, so every mutant
-# derived from it is smaller than the file it came from and the paths that seed was
-# chosen for go unvisited. scripts/build_gguf_libfuzzer_corpus.sh derives an under-cap
-# corpus with the same metadata key set; prefer it once it has been built. onnx has no
-# such derivative (3 of 33 seeds over the cap) and keeps seeding from seeds/onnx.
+# A private corpus starts empty; seed it from the read-only fixture. The copy never
+# overwrites what the fuzzer has since produced, and the fixture itself is only ever
+# read - but a fixture CHANGE evicts what the previous one left, or the arm would keep
+# fuzzing the units the new fixture exists to replace (see scripts/lib/gguf_corpus.sh).
+# C3: the gguf arm seeds from the under-cap derivative when there is one. The choice
+# lives in scripts/lib/gguf_corpus.sh so run_long.sh makes the same one.
 SEED_FIXTURE="${PROJECT_ROOT}/seeds/${TARGET}"
-REDUCED_FIXTURE=""
-case "${TARGET}" in
-    gguf) REDUCED_FIXTURE="${PROJECT_ROOT}/data/corpus/gguf-libfuzzer" ;;
-esac
-if [ -n "${REDUCED_FIXTURE}" ]; then
-    if [ -n "$(ls -A "${REDUCED_FIXTURE}" 2>/dev/null)" ]; then
-        SEED_FIXTURE="${REDUCED_FIXTURE}"
+if [ "${TARGET}" = "gguf" ]; then
+    if SEED_FIXTURE="$(gguf_libfuzzer_seed_fixture "${PROJECT_ROOT}")"; then
+        :
     else
-        log "WARN no libfuzzer-sized corpus at ${REDUCED_FIXTURE}; seeding from oversized seeds (build it with scripts/build_gguf_libfuzzer_corpus.sh)"
+        log "WARN no usable libfuzzer-sized corpus at ${PROJECT_ROOT}/data/corpus/gguf-libfuzzer; seeding from seeds/gguf, whose oversized units libFuzzer can never reproduce (build it with scripts/build_gguf_libfuzzer_corpus.sh)"
     fi
 fi
 log "seed_fixture=${SEED_FIXTURE}"
+
+CORPUS_DIR="${CORPUS_DIR%/}"
 if [ "${CORPUS_DIR}" != "${SEED_FIXTURE}" ]; then
-    mkdir -p "${CORPUS_DIR}"
-    if [ -d "${SEED_FIXTURE}" ]; then
-        cp -n "${SEED_FIXTURE}"/* "${CORPUS_DIR}/" 2>/dev/null || true
+    EVICTED="$(gguf_seed_working_corpus "${CORPUS_DIR}" "${SEED_FIXTURE}")"
+    if [ "${EVICTED}" != "0" ]; then
+        log "evicted ${EVICTED} working-corpus units left by a previous seed fixture"
     fi
 fi
 

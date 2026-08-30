@@ -262,21 +262,46 @@ seed_count_after="$(find "$WORK/seeds/gguf" -type f | wc -l | tr -d ' ')"
 
 # C3: without the under-cap derivative the arm must still run, and say out loud that it
 # is seeding from files libFuzzer can never reproduce.
-assert_contains "WARN no libfuzzer-sized corpus"
+assert_contains "WARN no usable libfuzzer-sized corpus"
 assert_contains "seed_fixture=$WORK/seeds/gguf"
 
-log "libfuzzer: the gguf arm seeds from the libfuzzer-sized corpus once it is built"
+# A derived corpus that does not cover the seed set (a half-finished build) must NOT be
+# preferred: silently fuzzing a subset of the seeds is worse than fuzzing oversized ones.
+log "libfuzzer: an incomplete derived corpus is refused, not silently preferred"
 mkdir -p "$WORK/data/corpus/gguf-libfuzzer"
-printf 'GGUFreduced' > "$WORK/data/corpus/gguf-libfuzzer/reduced.gguf"
-rm -rf "$WORK/data/corpus/libfuzzer/gguf"
+printf 'GGUFreduced' > "$WORK/data/corpus/gguf-libfuzzer/not-a-seed-name.gguf"
+run_loop fuzz-loop-libfuzzer.sh TARGET=gguf CORPUS_DIR=
+[ "$LOOP_EXIT" -eq 0 ] || fail "libfuzzer gguf partial-corpus loop exited $LOOP_EXIT"
+assert_contains "WARN no usable libfuzzer-sized corpus"
+assert_contains "seed_fixture=$WORK/seeds/gguf"
+
+# The real regression: the working corpus was seeded from seeds/gguf by the runs above,
+# and `cp -n` will not replace those units. Building the derived corpus afterwards has
+# to evict them, or the arm keeps fuzzing exactly the files the derivative replaces
+# while the log claims the derivative is in use.
+log "libfuzzer: a new seed fixture evicts what the previous one left behind"
+[ -f "$WORK/data/corpus/libfuzzer/gguf/seed.gguf" ] \
+  || fail "precondition: the working corpus should already hold the oversized unit"
+rm -f "$WORK/data/corpus/gguf-libfuzzer/not-a-seed-name.gguf"
+printf 'GGUFreduced' > "$WORK/data/corpus/gguf-libfuzzer/seed.gguf"
 run_loop fuzz-loop-libfuzzer.sh TARGET=gguf CORPUS_DIR=
 [ "$LOOP_EXIT" -eq 0 ] || fail "libfuzzer gguf reduced-corpus loop exited $LOOP_EXIT"
 assert_contains "seed_fixture=$WORK/data/corpus/gguf-libfuzzer"
-assert_not_contains "WARN no libfuzzer-sized corpus"
-[ -f "$WORK/data/corpus/libfuzzer/gguf/reduced.gguf" ] \
-  || fail "the working corpus was not seeded from the libfuzzer-sized derivative"
-[ ! -f "$WORK/data/corpus/libfuzzer/gguf/seed.gguf" ] \
-  || fail "the working corpus was still seeded from the oversized fixture"
+assert_not_contains "WARN no usable libfuzzer-sized corpus"
+assert_contains "evicted 1 working-corpus units"
+[ "$(cat "$WORK/data/corpus/libfuzzer/gguf/seed.gguf")" = "GGUFreduced" ] \
+  || fail "the working corpus still holds the unit the previous fixture put there"
+
+# ...and a unit libFuzzer itself discovered must survive the eviction.
+log "libfuzzer: eviction spares what the fuzzer produced"
+printf 'DISCOVERED' > "$WORK/data/corpus/libfuzzer/gguf/found-by-libfuzzer.gguf"
+printf 'GGUFreduced2' > "$WORK/data/corpus/gguf-libfuzzer/seed.gguf"
+mkdir -p "$WORK/seeds/gguf"
+run_loop fuzz-loop-libfuzzer.sh TARGET=gguf CORPUS_DIR=
+[ "$LOOP_EXIT" -eq 0 ] || fail "libfuzzer gguf loop exited $LOOP_EXIT"
+[ -f "$WORK/data/corpus/libfuzzer/gguf/found-by-libfuzzer.gguf" ] \
+  || fail "eviction deleted a unit the fuzzer produced"
+
 
 # onnx is deliberately unchanged: its arms have always shared seeds/onnx and the
 # published Arm B/C numbers rest on that.
@@ -451,6 +476,36 @@ set -e
 [ "$LOOP_EXIT" -eq 0 ] || fail "run_long gguf libfuzzer exited $LOOP_EXIT: $LOOP_OUT"
 assert_contains "libfuzzer_mode=native"
 assert_contains "gguf-native-%p.profraw"
+
+# C3: run_long.sh is the entry point the runbook prescribes for a gguf libFuzzer
+# campaign - there is no gguf libFuzzer systemd unit - so it must choose the same seed
+# fixture the loop does. Neither case passes --corpus-dir: the default IS the thing
+# under test.
+log "run_long: a gguf libfuzzer run defaults to the libfuzzer-sized corpus"
+set +e
+LOOP_OUT="$(env -u REQUIRE_NATIVE -u REQUIRE_INSTRUMENTED -u TOOL_LIBFUZZER_CMD \
+  WORKDIR="$WORK" DATA_DIR="$WORK/data" TOOL_BIN="$WORK/bin/tool" LOOP_SLEEP_SEC=0 \
+  bash "$PROJECT_ROOT/scripts/run_long.sh" --target gguf --backend libfuzzer \
+    --duration-seconds 1 --tag engine-mode-check 2>&1)"
+LOOP_EXIT=$?
+set -e
+[ "$LOOP_EXIT" -eq 0 ] || fail "run_long gguf libfuzzer exited $LOOP_EXIT: $LOOP_OUT"
+assert_contains "corpus=$WORK/data/corpus/gguf-libfuzzer"
+
+# ...and the AFL++ arm deliberately keeps the full-size originals: AFL++ has no input
+# length cap, and switching it would silently change what the two arms compare.
+log "run_long: the gguf aflpp arm keeps the full-size seed fixture"
+set +e
+LOOP_OUT="$(env -u REQUIRE_NATIVE -u REQUIRE_INSTRUMENTED -u TOOL_AFLPP_CMD \
+  WORKDIR="$WORK" DATA_DIR="$WORK/data" TOOL_BIN="$WORK/bin/tool" LOOP_SLEEP_SEC=0 \
+  bash "$PROJECT_ROOT/scripts/run_long.sh" --target gguf --backend aflpp \
+    --duration-seconds 1 --tag engine-mode-check 2>&1)"
+LOOP_EXIT=$?
+set -e
+[ "$LOOP_EXIT" -eq 0 ] || fail "run_long gguf aflpp exited $LOOP_EXIT: $LOOP_OUT"
+# the aflpp branch keeps run_long's own relative default, unchanged by C3
+assert_contains "corpus=seeds/gguf"
+assert_not_contains "corpus=$WORK/data/corpus/gguf-libfuzzer"
 
 log "run_long: missing native libfuzzer driver must warn and label blackbox"
 rm -f "$WORK/harnesses/libfuzzer/onnxruntime_loader_fuzzer"
