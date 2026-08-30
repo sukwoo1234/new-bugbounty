@@ -260,6 +260,24 @@ seed_count_after="$(find "$WORK/seeds/gguf" -type f | wc -l | tr -d ' ')"
 [ "$seed_count_after" = "1" ] \
   || fail "the seed fixture grew to $seed_count_after files; libFuzzer is writing into it"
 
+# C3: without the under-cap derivative the arm must still run, and say out loud that it
+# is seeding from files libFuzzer can never reproduce.
+assert_contains "WARN no libfuzzer-sized corpus"
+assert_contains "seed_fixture=$WORK/seeds/gguf"
+
+log "libfuzzer: the gguf arm seeds from the libfuzzer-sized corpus once it is built"
+mkdir -p "$WORK/data/corpus/gguf-libfuzzer"
+printf 'GGUFreduced' > "$WORK/data/corpus/gguf-libfuzzer/reduced.gguf"
+rm -rf "$WORK/data/corpus/libfuzzer/gguf"
+run_loop fuzz-loop-libfuzzer.sh TARGET=gguf CORPUS_DIR=
+[ "$LOOP_EXIT" -eq 0 ] || fail "libfuzzer gguf reduced-corpus loop exited $LOOP_EXIT"
+assert_contains "seed_fixture=$WORK/data/corpus/gguf-libfuzzer"
+assert_not_contains "WARN no libfuzzer-sized corpus"
+[ -f "$WORK/data/corpus/libfuzzer/gguf/reduced.gguf" ] \
+  || fail "the working corpus was not seeded from the libfuzzer-sized derivative"
+[ ! -f "$WORK/data/corpus/libfuzzer/gguf/seed.gguf" ] \
+  || fail "the working corpus was still seeded from the oversized fixture"
+
 # onnx is deliberately unchanged: its arms have always shared seeds/onnx and the
 # published Arm B/C numbers rest on that.
 log "libfuzzer: the onnx arm keeps its historical corpus default"

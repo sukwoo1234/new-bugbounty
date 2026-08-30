@@ -73,7 +73,25 @@ cd "${PROJECT_ROOT}"
 # A private corpus starts empty; seed it from the read-only fixture once. cp -n so a
 # later run never overwrites what the fuzzer has since produced, and the fixture itself
 # is only ever read.
+# C3: libFuzzer truncates the inputs it generates, and 15 of the 19 gguf seeds are over
+# that cap (627 KB - 10.9 MB). Such a seed is read but never reproduced, so every mutant
+# derived from it is smaller than the file it came from and the paths that seed was
+# chosen for go unvisited. scripts/build_gguf_libfuzzer_corpus.sh derives an under-cap
+# corpus with the same metadata key set; prefer it once it has been built. onnx has no
+# such derivative (3 of 33 seeds over the cap) and keeps seeding from seeds/onnx.
 SEED_FIXTURE="${PROJECT_ROOT}/seeds/${TARGET}"
+REDUCED_FIXTURE=""
+case "${TARGET}" in
+    gguf) REDUCED_FIXTURE="${PROJECT_ROOT}/data/corpus/gguf-libfuzzer" ;;
+esac
+if [ -n "${REDUCED_FIXTURE}" ]; then
+    if [ -n "$(ls -A "${REDUCED_FIXTURE}" 2>/dev/null)" ]; then
+        SEED_FIXTURE="${REDUCED_FIXTURE}"
+    else
+        log "WARN no libfuzzer-sized corpus at ${REDUCED_FIXTURE}; seeding from oversized seeds (build it with scripts/build_gguf_libfuzzer_corpus.sh)"
+    fi
+fi
+log "seed_fixture=${SEED_FIXTURE}"
 if [ "${CORPUS_DIR}" != "${SEED_FIXTURE}" ]; then
     mkdir -p "${CORPUS_DIR}"
     if [ -d "${SEED_FIXTURE}" ]; then
