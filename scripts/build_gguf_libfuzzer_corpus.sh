@@ -15,18 +15,21 @@ usage() {
   cat <<'EOF'
 usage: build_gguf_libfuzzer_corpus.sh [--verify]
 
-Builds a libFuzzer-sized GGUF seed corpus by shrinking seeds/gguf in place-preserving
-ways, so every seed stays under libFuzzer's 1 MB input cap.
+Builds a libFuzzer-sized GGUF seed corpus by shrinking seeds/gguf in structure-
+preserving ways, so every derived seed stays under MAX_BYTES (1 MiB by default).
 
-Why: 15 of the 19 gguf seeds are 627 KB - 10.9 MB. libFuzzer reads an oversized seed
-but never generates an input that large, so the mutants it derives are all smaller than
-the file they came from and the parser paths those seeds were chosen for go unvisited.
-ONNX never hit this (3 of 33 over the cap), so this is a format difference that reaches
-all the way into corpus strategy.
+Why: libFuzzer never generates an input longer than -max_len, and our loops do not pass
+-max_len, so it derives one from the corpus and does not go above 1 MiB. 15 of the 19
+gguf seeds are larger than that (1.16 MB - 10.9 MB; the other 4 are 57 B - 726 KB and
+pass through untouched). Those 15 are read, but nothing libFuzzer generates ever reaches
+their size, so the deep structure they were chosen for is never reproduced. ONNX never
+hit this - 3 of its 33 seeds are over the cap - so it is a format difference that
+reaches all the way into corpus strategy.
 
-What actually shrinks: NOT the tensor data. 18 of the 19 seeds are vocab files with
-n_tensors=0 and no data section at all - their megabytes are metadata (the tokenizer
-token/score/merge arrays). So the reducer:
+What actually shrinks: NOT the tensor data. 18 of the 19 seeds (17 ggml-vocab-* files
+plus the generated align_ok.gguf) have n_tensors=0 and no data section at all - their
+megabytes are metadata (the tokenizer token/score/merge arrays). Only
+stories260K-f32.gguf has tensors. So the reducer:
   1. caps the element count of metadata ARRAYS (descending ladder until under target),
   2. keeps the longest prefix of the tensors, in offset order, that still fits under
      TARGET_BYTES and truncates the data section at the cut - ggml requires each offset
@@ -63,6 +66,11 @@ log() { echo "[gguf-libfuzzer-corpus] $*"; }
 fail() { echo "[gguf-libfuzzer-corpus] fail: $*" >&2; exit 1; }
 
 [[ -d "$SEED_DIR" ]] || fail "seed dir not found: $SEED_DIR"
+# Writing the reduced files back over the fixture would destroy the 19-file seed set the
+# oracle check asserts on, and /seeds is gitignored so there is no copy to restore from.
+if [[ "$(readlink -f "$OUT_DIR" 2>/dev/null || echo "$OUT_DIR")" == "$(readlink -f "$SEED_DIR")" ]]; then
+  fail "OUT_DIR must not be SEED_DIR ($SEED_DIR): that would overwrite the seed fixture"
+fi
 
 reduce_py() {
   python3 - "$1" "$SEED_DIR" "$OUT_DIR" "$TARGET_BYTES" "$MAX_BYTES" <<'PY'
@@ -241,6 +249,10 @@ def key_set(b):
     return sorted(k for k, _, _ in parse(b)[1])
 
 
+def tensor_count(b):
+    return len(parse(b)[2])
+
+
 names = sorted(n for n in os.listdir(seed_dir) if n.endswith(".gguf"))
 if not names:
     print("no .gguf seeds in %s" % seed_dir, file=sys.stderr)
@@ -263,6 +275,14 @@ if mode == "build":
             continue
         if key_set(out) != key_set(raw):
             print("KEYLOSS %s: the reduced file lost a metadata key" % name)
+            status = 1
+            continue
+        if tensor_count(raw) and not n_tensors:
+            # A derived seed with no tensors cannot exercise the tensor-info or blob
+            # stages of the harness at all. Only stories260K has tensors, so losing them
+            # would silently remove the whole of that coverage from the corpus.
+            print("TENSORLOSS %s: every tensor was dropped (%d in the seed)"
+                  % (name, tensor_count(raw)))
             status = 1
             continue
         with open(os.path.join(out_dir, name), "wb") as fh:
@@ -291,11 +311,17 @@ else:
                 print("KEYLOSS %s" % name)
                 status = 1
                 continue
+            seed_tensors, out_tensors = tensor_count(raw), tensor_count(out)
+            if seed_tensors and not out_tensors:
+                print("TENSORLOSS %s: seed had %d tensors, derived file has none"
+                      % (name, seed_tensors))
+                status = 1
+                continue
         except (Bad, struct.error) as e:
             print("UNPARSABLE %s: %s" % (name, e))
             status = 1
             continue
-        print("ok %-32s %8d bytes" % (name, len(out)))
+        print("ok %-32s %8d bytes  tensors=%d" % (name, len(out), out_tensors))
 sys.exit(status)
 PY
 }
