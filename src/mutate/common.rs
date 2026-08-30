@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -73,6 +74,11 @@ pub(crate) struct BatchMutationReport {
     pub(crate) input_count: usize,
     pub(crate) out_dir: String,
     pub(crate) manifest_path: String,
+    /// Seeds that were tried and yielded nothing. A batch prints `generated: N` and
+    /// exits 0 whether or not a given seed contributed, so a seed every operator
+    /// declines is invisible - which is how a 4.8 MB gguf sat unmutatable behind a
+    /// version check for months with nothing anywhere saying so.
+    pub(crate) unproductive_inputs: Vec<String>,
 }
 
 pub(crate) struct MutationManifestEntry {
@@ -199,6 +205,20 @@ pub(crate) fn print_batch_mutation_report(
     println!("generated: {}", report.generated);
     println!("input_count: {}", report.input_count);
     println!("manifest: {}", report.manifest_path);
+    for input in &report.unproductive_inputs {
+        println!("WARN seed produced no mutants: {input} (every operator tried declined it)");
+    }
+}
+
+/// The attempted inputs that produced nothing, in a stable order. Inputs that were
+/// never reached (count smaller than the seed set) are not in the map and so are not
+/// reported - "not tried" is not "not mutatable".
+pub(crate) fn unproductive_inputs(attempts: &BTreeMap<PathBuf, usize>) -> Vec<String> {
+    attempts
+        .iter()
+        .filter(|(_, produced)| **produced == 0)
+        .map(|(path, _)| path.display().to_string())
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]

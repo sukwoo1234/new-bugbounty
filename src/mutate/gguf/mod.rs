@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::mutate::common::{
-    operator_set, print_batch_mutation_report, print_mutation_report, select_operator,
+    operator_set, print_batch_mutation_report, unproductive_inputs, print_mutation_report, select_operator,
     single_manifest_path, write_mutation_manifest, write_output, BatchMutationReport,
     DeterministicRng, MutationManifestEntry, MutationOutput, MutationReport, OperatorError,
 };
@@ -227,10 +227,13 @@ fn run_batch_mutation(
 
     let set = operator_set(operators, DEFAULT_OPERATORS);
     let mut entries = Vec::new();
+    let mut attempts: std::collections::BTreeMap<PathBuf, usize> =
+        std::collections::BTreeMap::new();
     for idx in 0..count {
         let input = &inputs[idx % inputs.len()];
         let bytes = fs::read(input)
             .map_err(|e| format!("failed to read input '{}': {e}", input.display()))?;
+        attempts.entry(input.clone()).or_insert(0);
         if bytes.is_empty() {
             continue;
         }
@@ -242,6 +245,7 @@ fn run_batch_mutation(
             Ok(r) => r,
             Err(_) => continue,
         };
+        *attempts.entry(input.clone()).or_insert(0) += 1;
         let output_size = result.bytes.len();
         let out = out_dir.join(format!("mut-gguf-{:06}.gguf", idx + 1));
         fs::write(&out, &result.bytes)
@@ -292,6 +296,7 @@ fn run_batch_mutation(
         input_count: inputs.len(),
         out_dir: out_dir.display().to_string(),
         manifest_path: manifest_path_buf.display().to_string(),
+        unproductive_inputs: unproductive_inputs(&attempts),
     };
     print_batch_mutation_report(target, input_dir, seed, &report);
     Ok(())
@@ -471,7 +476,7 @@ pub(crate) mod test_fixtures {
         buf.extend_from_slice(&0u64.to_le_bytes());
         buf.extend_from_slice(&4u64.to_le_bytes());
 
-        let mut kv = |key: &[u8], vt: GgufValueType, payload: &[u8], buf: &mut Vec<u8>| {
+        let kv = |key: &[u8], vt: GgufValueType, payload: &[u8], buf: &mut Vec<u8>| {
             buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
             buf.extend_from_slice(key);
             buf.extend_from_slice(&(vt as u32).to_le_bytes());

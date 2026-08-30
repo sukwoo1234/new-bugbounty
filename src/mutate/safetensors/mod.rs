@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::mutate::common::{
-    operator_set, print_batch_mutation_report, print_mutation_report, select_operator,
+    operator_set, print_batch_mutation_report, unproductive_inputs, print_mutation_report, select_operator,
     single_manifest_path, write_mutation_manifest, write_output, BatchMutationReport,
     DeterministicRng, MutationManifestEntry, MutationOutput, MutationReport, OperatorError,
 };
@@ -210,10 +210,13 @@ fn run_batch_mutation(
 
     let set = operator_set(operators, DEFAULT_OPERATORS);
     let mut entries = Vec::new();
+    let mut attempts: std::collections::BTreeMap<PathBuf, usize> =
+        std::collections::BTreeMap::new();
     for idx in 0..count {
         let input = &inputs[idx % inputs.len()];
         let bytes = fs::read(input)
             .map_err(|e| format!("failed to read input '{}': {e}", input.display()))?;
+        attempts.entry(input.clone()).or_insert(0);
         if bytes.is_empty() {
             continue;
         }
@@ -225,6 +228,7 @@ fn run_batch_mutation(
             Ok(r) => r,
             Err(_) => continue,
         };
+        *attempts.entry(input.clone()).or_insert(0) += 1;
         let output_size = result.bytes.len();
         let out = out_dir.join(format!("mut-safetensors-{:06}.safetensors", idx + 1));
         fs::write(&out, &result.bytes)
@@ -275,6 +279,7 @@ fn run_batch_mutation(
         input_count: inputs.len(),
         out_dir: out_dir.display().to_string(),
         manifest_path: manifest_path_buf.display().to_string(),
+        unproductive_inputs: unproductive_inputs(&attempts),
     };
     print_batch_mutation_report(target, input_dir, seed, &report);
     Ok(())

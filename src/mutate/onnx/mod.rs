@@ -7,8 +7,8 @@ use crate::{
     common::sha256_file,
     mutate::common::{
         print_batch_mutation_report, print_mutation_report, select_operator, single_manifest_path,
-        write_mutation_manifest, write_output, BatchMutationReport, MutationManifestEntry,
-        MutationReport,
+        unproductive_inputs, write_mutation_manifest, write_output, BatchMutationReport,
+        MutationManifestEntry, MutationReport,
     },
     target::TargetKind,
 };
@@ -456,10 +456,13 @@ fn run_batch_mutation(
 
     let set = operator_set(operators, DEFAULT_OPERATORS);
     let mut entries = Vec::new();
+    let mut attempts: std::collections::BTreeMap<PathBuf, usize> =
+        std::collections::BTreeMap::new();
     for idx in 0..count {
         let input = &inputs[idx % inputs.len()];
         let bytes = fs::read(input)
             .map_err(|e| format!("failed to read input '{}': {e}", input.display()))?;
+        attempts.entry(input.clone()).or_insert(0);
         if bytes.is_empty() {
             continue;
         }
@@ -471,6 +474,7 @@ fn run_batch_mutation(
             Ok(r) => r,
             Err(_) => continue,
         };
+        *attempts.entry(input.clone()).or_insert(0) += 1;
         let output_size = result.bytes.len();
         let out = out_dir.join(format!("mut-onnx-{:06}.onnx", idx + 1));
         fs::write(&out, &result.bytes)
@@ -521,6 +525,7 @@ fn run_batch_mutation(
         input_count: inputs.len(),
         out_dir: out_dir.display().to_string(),
         manifest_path: manifest_path_buf.display().to_string(),
+        unproductive_inputs: unproductive_inputs(&attempts),
     };
     print_batch_mutation_report(target, input_dir, seed, &report);
     Ok(())
