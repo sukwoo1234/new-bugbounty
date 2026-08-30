@@ -654,7 +654,8 @@ mod tests {
 
     // The two operators that reach the format-specific defects (V1/V2: a wrongly typed
     // or wrongly sized general.alignment) are useless while they sit behind an opt-in
-    // flag nobody passes. OPERATOR SET CHANGE: recorded in the D3 notice.
+    // flag nobody passes. OPERATOR SET CHANGE: recorded in README.md, "GGUF 기본 세트
+    // 변경", which also names the seven operators a pre-2026-08-30 run used.
     #[test]
     fn the_default_operator_set_can_retype_metadata_and_insert_keys() {
         assert!(DEFAULT_OPERATORS.contains(&metadata_type::NAME));
