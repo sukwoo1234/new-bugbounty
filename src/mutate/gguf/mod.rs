@@ -519,7 +519,9 @@ mod tests {
 
     #[test]
     fn parse_rejects_the_versions_ggml_rejects() {
-        for bad in [0u32, 1, 4, 0x0000_0300] {
+        // 0x0300_0000 is a byte-swapped 3: ggml calls that out as an endianness
+        // mismatch (gguf.cpp:366), and it must not slip through as "some version".
+        for bad in [0u32, 1, 4, 0x0300_0000] {
             let mut bytes = build_minimal_gguf();
             bytes[4..8].copy_from_slice(&bad.to_le_bytes());
             assert!(
