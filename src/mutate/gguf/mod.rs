@@ -22,6 +22,11 @@ pub(crate) mod tensor_offset;
 pub(crate) mod tensor_shape;
 
 pub(crate) const MAGIC: &[u8; 4] = b"GGUF";
+/// The versions ggml itself will load: it rejects v1 outright and anything above
+/// GGUF_VERSION, and parses everything in between with the same code
+/// (ggml/src/gguf.cpp:353-378). Matching that range is the point - a file the library
+/// under test accepts is a file the mutator has to be able to work on.
+pub(crate) const MIN_SUPPORTED_VERSION: u32 = 2;
 pub(crate) const SUPPORTED_VERSION: u32 = 3;
 pub(crate) const DEFAULT_ALIGNMENT: u64 = 32;
 pub(crate) const ALIGNMENT_KEY: &str = "general.alignment";
@@ -498,14 +503,30 @@ mod tests {
         assert!(matches!(parse_gguf(&[0u8; 8]), Err(ParseError::TooSmall)));
     }
 
+    // ggml accepts GGUFv2 - it rejects v1 and anything above v3, and has no
+    // version-dependent parsing in between (gguf.cpp:353-378). Our parser demanded v3,
+    // so ggml-vocab-aquila.gguf (v2, 4.8 MB) came back NoApplicableField from every one
+    // of the nine operators: a seed the harness loads cleanly that the mutator could
+    // not touch, and nothing said so.
     #[test]
-    fn parse_rejects_v2() {
+    fn parse_accepts_v2_because_the_library_under_test_does() {
         let mut bytes = build_minimal_gguf();
         bytes[4..8].copy_from_slice(&2u32.to_le_bytes());
-        assert!(matches!(
-            parse_gguf(&bytes),
-            Err(ParseError::UnsupportedVersion(2))
-        ));
+        let layout = parse_gguf(&bytes).expect("a v2 file must parse");
+        assert_eq!(layout.version, 2);
+        assert_eq!(layout.kvs.len(), 2);
+    }
+
+    #[test]
+    fn parse_rejects_the_versions_ggml_rejects() {
+        for bad in [0u32, 1, 4, 0x0000_0300] {
+            let mut bytes = build_minimal_gguf();
+            bytes[4..8].copy_from_slice(&bad.to_le_bytes());
+            assert!(
+                matches!(parse_gguf(&bytes), Err(ParseError::UnsupportedVersion(v)) if v == bad),
+                "version {bad} must be rejected"
+            );
+        }
     }
 
     #[test]
@@ -718,7 +739,7 @@ impl std::fmt::Display for ParseError {
             Self::TooSmall => write!(f, "gguf input smaller than 24-byte header"),
             Self::BadMagic => write!(f, "gguf magic mismatch (expected 'GGUF')"),
             Self::UnsupportedVersion(v) => {
-                write!(f, "unsupported gguf version {} (supported: 3)", v)
+                write!(f, "unsupported gguf version {} (supported: 2-3)", v)
             }
             Self::Truncated(where_) => write!(f, "gguf input truncated at {}", where_),
             Self::InvalidValueType(v) => write!(f, "gguf invalid value_type {}", v),
@@ -824,7 +845,7 @@ pub(crate) fn parse_gguf(bytes: &[u8]) -> Result<GgufLayout, ParseError> {
         return Err(ParseError::BadMagic);
     }
     let version = read_u32(bytes, 4)?;
-    if version != SUPPORTED_VERSION {
+    if !(MIN_SUPPORTED_VERSION..=SUPPORTED_VERSION).contains(&version) {
         return Err(ParseError::UnsupportedVersion(version));
     }
     let tensor_count = read_u64(bytes, 8)?;
