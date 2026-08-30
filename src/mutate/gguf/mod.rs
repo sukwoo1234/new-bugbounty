@@ -12,6 +12,7 @@ use crate::{common::sha256_file, target::TargetKind};
 
 pub(crate) mod byte_flip;
 pub(crate) mod header_counts;
+pub(crate) mod kv_insert;
 pub(crate) mod metadata_key;
 pub(crate) mod metadata_type;
 pub(crate) mod metadata_value;
@@ -45,6 +46,7 @@ pub(crate) const KNOWN_OPERATORS: &[&str] = &[
     tensor_offset::NAME,
     byte_flip::NAME,
     metadata_type::NAME,
+    kv_insert::NAME,
 ];
 
 pub(crate) fn validate_operators(requested: &[String]) -> Result<Vec<&'static str>, String> {
@@ -81,6 +83,7 @@ fn dispatch(
         "tensor_offset" => tensor_offset::apply(bytes, rng),
         "byte_flip" => byte_flip::apply(bytes, rng),
         "metadata_type" => metadata_type::apply(bytes, rng),
+        "kv_insert" => kv_insert::apply(bytes, rng),
         _ => Err(OperatorError::NoApplicableField),
     }
 }
@@ -342,6 +345,41 @@ pub(crate) mod test_fixtures {
         let pad = align_up(buf.len(), 32) - buf.len();
         buf.extend(std::iter::repeat(0u8).take(pad));
         buf.extend(std::iter::repeat(0u8).take(48));
+        buf
+    }
+
+
+    /// A fixture with NO `general.alignment` key. This is the realistic shape: none of
+    /// the 18 gguf seeds carries that key, and ggml rejects a file that carries it
+    /// twice (gguf.cpp:431), so an insert operator has to start from a file without it.
+    pub(crate) fn build_gguf_without_alignment_key() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&1u64.to_le_bytes());
+        buf.extend_from_slice(&1u64.to_le_bytes());
+
+        let key = b"general.architecture";
+        buf.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key);
+        buf.extend_from_slice(&(GgufValueType::String as u32).to_le_bytes());
+        let val = b"llama";
+        buf.extend_from_slice(&(val.len() as u64).to_le_bytes());
+        buf.extend_from_slice(val);
+
+        let tname = b"w0";
+        buf.extend_from_slice(&(tname.len() as u64).to_le_bytes());
+        buf.extend_from_slice(tname);
+        buf.extend_from_slice(&2u32.to_le_bytes());
+        buf.extend_from_slice(&3u64.to_le_bytes());
+        buf.extend_from_slice(&4u64.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes());
+
+        buf.resize(align_up(buf.len(), 32), 0);
+        for i in 0..48u8 {
+            buf.push(i.wrapping_mul(7).wrapping_add(1));
+        }
         buf
     }
 
