@@ -34,6 +34,11 @@ pub(crate) const DEFAULT_OPERATORS: &[&str] = &[
     tensor_dtype::NAME,
     tensor_shape::NAME,
     tensor_offset::NAME,
+    // C2: these two are the only operators that can reach the format-specific defects -
+    // a wrongly typed general.alignment (V1) and one the seed never carried at all.
+    // Leaving them opt-in meant a default campaign could not find either.
+    metadata_type::NAME,
+    kv_insert::NAME,
 ];
 
 pub(crate) const KNOWN_OPERATORS: &[&str] = &[
@@ -517,11 +522,22 @@ mod tests {
     }
 
     #[test]
-    fn default_operators_excludes_opt_in() {
+    fn default_operators_excludes_the_blind_byte_flip() {
+        // byte_flip is format-blind: it stays opt-in so the default set keeps producing
+        // files that are still gguf.
         assert!(!DEFAULT_OPERATORS.contains(&byte_flip::NAME));
-        assert!(!DEFAULT_OPERATORS.contains(&metadata_type::NAME));
         assert!(KNOWN_OPERATORS.contains(&byte_flip::NAME));
+    }
+
+    // The two operators that reach the format-specific defects (V1/V2: a wrongly typed
+    // or wrongly sized general.alignment) are useless while they sit behind an opt-in
+    // flag nobody passes. OPERATOR SET CHANGE: recorded in the D3 notice.
+    #[test]
+    fn the_default_operator_set_can_retype_metadata_and_insert_keys() {
+        assert!(DEFAULT_OPERATORS.contains(&metadata_type::NAME));
+        assert!(DEFAULT_OPERATORS.contains(&kv_insert::NAME));
         assert!(KNOWN_OPERATORS.contains(&metadata_type::NAME));
+        assert!(KNOWN_OPERATORS.contains(&kv_insert::NAME));
     }
 
     #[test]
@@ -644,7 +660,43 @@ mod tests {
                 .unwrap(),
         );
         assert!(new_t_kv0 != old_t || new_t1 != old_t1);
-        assert_eq!(result.parse_preserving, "no");
+        // The label is derived, not fixed: after C2 this operator sometimes retypes
+        // inside a width group, and that output still parses. Asserting a constant
+        // "no" here would have been asserting the coin flip, not the contract.
+        let expected = if parse_gguf(&result.bytes).is_ok() {
+            "yes"
+        } else {
+            "no"
+        };
+        assert_eq!(result.parse_preserving, expected);
+    }
+
+    // C2 changed the DEFAULT set, so the mixed operator has to hold up over many seeds,
+    // not just the one the old test happened to use.
+    #[test]
+    fn metadata_type_labels_every_output_by_what_it_actually_parses_as() {
+        let bytes = build_minimal_gguf();
+        let mut preserving = 0usize;
+        let mut breaking = 0usize;
+        for s in 0..256u64 {
+            let mut rng = DeterministicRng::new(s);
+            let result = metadata_type::apply(&bytes, &mut rng).expect("apply");
+            assert_ne!(result.bytes, bytes);
+            assert_eq!(result.bytes.len(), bytes.len(), "seed {s}: a retype never resizes");
+            let parses = parse_gguf(&result.bytes).is_ok();
+            assert_eq!(
+                result.parse_preserving,
+                if parses { "yes" } else { "no" },
+                "seed {s}: label disagrees with the parser"
+            );
+            if parses {
+                preserving += 1;
+            } else {
+                breaking += 1;
+            }
+        }
+        assert!(preserving > 0, "no seed produced a layout-preserving retype");
+        assert!(breaking > 0, "no seed produced a layout-breaking retype");
     }
 }
 
