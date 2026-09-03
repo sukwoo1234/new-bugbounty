@@ -1,0 +1,40 @@
+[package]
+name = "safetensors-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+# Pin the exact crate version under test (matches data/targets/safetensors/v0.7.0).
+safetensors = "=0.7.0"
+
+# Keep fuzz/ out of the root `tool` workspace so `cargo build` of the shipping
+# binary is unaffected by these deps.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+# In-process libFuzzer target: the whole deserialize parser surface (the front door).
+[[bin]]
+name = "safetensors_deserialize"
+path = "fuzz_targets/safetensors_deserialize.rs"
+test = false
+doc = false
+bench = false
+
+# Standalone replay the tool uses as its native probe: reads argv files, honors the
+# 0/9/10 exit contract, aborts on panic. Not a libFuzzer target.
+[[bin]]
+name = "safetensors_loader_replay"
+path = "src/bin/safetensors_loader_replay.rs"
+test = false
+doc = false
+bench = false

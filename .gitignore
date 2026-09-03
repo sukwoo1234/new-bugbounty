@@ -37,4 +37,10 @@ demo-stage/
 /harnesses/libfuzzer/onnxruntime_loader_replay
 /harnesses/libfuzzer/gguf_loader_fuzzer
 /harnesses/libfuzzer/gguf_loader_replay
+/harnesses/libfuzzer/safetensors_loader_fuzzer
+/harnesses/libfuzzer/safetensors_loader_replay
+/harnesses/aflpp/safetensors_loader_replay
+
+# safetensors Rust fuzz crate build output (vendor/ IS committed for offline reproducibility)
+/fuzz/target
 /harnesses/aflpp/

@@ -7,3 +7,9 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.5.31", features = ["derive"] }
+
+# The safetensors native fuzz harness lives in fuzz/ as its own crate so the shipping
+# `tool` binary's dependency graph stays clap-only. Excluded here so `cargo build`
+# never pulls serde/libfuzzer-sys into the tool.
+[workspace]
+exclude = ["fuzz"]
