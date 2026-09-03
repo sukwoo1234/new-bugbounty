@@ -9,6 +9,17 @@ use crate::json_utils::{extract_json_string_literal, extract_json_u64_field, jso
 use crate::run::{execute_harness_subprocess, write_job_log, RunJob};
 use crate::target::{collect_corpus_inputs, default_seed_dir, target_label, TargetKind};
 
+// The env var naming the pinned instrumented coverage command, selected per target so
+// `coverage --target <t>` runs the right one. Mirrors the external-harness env keys in
+// src/target.rs (TOOL_GGUF_HARNESS_CMD / ...). ONNX keeps its historical name.
+fn coverage_cmd_env_key(target: &TargetKind) -> &'static str {
+    match target {
+        TargetKind::Gguf => "TOOL_COVERAGE_GGUF_CMD",
+        TargetKind::Onnx => "TOOL_COVERAGE_ONNX_CMD",
+        TargetKind::Safetensors => "TOOL_COVERAGE_SAFETENSORS_CMD",
+    }
+}
+
 pub(crate) fn run_coverage_job(
     app_paths: &AppPaths,
     target: &TargetKind,
@@ -59,11 +70,12 @@ pub(crate) fn run_coverage_job(
     println!("timeout_sec: {}", timeout_sec);
     println!("coverage_dir: {}", coverage_dir.display());
 
-    // V2 real-coverage path (opt-in, env-gated). When TOOL_COVERAGE_ONNX_CMD is set,
+    // V2 real-coverage path (opt-in, env-gated). When the per-target coverage command
+    // env var is set (coverage_cmd_env_key),
     // run the pinned instrumented coverage command and emit a schema 2.0 summary from
     // its coverage.json. When unset, fall through to the existing proxy replay below
     // so baseline workflows keep working unchanged.
-    if let Some(cmd) = std::env::var("TOOL_COVERAGE_ONNX_CMD")
+    if let Some(cmd) = std::env::var(coverage_cmd_env_key(target))
         .ok()
         .filter(|s| !s.trim().is_empty())
     {
@@ -140,7 +152,7 @@ fn run_real_coverage(
     cmd: &str,
     run_id: String,
 ) -> Result<(), String> {
-    println!("[coverage] real instrumented coverage via TOOL_COVERAGE_ONNX_CMD");
+    println!("[coverage] real instrumented coverage (env-gated command)");
     let status = Command::new("bash")
         .arg("-lc")
         .arg(cmd)
@@ -175,7 +187,7 @@ fn run_real_coverage(
 
 // ---------------------------------------------------------------------------
 // V2 real-coverage artifact (schema 2.0). Populated only when an instrumented
-// coverage command (TOOL_COVERAGE_ONNX_CMD) produces a coverage.json. Every
+// coverage command (coverage_cmd_env_key, per target) produces a coverage.json. Every
 // numeric field is Option: absent in the source artifact stays absent here --
 // it is NEVER substituted with 0 (no fake values).
 // ---------------------------------------------------------------------------
@@ -259,6 +271,20 @@ fn render_coverage_summary_v2(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The real-coverage command is selected per target: onnx keeps its name for
+    // backward compatibility, and gguf/safetensors get their own. Before this, the
+    // ONNX key was read regardless of --target, so `coverage --target safetensors`
+    // silently ran the onnx command.
+    #[test]
+    fn coverage_env_key_is_per_target() {
+        assert_eq!(coverage_cmd_env_key(&TargetKind::Onnx), "TOOL_COVERAGE_ONNX_CMD");
+        assert_eq!(coverage_cmd_env_key(&TargetKind::Gguf), "TOOL_COVERAGE_GGUF_CMD");
+        assert_eq!(
+            coverage_cmd_env_key(&TargetKind::Safetensors),
+            "TOOL_COVERAGE_SAFETENSORS_CMD"
+        );
+    }
 
     #[test]
     fn parse_coverage_artifact_omits_absent_metrics_no_fake_values() {
