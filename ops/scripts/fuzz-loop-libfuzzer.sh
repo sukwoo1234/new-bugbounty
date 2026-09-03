@@ -53,6 +53,7 @@ LIBFUZZER_MAX_TOTAL_TIME="${LIBFUZZER_MAX_TOTAL_TIME:-30}"
 case "${TARGET}" in
     onnx) NATIVE_DRIVER="${PROJECT_ROOT}/harnesses/libfuzzer/onnxruntime_loader_fuzzer" ;;
     gguf) NATIVE_DRIVER="${PROJECT_ROOT}/harnesses/libfuzzer/gguf_loader_fuzzer" ;;
+    safetensors) NATIVE_DRIVER="${PROJECT_ROOT}/harnesses/libfuzzer/safetensors_loader_fuzzer" ;;
     *)    NATIVE_DRIVER="" ;;
 esac
 TOOL_DRIVER="${PROJECT_ROOT}/harnesses/libfuzzer/tool_harness_driver"

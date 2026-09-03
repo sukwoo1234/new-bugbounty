@@ -93,6 +93,7 @@ case "$BACKEND" in
       case "$TARGET" in
         onnx) NATIVE_DRIVER="${WORKDIR}/harnesses/libfuzzer/onnxruntime_loader_fuzzer" ;;
         gguf) NATIVE_DRIVER="${WORKDIR}/harnesses/libfuzzer/gguf_loader_fuzzer" ;;
+        safetensors) NATIVE_DRIVER="${WORKDIR}/harnesses/libfuzzer/safetensors_loader_fuzzer" ;;
         *)    NATIVE_DRIVER="" ;;
       esac
       # ops/scripts/fuzz-loop-libfuzzer.sh lets an operator name the driver directly;
@@ -135,6 +136,14 @@ case "$BACKEND" in
         gguf)
           # ggml is linked statically into the replay, so there is no library path.
           NATIVE_AFLPP_REPLAY_REL="harnesses/aflpp/gguf_loader_replay"
+          AFLPP_LD_LIBRARY_PATH=""
+          ;;
+        safetensors)
+          # the safetensors crate is linked statically into the Rust replay, so there
+          # is no library path. The aflpp replay is built by a follow-up
+          # (build_aflpp_safetensors_native.sh); until then this resolves to a missing
+          # binary and the arm falls back to blackbox with a warning.
+          NATIVE_AFLPP_REPLAY_REL="harnesses/aflpp/safetensors_loader_replay"
           AFLPP_LD_LIBRARY_PATH=""
           ;;
         *)

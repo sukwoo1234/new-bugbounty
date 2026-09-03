@@ -72,6 +72,7 @@ AFLPP_CONTAINER_TOOL="${AFLPP_CONTAINER_TOOL:-target/release/tool}"
 case "${TARGET}" in
     onnx) AFLPP_NATIVE_DRIVER="harnesses/aflpp/onnxruntime_loader_replay" ;;
     gguf) AFLPP_NATIVE_DRIVER="harnesses/aflpp/gguf_loader_replay" ;;
+    safetensors) AFLPP_NATIVE_DRIVER="harnesses/aflpp/safetensors_loader_replay" ;;
     *)    AFLPP_NATIVE_DRIVER="" ;;
 esac
 AFLPP_NATIVE_MODE=0
