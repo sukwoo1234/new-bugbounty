@@ -1,9 +1,10 @@
 #![no_main]
 //! Front-door target: drive the whole `SafeTensors::deserialize` parser surface, then
-//! walk the lazily-built tensor views so the `slice` module's view construction is
-//! touched too. Every `SafeTensorError` is an EXPECTED rejection and is swallowed;
-//! libFuzzer only reports a real abort (panic/OOM/ASan). safetensors is memory-safe,
-//! audited Rust, so a clean run finding nothing is the honest, expected outcome.
+//! read each lazily-built `TensorView`'s dtype/shape/data getters. (The `slice` module
+//! is a separate surface, exercised by safetensors_slice.rs, not this target.) Every
+//! `SafeTensorError` is an EXPECTED rejection and is swallowed; libFuzzer only reports a
+//! real abort (panic/OOM/ASan). safetensors is memory-safe, audited Rust, so a clean run
+//! finding nothing is the honest, expected outcome.
 use libfuzzer_sys::fuzz_target;
 use safetensors::tensor::SafeTensors;
 

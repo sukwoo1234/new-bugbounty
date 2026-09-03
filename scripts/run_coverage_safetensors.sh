@@ -63,7 +63,7 @@ import json, subprocess, sys
 totals = json.load(open(sys.argv[1]))["data"][0]["totals"]
 tv = subprocess.check_output(["rustc", "+nightly", "--version"]).decode().strip()
 out = {
-    "schema_version": "1.0",
+    "schema_version": "2.0",
     "coverage_kind": "line_function",
     "instrumentation": "rustc-instrument-coverage",
     "toolchain_version": tv,
