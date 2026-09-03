@@ -22,6 +22,7 @@ pub(crate) mod tensor_dtype;
 pub(crate) mod tensor_name;
 pub(crate) mod tensor_offset;
 pub(crate) mod tensor_shape;
+pub(crate) mod value_resize;
 
 pub(crate) const MAGIC: &[u8; 4] = b"GGUF";
 /// The versions ggml itself will load: it rejects v1 outright and anything above
@@ -61,6 +62,7 @@ pub(crate) const KNOWN_OPERATORS: &[&str] = &[
     kv_insert::NAME,
     array_mutate::NAME,
     scalar_boundary::NAME,
+    value_resize::NAME,
 ];
 
 pub(crate) fn validate_operators(requested: &[String]) -> Result<Vec<&'static str>, String> {
@@ -100,6 +102,7 @@ fn dispatch(
         "kv_insert" => kv_insert::apply(bytes, rng),
         "array_mutate" => array_mutate::apply(bytes, rng),
         "scalar_boundary" => scalar_boundary::apply(bytes, rng),
+        "value_resize" => value_resize::apply(bytes, rng),
         _ => Err(OperatorError::NoApplicableField),
     }
 }
