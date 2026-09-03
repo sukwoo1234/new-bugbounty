@@ -1,0 +1,61 @@
+[Unit]
+Description=safetensors AFL++ fuzzing (퍼징컴, Arm C)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+# 퍼징컴 운영 계정으로 조정 필요 (dev 머신과 동일하면 그대로).
+# 이 계정은 반드시 `docker` 그룹 소속이어야 함 (afl-out root 소유 방지 + docker.sock 접근).
+User=ssw
+Group=ssw
+WorkingDirectory=/home/ssw/bugbounty
+
+# safetensors의 파서는 Rust safetensors crate이고, replay에 정적 링크된다(gguf의 ggml처럼).
+# 따라서 계측 범위는 driver_only가 아니라 library다. 그 aflpp replay는
+# scripts/build_aflpp_safetensors_native.sh가 만든다 — 이 스크립트는 후속(설계 §12)이라,
+# 그 바이너리가 생기기 전까지 아래 ExecStartPre가 유닛 시작을 거부한다(반쯤 설정된 채 도는 것 방지).
+#
+# AFLPP_CONTAINER_TOOL을 여기서 설정하지 말 것 — wrapper는 이 변수가 설정돼 있으면 운영자의
+# 의도적 override로 보고 계측 replay로 교체하지 않는다. ONNX 유닛의 같은 결함이 1e8261f다.
+ExecStart=/home/ssw/bugbounty/ops/scripts/fuzz-loop-aflpp.sh
+
+# 시작 전 1회: tool 바이너리 + 계측 aflpp replay + 트리아지 probe(libfuzzer replay) + seeds + docker.
+ExecStartPre=/usr/bin/test -x /home/ssw/bugbounty/target/release/tool
+ExecStartPre=/usr/bin/test -x /home/ssw/bugbounty/harnesses/aflpp/safetensors_loader_replay
+# TOOL_REQUIRE_LIBRARY_CONNECT=1은 `tool triage`에도 적용되고, safetensors 네이티브 probe는
+# LIBFUZZER replay(SAFETENSORS_NATIVE_DEFAULT_BIN = harnesses/libfuzzer/safetensors_loader_replay)를
+# 쓴다. 이 줄이 없으면 arm은 잘 돌다가 발견한 크래시마다 트리아지에 실패한다.
+ExecStartPre=/usr/bin/test -x /home/ssw/bugbounty/harnesses/libfuzzer/safetensors_loader_replay
+# seeds/는 gitignore: 빈 코퍼스면 afl-fuzz가 매 iteration 거부하는데 유닛은 active(running)으로
+# 보고한다 — 조용히 아무것도 안 하는 캠페인. scripts/gen_safetensors_malformed_seeds.sh로 채운다.
+ExecStartPre=/bin/sh -c 'test -n "$(ls -A /home/ssw/bugbounty/seeds/safetensors 2>/dev/null)"'
+ExecStartPre=/usr/bin/docker run --rm aflplusplus/aflplusplus bash -lc 'command -v afl-fuzz >/dev/null'
+
+Environment=TARGET=safetensors
+# CORPUS_DIR은 두지 않는다: wrapper의 기본값이 ${PROJECT_ROOT}/seeds/${TARGET}이고,
+# 절대경로를 박으면 배포 경로가 다른 호스트에서 조용히 빈 코퍼스를 가리킨다.
+# 네이티브 하네스가 없으면 조용히 발견 0건으로 도는 것을 막는다.
+Environment=TOOL_REQUIRE_LIBRARY_CONNECT=1
+# 계측 없이 도는 것을 허용하지 않는다: 이 유닛의 존재 이유가 coverage-guided 실행이다.
+Environment=REQUIRE_INSTRUMENTED=1
+Environment=WORKERS=1
+Environment=AFLPP_MAX_RUN_DIRS_KEEP=20
+
+# BLAS thread pool 폭주 방지 (safetensors 자체는 아니지만 도구 체인 일관성).
+Environment=OMP_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+
+# wrapper는 SIGTERM 외엔 거의 종료 안 함. 비정상 exit(crash/oom)만 재시작.
+Restart=on-failure
+RestartSec=10
+
+LimitNOFILE=8192
+# safetensors 헤더 할당은 100MB로 캡되지만(무한 OOM 아님), 코어 파일은 묶어 둔다.
+LimitCORE=0
+TimeoutStopSec=120
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
