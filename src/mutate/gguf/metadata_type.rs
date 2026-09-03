@@ -85,7 +85,7 @@ fn apply_any_width(
     ))
 }
 
-fn same_width_alternatives(value_type: GgufValueType) -> Vec<GgufValueType> {
+pub(crate) fn same_width_alternatives(value_type: GgufValueType) -> Vec<GgufValueType> {
     WIDTH_GROUPS
         .iter()
         .find(|group| group.contains(&value_type))

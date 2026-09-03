@@ -10,6 +10,7 @@ use crate::mutate::common::{
 };
 use crate::{common::sha256_file, target::TargetKind};
 
+pub(crate) mod array_mutate;
 pub(crate) mod byte_flip;
 pub(crate) mod header_counts;
 pub(crate) mod kv_insert;
@@ -57,6 +58,7 @@ pub(crate) const KNOWN_OPERATORS: &[&str] = &[
     byte_flip::NAME,
     metadata_type::NAME,
     kv_insert::NAME,
+    array_mutate::NAME,
 ];
 
 pub(crate) fn validate_operators(requested: &[String]) -> Result<Vec<&'static str>, String> {
@@ -94,6 +96,7 @@ fn dispatch(
         "byte_flip" => byte_flip::apply(bytes, rng),
         "metadata_type" => metadata_type::apply(bytes, rng),
         "kv_insert" => kv_insert::apply(bytes, rng),
+        "array_mutate" => array_mutate::apply(bytes, rng),
         _ => Err(OperatorError::NoApplicableField),
     }
 }
@@ -545,6 +548,35 @@ pub(crate) mod test_fixtures {
         buf.extend_from_slice(&32u32.to_le_bytes());
 
         buf.resize(align_up(buf.len(), 32), 0);
+        buf
+    }
+
+    /// A fixture carrying a scalar KV (general.alignment) beside a scalar-element array
+    /// (dummy.arr = U32[3]). GGUF metadata is mostly arrays - tokenizer vocab and the
+    /// like - which every in-place operator so far skipped, so the array operators need
+    /// a file with one to work on. The scalar is here for the arity-forcing branch.
+    pub(crate) fn build_gguf_with_scalar_array() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&0u64.to_le_bytes()); // tensor_count
+        buf.extend_from_slice(&2u64.to_le_bytes()); // kv_count
+
+        let key1 = b"general.alignment";
+        buf.extend_from_slice(&(key1.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key1);
+        buf.extend_from_slice(&(GgufValueType::U32 as u32).to_le_bytes());
+        buf.extend_from_slice(&32u32.to_le_bytes());
+
+        let key2 = b"dummy.arr";
+        buf.extend_from_slice(&(key2.len() as u64).to_le_bytes());
+        buf.extend_from_slice(key2);
+        buf.extend_from_slice(&(GgufValueType::Array as u32).to_le_bytes());
+        buf.extend_from_slice(&(GgufValueType::U32 as u32).to_le_bytes()); // elem_type
+        buf.extend_from_slice(&3u64.to_le_bytes()); // count
+        for v in [1u32, 2, 3] {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
         buf
     }
 }

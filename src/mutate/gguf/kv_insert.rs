@@ -50,7 +50,7 @@ const VALUE_TYPE_COUNT: usize = 13;
 /// runs out of memory. The ceiling is relative to the input: padding a file to a
 /// multiple of its own alignment is affordable, inflating a 60-byte file to gigabytes
 /// is not.
-const PADDING_HEADROOM: usize = 64 * 1024;
+pub(crate) const PADDING_HEADROOM: usize = 64 * 1024;
 
 pub(crate) fn apply(
     bytes: &[u8],
@@ -178,7 +178,7 @@ fn scalar_bytes(width: usize, rng: &mut DeterministicRng) -> Vec<u8> {
 /// was the wrong answer - ggml re-derives the data offset with GGML_PAD (gguf.cpp:621)
 /// and then reads past the end of a file whose blob never moved, so the mutant is
 /// rejected at a depth where the seed it came from loads.
-fn padding_for(
+pub(crate) fn padding_for(
     meta: &[u8],
     data: &[u8],
     fallback_alignment: u64,
