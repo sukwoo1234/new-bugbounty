@@ -17,6 +17,7 @@ pub(crate) mod kv_insert;
 pub(crate) mod metadata_key;
 pub(crate) mod metadata_type;
 pub(crate) mod metadata_value;
+pub(crate) mod scalar_boundary;
 pub(crate) mod tensor_dtype;
 pub(crate) mod tensor_name;
 pub(crate) mod tensor_offset;
@@ -59,6 +60,7 @@ pub(crate) const KNOWN_OPERATORS: &[&str] = &[
     metadata_type::NAME,
     kv_insert::NAME,
     array_mutate::NAME,
+    scalar_boundary::NAME,
 ];
 
 pub(crate) fn validate_operators(requested: &[String]) -> Result<Vec<&'static str>, String> {
@@ -97,6 +99,7 @@ fn dispatch(
         "metadata_type" => metadata_type::apply(bytes, rng),
         "kv_insert" => kv_insert::apply(bytes, rng),
         "array_mutate" => array_mutate::apply(bytes, rng),
+        "scalar_boundary" => scalar_boundary::apply(bytes, rng),
         _ => Err(OperatorError::NoApplicableField),
     }
 }
