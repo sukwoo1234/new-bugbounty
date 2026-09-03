@@ -281,7 +281,7 @@ pub(crate) fn run_harness(target: &TargetKind, input: &Path) -> Result<(), Harne
     let core_path_step = match target {
         TargetKind::Gguf => "header->llama.cpp parser".to_string(),
         TargetKind::Onnx => "protobuf->onnxruntime session loader".to_string(),
-        TargetKind::Safetensors => "header_json->safetensors safe_open".to_string(),
+        TargetKind::Safetensors => "header_json->safetensors deserialize".to_string(),
     };
     let library_connect = match target {
         TargetKind::Gguf => gguf_library_connect(input),
@@ -916,7 +916,185 @@ except Exception as e:
     }
 }
 
+// --- safetensors native probe ---
+//
+// Mirrors the gguf design decision D1: the native replay (the real Rust safetensors
+// crate) is the default probe, and the legacy python safe_open probe stays selectable
+// (TOOL_SAFETENSORS_PROBE=python) so the same corpus can measure native-vs-python.
+// The native replay speaks the tool's 0/9/10 exit vocabulary, so a file the parser
+// rejects (SafeTensorError) comes back Invoked, not Crashed.
+pub(crate) const SAFETENSORS_PROBE_KIND: &str = "TOOL_SAFETENSORS_PROBE";
+pub(crate) const SAFETENSORS_NATIVE_BIN: &str = "TOOL_SAFETENSORS_NATIVE_BIN";
+const SAFETENSORS_NATIVE_DEFAULT_BIN: &str = "harnesses/libfuzzer/safetensors_loader_replay";
+
+#[derive(Debug)]
+enum SafetensorsProbeKind {
+    Native,
+    Python,
+}
+
+fn resolve_safetensors_probe_kind(raw: Option<&str>) -> Result<SafetensorsProbeKind, String> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        None | Some("native") => Ok(SafetensorsProbeKind::Native),
+        Some("python") => Ok(SafetensorsProbeKind::Python),
+        // A typo must not silently fall back to a different probe and quietly change
+        // what the campaign is measuring.
+        Some(other) => Err(format!(
+            "safetensors probe unavailable (unknown {SAFETENSORS_PROBE_KIND}={other}; expected native or python)"
+        )),
+    }
+}
+
 fn safetensors_library_connect(input: &Path) -> LibraryConnectResult {
+    let selector = std::env::var(SAFETENSORS_PROBE_KIND).ok();
+    match resolve_safetensors_probe_kind(selector.as_deref()) {
+        Ok(SafetensorsProbeKind::Native) => safetensors_native_connect(input),
+        Ok(SafetensorsProbeKind::Python) => safetensors_python_connect(input),
+        Err(step) => LibraryConnectResult {
+            step,
+            outcome: LibraryConnectOutcome::Unavailable,
+        },
+    }
+}
+
+fn safetensors_native_connect(input: &Path) -> LibraryConnectResult {
+    if let Some(custom) = std::env::var_os(SAFETENSORS_NATIVE_BIN).filter(|value| !value.is_empty())
+    {
+        return safetensors_native_connect_with_bin(&custom, input);
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let bin = safetensors_native_bin_from(std::env::current_exe().ok().as_deref(), &cwd);
+    safetensors_native_connect_with_bin(&bin, input)
+}
+
+// A36 again, for the safetensors replay: the default path is relative, so a `tool`
+// invoked from anywhere but the project root looked beside the wrong cwd. Look next to
+// the binary too, but only under a directory that looks like this project.
+fn safetensors_native_bin_from(exe: Option<&Path>, cwd: &Path) -> OsString {
+    if let Some(found) = safetensors_native_replay_under(cwd) {
+        return found.into_os_string();
+    }
+    if let Some(exe) = exe {
+        for root in exe.ancestors().skip(1).take(3) {
+            if !is_project_root(root) {
+                continue;
+            }
+            if let Some(found) = safetensors_native_replay_under(root) {
+                return found.into_os_string();
+            }
+        }
+    }
+    OsString::from(SAFETENSORS_NATIVE_DEFAULT_BIN)
+}
+
+fn safetensors_native_replay_under(root: &Path) -> Option<PathBuf> {
+    let candidate = root.join(SAFETENSORS_NATIVE_DEFAULT_BIN);
+    candidate.is_file().then_some(candidate)
+}
+
+/// The replay answers with the tool's exit vocabulary (0 parsed, 9 the parser rejected
+/// the input, 10 the harness could not run). A `SafeTensorError` is exit 9, never a
+/// crash; only a panic or memory fault aborts by signal. Same shape as
+/// gguf_native_connect_with_bin.
+fn safetensors_native_connect_with_bin(
+    bin: &std::ffi::OsStr,
+    input: &Path,
+) -> LibraryConnectResult {
+    if resolve_executable(bin).is_none() {
+        return LibraryConnectResult {
+            step: format!(
+                "safetensors native harness unavailable (not executable: {}; build it with \
+                 scripts/build_libfuzzer_safetensors_native.sh)",
+                bin.to_string_lossy()
+            ),
+            outcome: LibraryConnectOutcome::Unavailable,
+        };
+    }
+
+    let output = match command_with_core_dump_off(bin).arg(input).output() {
+        Ok(output) => output,
+        Err(e) => {
+            return LibraryConnectResult {
+                step: format!(
+                    "safetensors native harness unavailable ({}: {e})",
+                    bin.to_string_lossy()
+                ),
+                outcome: LibraryConnectOutcome::Unavailable,
+            }
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if output.status.success() {
+        let step = if stdout.trim().is_empty() {
+            "safetensors parser connected (native: parsed)".to_string()
+        } else {
+            format!(
+                "safetensors parser connected (native: parsed; {})",
+                first_line(&stdout)
+            )
+        };
+        return LibraryConnectResult {
+            step,
+            outcome: LibraryConnectOutcome::SessionOk,
+        };
+    }
+
+    if is_core_dump_wrapper_exec_failure(output.status.code(), &stderr) {
+        return LibraryConnectResult {
+            step: format!(
+                "safetensors native harness unavailable ({})",
+                first_line(&stderr)
+            ),
+            outcome: LibraryConnectOutcome::Unavailable,
+        };
+    }
+
+    match output.status.code() {
+        Some(code) if code == i32::from(crate::EXIT_HARNESS_INPUT_REJECTED) => {
+            LibraryConnectResult {
+                step: format!(
+                    "safetensors parser rejected the file (native: {})",
+                    first_line(&stderr)
+                ),
+                outcome: LibraryConnectOutcome::Invoked,
+            }
+        }
+        Some(code) if code == i32::from(crate::EXIT_HARNESS_UNAVAILABLE) => LibraryConnectResult {
+            step: format!(
+                "safetensors native harness unavailable ({})",
+                first_line(&stderr)
+            ),
+            outcome: LibraryConnectOutcome::Unavailable,
+        },
+        _ => {
+            if let Some(result) =
+                crashed_connect_result("safetensors parser", "native harness", &output)
+            {
+                return result;
+            }
+            // Off the contract entirely (0/9/10 and a signal are the whole vocabulary):
+            // a stale or wrong binary. Calling it invoked would report crashes as clean;
+            // Unavailable is what makes the strict connect gate fire.
+            LibraryConnectResult {
+                step: format!(
+                    "safetensors native harness unavailable (off-contract exit {}: {})",
+                    output
+                        .status
+                        .code()
+                        .map(|code| code.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    first_evidence_line(&stderr)
+                ),
+                outcome: LibraryConnectOutcome::Unavailable,
+            }
+        }
+    }
+}
+
+fn safetensors_python_connect(input: &Path) -> LibraryConnectResult {
     let code = r#"
 import sys
 try:
@@ -1236,6 +1414,120 @@ mod tests {
         std::env::remove_var(super::GGUF_NATIVE_BIN);
         let _ = std::fs::remove_dir_all(&dir);
         result
+    }
+
+    // --- safetensors native probe (mirrors the gguf native-connect tests) ---
+    // The replay reports its verdict as an exit code, so the stub is a fixed-exit
+    // shell script under TOOL_SAFETENSORS_NATIVE_BIN. TOOL_SAFETENSORS_PROBE is
+    // cleared, so these tests also pin `native` as the default.
+    #[cfg(unix)]
+    fn safetensors_probe_with_native_stub(label: &str, body: &str) -> super::LibraryConnectResult {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "st-probe-{label}-{}",
+            crate::common::now_unix_millis()
+        ));
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).expect("create bin dir");
+        let stub = bin.join("safetensors_loader_replay");
+        std::fs::write(&stub, format!("#!/bin/sh\n{body}\n")).expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let header = br#"{"x":1}"#;
+        let mut st = (header.len() as u64).to_le_bytes().to_vec();
+        st.extend_from_slice(header);
+        let input = dir.join("sample.safetensors");
+        std::fs::write(&input, &st).expect("write input");
+
+        std::env::remove_var(super::SAFETENSORS_PROBE_KIND);
+        std::env::set_var(super::SAFETENSORS_NATIVE_BIN, &stub);
+        let result = super::safetensors_library_connect(&input);
+        std::env::remove_var(super::SAFETENSORS_NATIVE_BIN);
+        let _ = std::fs::remove_dir_all(&dir);
+        result
+    }
+
+    // Exit 9 is why the native probe exists: deserialize returning Err is a clean
+    // rejection, not a crash. 0 -> SessionOk, 10 -> Unavailable, off-contract (3) ->
+    // Unavailable so the strict-connect gate fires rather than trusting a wrong binary.
+    #[cfg(unix)]
+    #[test]
+    fn safetensors_native_maps_exit_codes() {
+        let _guard = env_lock();
+        assert!(matches!(
+            safetensors_probe_with_native_stub("ok", "exit 0").outcome,
+            super::LibraryConnectOutcome::SessionOk
+        ));
+        let rej = safetensors_probe_with_native_stub("rej", "exit 9");
+        assert!(
+            matches!(rej.outcome, super::LibraryConnectOutcome::Invoked),
+            "step: {}",
+            rej.step
+        );
+        assert!(matches!(
+            safetensors_probe_with_native_stub("un", "exit 10").outcome,
+            super::LibraryConnectOutcome::Unavailable
+        ));
+        assert!(matches!(
+            safetensors_probe_with_native_stub("off", "exit 3").outcome,
+            super::LibraryConnectOutcome::Unavailable
+        ));
+    }
+
+    // A missing native binary is Unavailable, not a silent clean pass: under the strict
+    // connect gate that becomes exit 10 instead of a campaign that finds nothing.
+    #[cfg(unix)]
+    #[test]
+    fn safetensors_native_missing_binary_is_unavailable() {
+        let _guard = env_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "st-missing-{}",
+            crate::common::now_unix_millis()
+        ));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let input = dir.join("in.safetensors");
+        std::fs::write(&input, b"whatever").expect("write");
+        std::env::remove_var(super::SAFETENSORS_PROBE_KIND);
+        std::env::set_var(super::SAFETENSORS_NATIVE_BIN, dir.join("nope"));
+        let result = super::safetensors_library_connect(&input);
+        std::env::remove_var(super::SAFETENSORS_NATIVE_BIN);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(
+            result.outcome,
+            super::LibraryConnectOutcome::Unavailable
+        ));
+    }
+
+    // The native crash oracle: a signal-killed native replay must be Crashed (which
+    // run_harness turns into the library-crash exit code), never Invoked or clean.
+    #[cfg(unix)]
+    #[test]
+    fn a_signal_killed_native_safetensors_probe_is_crashed() {
+        let _guard = env_lock();
+        let r = safetensors_probe_with_native_stub("segv", "kill -SEGV \"$$\"");
+        assert!(
+            matches!(r.outcome, super::LibraryConnectOutcome::Crashed),
+            "step: {}",
+            r.step
+        );
+    }
+
+    #[test]
+    fn safetensors_probe_kind_defaults_native_and_switches() {
+        assert!(matches!(
+            super::resolve_safetensors_probe_kind(None),
+            Ok(super::SafetensorsProbeKind::Native)
+        ));
+        assert!(matches!(
+            super::resolve_safetensors_probe_kind(Some("native")),
+            Ok(super::SafetensorsProbeKind::Native)
+        ));
+        assert!(matches!(
+            super::resolve_safetensors_probe_kind(Some("python")),
+            Ok(super::SafetensorsProbeKind::Python)
+        ));
+        assert!(super::resolve_safetensors_probe_kind(Some("bogus")).is_err());
     }
 
     // Exit 9 is the whole reason this harness exists: the parser turned the file
@@ -1562,10 +1854,14 @@ mod tests {
         let input = dir.join("sample.safetensors");
         std::fs::write(&input, &body).expect("write input");
 
+        // The python safe_open probe is now behind a switch (native is the default),
+        // so this test about the python probe crashing has to ask for it by name.
+        std::env::set_var("TOOL_SAFETENSORS_PROBE", "python");
         std::env::set_var("TOOL_PYTHON_BIN", &stub);
         std::env::remove_var("TOOL_SAFETENSORS_HARNESS_CMD");
         let result = run_harness(&TargetKind::Safetensors, &input);
         std::env::remove_var("TOOL_PYTHON_BIN");
+        std::env::remove_var("TOOL_SAFETENSORS_PROBE");
         let _ = std::fs::remove_dir_all(&dir);
 
         let err = result.expect_err("a signal-killed safetensors probe must not be Ok");
@@ -1986,10 +2282,14 @@ mod tests {
         let input = dir.join("sample.onnx");
         std::fs::write(&input, b"bytes").unwrap();
 
+        // This A13 invariant is about the python interpreter being missing, so select
+        // the python probe explicitly (native is the default now).
+        std::env::set_var("TOOL_SAFETENSORS_PROBE", "python");
         std::env::set_var("TOOL_PYTHON_BIN", "/nonexistent/tool-a13-python3");
         let onnx = onnx_library_connect(&input);
         let safetensors = safetensors_library_connect(&input);
         std::env::remove_var("TOOL_PYTHON_BIN");
+        std::env::remove_var("TOOL_SAFETENSORS_PROBE");
         let _ = std::fs::remove_dir_all(&dir);
 
         assert!(
