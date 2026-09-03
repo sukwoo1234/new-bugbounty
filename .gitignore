@@ -44,3 +44,4 @@ demo-stage/
 # safetensors Rust fuzz crate build output (vendor/ IS committed for offline reproducibility)
 /fuzz/target
 /harnesses/aflpp/
+/fuzz/target-cov

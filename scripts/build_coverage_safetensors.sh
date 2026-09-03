@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Build a source-instrumented (rustc -Cinstrument-coverage) safetensors replay so a
+# coverage run counts real edges of the safetensors crate parser, not harness-only.
+# Rust's own coverage flag replaces the clang -fprofile-instr-generate path the ONNX
+# build uses; the crate is Rust, so there is no .so / .cc / cmake here. Fully offline
+# (vendored deps).
+set -euo pipefail
+
+PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
+FUZZ_DIR="${FUZZ_DIR:-$PROJECT_ROOT/fuzz}"
+# Distinct output dir so the instrumented binary never collides with the panic=abort
+# fuzzing replay under fuzz/target/release.
+COV_TARGET_DIR="${COV_TARGET_DIR:-$FUZZ_DIR/target-cov}"
+OUT_BIN="${OUT_BIN:-$COV_TARGET_DIR/safetensors_loader_replay_cov}"
+
+log() { echo "[st-cov-build] $*"; }
+fail() { echo "[st-cov-build] fail: $*" >&2; exit 1; }
+
+command -v rustc >/dev/null || fail "rustc missing"
+rustup toolchain list 2>/dev/null | grep -q nightly || fail "nightly toolchain missing (run S0)"
+
+log "building instrumented replay (rustc -Cinstrument-coverage, offline)"
+RUSTFLAGS="-Cinstrument-coverage" CARGO_NET_OFFLINE=true \
+  cargo +nightly build --release \
+    --bin safetensors_loader_replay \
+    --manifest-path "$FUZZ_DIR/Cargo.toml" \
+    --target-dir "$COV_TARGET_DIR"
+
+BUILT="$(find "$COV_TARGET_DIR" -type f -path '*/release/safetensors_loader_replay' ! -path '*/build/*' | head -1)"
+[[ -n "$BUILT" ]] || fail "could not locate instrumented replay binary"
+cp "$BUILT" "$OUT_BIN"
+log "instrumented replay -> $OUT_BIN"
+echo "$OUT_BIN"
