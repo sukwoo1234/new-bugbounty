@@ -48,6 +48,12 @@ pub(crate) const DEFAULT_OPERATORS: &[&str] = &[
     // Leaving them opt-in meant a default campaign could not find either.
     metadata_type::NAME,
     kv_insert::NAME,
+    // Stage E: the array-shaped defects (V2 arity, V4 allocation) and the integer
+    // boundaries live behind these; skipping arrays meant a default campaign never
+    // reached them. havoc stays out - it is the coverage baseline, not a bug-finder.
+    array_mutate::NAME,
+    scalar_boundary::NAME,
+    value_resize::NAME,
 ];
 
 pub(crate) const KNOWN_OPERATORS: &[&str] = &[
@@ -110,6 +116,17 @@ fn dispatch(
     }
 }
 
+/// The mutation level recorded in the manifest, mirroring ONNX's classification: the
+/// structural array/boundary rewrites that reach the format-specific defects are level 3,
+/// the length-valid resize is level 2, and the byte-shaped rest are level 1.
+fn mutation_level_for_operator(operator: &str) -> u32 {
+    match operator {
+        "array_mutate" | "scalar_boundary" => 3,
+        "value_resize" => 2,
+        _ => 1,
+    }
+}
+
 pub(crate) fn run(
     target: &TargetKind,
     input: Option<&Path>,
@@ -169,7 +186,7 @@ fn run_single_mutation(
         output_hash,
         operator: chosen,
         operator_params: result.operator_params,
-        mutation_level: 1,
+        mutation_level: mutation_level_for_operator(chosen),
         parse_preserving: result.parse_preserving,
         validation_status: "skipped",
         seed,
@@ -272,7 +289,7 @@ fn run_batch_mutation(
             output_hash,
             operator: chosen,
             operator_params: result.operator_params,
-            mutation_level: 1,
+            mutation_level: mutation_level_for_operator(chosen),
             parse_preserving: result.parse_preserving,
             validation_status: "skipped",
             seed: entry_seed,
@@ -939,6 +956,40 @@ mod tests {
         }
         assert!(preserving > 0, "no seed produced a layout-preserving retype");
         assert!(breaking > 0, "no seed produced a layout-breaking retype");
+    }
+
+    // Stage E put the structural array/boundary/resize operators in the default set: they
+    // reach the array-shaped defects (V2 arity, V4 allocation) a default campaign
+    // otherwise never touches. OPERATOR SET CHANGE: recorded in README.md, "GGUF 기본
+    // 세트 변경", which also names the nine operators a pre-2026-09-03 run used.
+    #[test]
+    fn default_set_includes_the_structural_ops() {
+        for op in [array_mutate::NAME, scalar_boundary::NAME, value_resize::NAME] {
+            assert!(
+                DEFAULT_OPERATORS.contains(&op),
+                "{op} must be in the default set"
+            );
+            assert!(KNOWN_OPERATORS.contains(&op), "{op} must be a known operator");
+        }
+    }
+
+    // havoc is the format-blind byte baseline for the coverage experiment, not a
+    // bug-finder, so it stays opt-in exactly as on ONNX.
+    #[test]
+    fn havoc_stays_opt_in() {
+        assert!(!DEFAULT_OPERATORS.contains(&havoc::NAME));
+        assert!(KNOWN_OPERATORS.contains(&havoc::NAME));
+    }
+
+    // The manifest records a mutation level per operator, as ONNX does: the structural
+    // rewrites are level 3, the valid resize level 2, the byte-shaped rest level 1.
+    #[test]
+    fn mutation_level_classifies_the_new_operators() {
+        assert_eq!(mutation_level_for_operator(array_mutate::NAME), 3);
+        assert_eq!(mutation_level_for_operator(scalar_boundary::NAME), 3);
+        assert_eq!(mutation_level_for_operator(value_resize::NAME), 2);
+        assert_eq!(mutation_level_for_operator(havoc::NAME), 1);
+        assert_eq!(mutation_level_for_operator(metadata_value::NAME), 1);
     }
 }
 

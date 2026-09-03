@@ -73,6 +73,23 @@ GGUF 기본 세트가 7종에서 **9종**으로 늘었다. 추가된 둘은 포�
 - 배치 변이는 이제 **아무 연산자도 처리하지 못한 시드를 이름으로 지목해 경고**한다
   (`WARN seed produced no mutants: ...`).
 
+### GGUF 기본 세트 변경 (2026-09-03 · Stage E)
+
+Stage E로 GGUF 뮤테이터가 ONNX급으로 넓어지면서 기본 세트가 **9종에서 12종**으로 늘었다.
+추가된 셋은 GGUF 메타데이터의 대부분을 이루는 **배열**과 스칼라 경계값·유효 resize를 다룬다 —
+이전 뮤테이터는 배열을 통째로 건너뛰어 배열 계열 결함(배열 arity, 거대 배열 할당)에 기본
+캠페인이 닿지 못했다.
+
+| | 연산자 |
+|---|---|
+| 변경 전(9종) | 위 7종 + `metadata_type`, `kv_insert` |
+| 추가(3종) | **`array_mutate`**(배열 count 증폭·arity 강제·원소 변형, level 3), **`scalar_boundary`**(스칼라를 폭별 경계값으로, level 3), **`value_resize`**(문자열·배열 길이 유효 resize + 정렬 패딩 재계산, level 2) |
+| 여전히 opt-in | **`havoc`**(포맷 무관 바이트 베이스라인 — 커버리지 비교 실험용이지 버그찾기가 아니다. ONNX와 동일하게 기본 제외) |
+
+- **2026-09-03 이전 GGUF 실험을 재현할 때는 위 9종을 `--operator`로 명시할 것.**
+- 매니페스트 `mutation_level`이 이제 연산자별로 기록된다(array_mutate·scalar_boundary=3,
+  value_resize=2, 나머지=1) — ONNX와 같은 분류다.
+
 ## 기본 경로
 - 데이터: `./data`
 - 시드: `./seeds`
