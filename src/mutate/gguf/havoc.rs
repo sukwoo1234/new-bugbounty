@@ -12,6 +12,7 @@
 //! distribution are frozen constants, and it shares the DeterministicRng so it runs on
 //! the same seed schedule as the structural arm.
 
+use super::parse_gguf;
 use crate::mutate::common::{DeterministicRng, MutationOutput, OperatorError};
 
 pub(crate) const NAME: &str = "havoc";
@@ -130,13 +131,18 @@ fn apply_with_budget(
         out[idx] ^= 0x01;
     }
 
+    // Derived, not asserted (A17/A18): a byte-blind edit that lands entirely in the
+    // tensor-data tail - which parse_gguf never reads - leaves a file that still parses,
+    // and on a real multi-MB model that tail is most of the file. The manifest records
+    // what the parser actually says, not what the operator intends.
+    let parse_preserving = if parse_gguf(&out).is_ok() { "yes" } else { "no" };
     Ok(MutationOutput {
         bytes: out,
         operator_params: vec![
             ("byte_budget", budget.to_string()),
             ("edits", edits.to_string()),
         ],
-        parse_preserving: "no",
+        parse_preserving,
     })
 }
 
@@ -207,12 +213,40 @@ mod tests {
     }
 
     #[test]
-    fn marks_output_not_parse_preserving_and_changed() {
+    fn a_non_gguf_seed_never_parses_so_the_label_is_no() {
         let bytes = vec![0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80];
         let mut rng = DeterministicRng::new(7);
         let out = apply(&bytes, &mut rng).expect("non-empty");
         assert_eq!(out.parse_preserving, "no");
         assert_ne!(out.bytes, bytes);
+    }
+
+    // Honesty (A17/A18): the label is DERIVED from parse_gguf, not asserted. parse_gguf
+    // reads only header + KVs + tensor infos and never touches the tensor-data tail, so a
+    // havoc edit that lands there leaves the parse-relevant prefix byte-identical and the
+    // output re-parses - those outputs must be labeled "yes", not a blanket "no".
+    #[test]
+    fn parse_preserving_matches_the_parser() {
+        use super::super::test_fixtures::build_minimal_gguf;
+        use super::super::parse_gguf;
+        let bytes = build_minimal_gguf();
+        let mut parseable = 0usize;
+        for s in 0..256u64 {
+            let mut rng = DeterministicRng::new(s);
+            let out = apply_with_budget(&bytes, &mut rng, 16).expect("applies");
+            let expected = if parse_gguf(&out.bytes).is_ok() { "yes" } else { "no" };
+            assert_eq!(
+                out.parse_preserving, expected,
+                "seed {s}: label disagrees with the parser"
+            );
+            if expected == "yes" {
+                parseable += 1;
+            }
+        }
+        assert!(
+            parseable > 0,
+            "no seed produced a parseable havoc output, so the derived-yes path went untested"
+        );
     }
 
     #[test]
