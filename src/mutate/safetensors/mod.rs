@@ -81,6 +81,18 @@ fn dispatch(
     }
 }
 
+/// The mutation level recorded in the manifest, mirroring gguf/onnx: the structural
+/// header-length and data-offset rewrites that reach the offset/length validation
+/// defects are level 3, the length-valid shape/dtype edits are level 2, and the
+/// string/byte edits are level 1.
+fn mutation_level_for_operator(operator: &str) -> u32 {
+    match operator {
+        "header_length" | "tensor_data_offsets" => 3,
+        "tensor_shape" | "tensor_dtype" => 2,
+        _ => 1,
+    }
+}
+
 pub(crate) fn run(
     target: &TargetKind,
     input: Option<&Path>,
@@ -140,7 +152,7 @@ fn run_single_mutation(
         output_hash,
         operator: chosen,
         operator_params: result.operator_params,
-        mutation_level: 1,
+        mutation_level: mutation_level_for_operator(chosen),
         parse_preserving: result.parse_preserving,
         validation_status: "skipped",
         seed,
@@ -243,7 +255,7 @@ fn run_batch_mutation(
             output_hash,
             operator: chosen,
             operator_params: result.operator_params,
-            mutation_level: 1,
+            mutation_level: mutation_level_for_operator(chosen),
             parse_preserving: result.parse_preserving,
             validation_status: "skipped",
             seed: entry_seed,
@@ -875,6 +887,21 @@ pub(crate) mod test_fixtures {
 mod tests {
     use super::test_fixtures::{build_minimal_safetensors, build_safetensors_with_metadata};
     use super::*;
+
+    // Grade operators by mutation level like gguf/onnx, instead of a flat 1: the
+    // structural header-length/data-offset rewrites (the offset/length validation
+    // defects) are 3, the length-valid shape/dtype edits are 2, the rest are 1.
+    #[test]
+    fn safetensors_operators_are_graded_by_mutation_level() {
+        assert_eq!(mutation_level_for_operator(header_length::NAME), 3);
+        assert_eq!(mutation_level_for_operator(tensor_data_offsets::NAME), 3);
+        assert_eq!(mutation_level_for_operator(tensor_shape::NAME), 2);
+        assert_eq!(mutation_level_for_operator(tensor_dtype::NAME), 2);
+        assert_eq!(mutation_level_for_operator(byte_flip::NAME), 1);
+        assert_eq!(mutation_level_for_operator(metadata_key::NAME), 1);
+        assert_eq!(mutation_level_for_operator(metadata_value::NAME), 1);
+        assert_eq!(mutation_level_for_operator(tensor_name::NAME), 1);
+    }
 
     #[test]
     fn skip_value_rejects_deeply_nested_json() {
