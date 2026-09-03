@@ -1030,7 +1030,11 @@ mod tests {
         let old_v = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
         let new_v = u64::from_le_bytes(r.bytes[0..8].try_into().unwrap());
         assert!(new_v == old_v + 1 || new_v == old_v.saturating_sub(1));
-        assert_eq!(r.parse_preserving, "no");
+        // The label is DERIVED now (was hardcoded "no"): for this seed the ±1 header
+        // length still parses, so the label must be "yes" and must match the parser.
+        let parses = parse_safetensors(&r.bytes).is_ok();
+        assert_eq!(r.parse_preserving == "yes", parses, "label must match the parser");
+        assert_eq!(r.parse_preserving, "yes");
     }
 
     #[test]

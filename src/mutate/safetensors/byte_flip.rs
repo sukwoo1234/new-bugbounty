@@ -14,6 +14,7 @@ pub(crate) fn apply(
     }
     let mut out = bytes.to_vec();
     let pick = flip_value_byte(&mut out, 0, end, rng).ok_or(OperatorError::NoApplicableField)?;
+    let parse_preserving = super::parse_preserving_label(&out);
     Ok(MutationOutput {
         bytes: out,
         operator_params: vec![
@@ -21,6 +22,6 @@ pub(crate) fn apply(
             ("region", "header".to_string()),
             ("region_end", end.to_string()),
         ],
-        parse_preserving: "no",
+        parse_preserving,
     })
 }

@@ -21,6 +21,7 @@ pub(crate) fn apply(
 
     write_u64_le(&mut out, 0, new_value);
 
+    let parse_preserving = super::parse_preserving_label(&out);
     Ok(MutationOutput {
         bytes: out,
         operator_params: vec![
@@ -28,6 +29,6 @@ pub(crate) fn apply(
             ("original", current.to_string()),
             ("mutated", new_value.to_string()),
         ],
-        parse_preserving: "no",
+        parse_preserving,
     })
 }
