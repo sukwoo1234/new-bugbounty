@@ -30,6 +30,15 @@ test = false
 doc = false
 bench = false
 
+# Side-door target: the slicing API's residual panic surface (the 2023 audit's bug
+# class), where deserialize alone never reaches.
+[[bin]]
+name = "safetensors_slice"
+path = "fuzz_targets/safetensors_slice.rs"
+test = false
+doc = false
+bench = false
+
 # Standalone replay the tool uses as its native probe: reads argv files, honors the
 # 0/9/10 exit contract, aborts on panic. Not a libFuzzer target.
 [[bin]]
