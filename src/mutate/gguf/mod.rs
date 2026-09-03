@@ -12,6 +12,7 @@ use crate::{common::sha256_file, target::TargetKind};
 
 pub(crate) mod array_mutate;
 pub(crate) mod byte_flip;
+pub(crate) mod havoc;
 pub(crate) mod header_counts;
 pub(crate) mod kv_insert;
 pub(crate) mod metadata_key;
@@ -63,6 +64,7 @@ pub(crate) const KNOWN_OPERATORS: &[&str] = &[
     array_mutate::NAME,
     scalar_boundary::NAME,
     value_resize::NAME,
+    havoc::NAME,
 ];
 
 pub(crate) fn validate_operators(requested: &[String]) -> Result<Vec<&'static str>, String> {
@@ -103,6 +105,7 @@ fn dispatch(
         "array_mutate" => array_mutate::apply(bytes, rng),
         "scalar_boundary" => scalar_boundary::apply(bytes, rng),
         "value_resize" => value_resize::apply(bytes, rng),
+        "havoc" => havoc::apply(bytes, rng),
         _ => Err(OperatorError::NoApplicableField),
     }
 }
