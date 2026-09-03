@@ -20,6 +20,12 @@ command -v rustc >/dev/null || fail "rustc missing"
 rustup toolchain list 2>/dev/null | grep -q nightly || fail "nightly toolchain missing (run S0)"
 
 log "building instrumented replay (rustc -Cinstrument-coverage, offline)"
+mkdir -p "$COV_TARGET_DIR"
+# -Cinstrument-coverage also instruments proc-macros and build scripts that RUN during
+# the build; without a contained LLVM_PROFILE_FILE they drop default_*.profraw into the
+# CWD and the vendored crate dirs (which are committed). Pin their output into the
+# gitignored target-cov dir so the tree stays clean.
+LLVM_PROFILE_FILE="$COV_TARGET_DIR/build-%p.profraw" \
 RUSTFLAGS="-Cinstrument-coverage" CARGO_NET_OFFLINE=true \
   cargo +nightly build --release \
     --bin safetensors_loader_replay \

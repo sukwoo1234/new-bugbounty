@@ -45,3 +45,7 @@ demo-stage/
 /fuzz/target
 /harnesses/aflpp/
 /fuzz/target-cov
+
+# coverage profiles (never commit; vendor/ is committed)
+*.profraw
+*.profdata
