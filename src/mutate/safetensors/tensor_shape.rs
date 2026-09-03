@@ -47,6 +47,7 @@ pub(crate) fn apply(
     }
     out[span.start..span.end].copy_from_slice(new_bytes);
 
+    let parse_preserving = super::parse_preserving_label(&out);
     Ok(MutationOutput {
         bytes: out,
         operator_params: vec![
@@ -56,6 +57,6 @@ pub(crate) fn apply(
             ("original", original.to_string()),
             ("mutated", mutated.to_string()),
         ],
-        parse_preserving: "no",
+        parse_preserving,
     })
 }

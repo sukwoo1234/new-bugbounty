@@ -1,4 +1,4 @@
-use super::{parse_safetensors, pick_different_ascii_byte};
+use super::{parse_preserving_label, parse_safetensors, pick_different_ascii_byte};
 use crate::mutate::common::{DeterministicRng, MutationOutput, OperatorError};
 
 pub(crate) const NAME: &str = "tensor_name";
@@ -45,14 +45,6 @@ pub(crate) fn apply(
 /// no longer satisfied. The mutation itself is worth keeping - a parser's handling
 /// of its own delimiters is exactly what wants exercising - so the label is
 /// derived instead of claimed.
-fn parse_preserving_label(bytes: &[u8]) -> &'static str {
-    if parse_safetensors(bytes).is_ok() {
-        "yes"
-    } else {
-        "no"
-    }
-}
-
 #[cfg(test)]
 mod label_tests {
     use super::*;

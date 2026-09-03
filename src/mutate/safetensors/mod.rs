@@ -93,6 +93,18 @@ fn mutation_level_for_operator(operator: &str) -> u32 {
     }
 }
 
+/// One meaning of parse_preserving for every operator: does the mutated container still
+/// parse? Derived by re-parsing, never hardcoded — A17/A18 established this for the
+/// metadata/name operators, and the dtype/shape/offset operators now share it (they
+/// used to hardcode "no" even though their length-valid edits still parse).
+pub(super) fn parse_preserving_label(bytes: &[u8]) -> &'static str {
+    if parse_safetensors(bytes).is_ok() {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
 pub(crate) fn run(
     target: &TargetKind,
     input: Option<&Path>,
@@ -891,6 +903,21 @@ mod tests {
     // Grade operators by mutation level like gguf/onnx, instead of a flat 1: the
     // structural header-length/data-offset rewrites (the offset/length validation
     // defects) are 3, the length-valid shape/dtype edits are 2, the rest are 1.
+    // A same-length dtype swap keeps the container valid, so parse_preserving must be
+    // DERIVED ("yes"), not hardcoded "no". This unifies the label meaning across all
+    // operators to "the container still parses".
+    #[test]
+    fn tensor_dtype_label_reflects_that_the_output_still_parses() {
+        let bytes = build_minimal_safetensors();
+        let mut rng = DeterministicRng::new(7);
+        let out = tensor_dtype::apply(&bytes, &mut rng).expect("dtype applies to F32 fixture");
+        assert!(
+            parse_safetensors(&out.bytes).is_ok(),
+            "a same-length dtype swap should still parse"
+        );
+        assert_eq!(out.parse_preserving, "yes");
+    }
+
     #[test]
     fn safetensors_operators_are_graded_by_mutation_level() {
         assert_eq!(mutation_level_for_operator(header_length::NAME), 3);
@@ -1062,7 +1089,7 @@ mod tests {
         let dtype = &r.bytes[layout.tensors[0].dtype.inner_start..layout.tensors[0].dtype.inner_end];
         assert_eq!(dtype.len(), 3);
         assert_ne!(dtype, b"F32");
-        assert_eq!(r.parse_preserving, "no");
+        assert_eq!(r.parse_preserving, "yes");
     }
 
     #[test]
@@ -1072,7 +1099,7 @@ mod tests {
         let r = tensor_shape::apply(&bytes, &mut rng).expect("apply");
         assert_ne!(r.bytes, bytes);
         assert_eq!(r.bytes.len(), bytes.len());
-        assert_eq!(r.parse_preserving, "no");
+        assert_eq!(r.parse_preserving, "yes");
     }
 
     #[test]
@@ -1095,7 +1122,7 @@ mod tests {
         assert!(start < end);
         assert_eq!(start % NATURAL_ALIGNMENT_SMALL, 0);
         assert_eq!(end % NATURAL_ALIGNMENT_SMALL, 0);
-        assert_eq!(r.parse_preserving, "no");
+        assert_eq!(r.parse_preserving, "yes");
     }
 
     #[test]

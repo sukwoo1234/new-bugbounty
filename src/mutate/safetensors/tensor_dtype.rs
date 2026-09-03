@@ -51,6 +51,7 @@ pub(crate) fn apply(
     let original = std::str::from_utf8(current).unwrap_or("?").to_string();
     let mutated = std::str::from_utf8(new_dtype).unwrap_or("?").to_string();
 
+    let parse_preserving = super::parse_preserving_label(&out);
     Ok(MutationOutput {
         bytes: out,
         operator_params: vec![
@@ -59,6 +60,6 @@ pub(crate) fn apply(
             ("original", original),
             ("mutated", mutated),
         ],
-        parse_preserving: "no",
+        parse_preserving,
     })
 }

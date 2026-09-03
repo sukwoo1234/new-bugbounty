@@ -1,4 +1,4 @@
-use super::{parse_safetensors, pick_different_ascii_byte};
+use super::{parse_preserving_label, parse_safetensors, pick_different_ascii_byte};
 use crate::mutate::common::{DeterministicRng, MutationOutput, OperatorError};
 
 pub(crate) const NAME: &str = "metadata_key";
@@ -42,19 +42,3 @@ pub(crate) fn apply(
     })
 }
 
-/// Whether the mutated bytes still parse.
-///
-/// A17/A18: these operators substitute an arbitrary printable byte into a string,
-/// which can be a quote or backslash in a safetensors JSON header, or the middle
-/// of a multi-byte UTF-8 sequence in GGUF. The output was labelled
-/// parse_preserving="yes" regardless, so the manifest asserted something the file
-/// no longer satisfied. The mutation itself is worth keeping - a parser's handling
-/// of its own delimiters is exactly what wants exercising - so the label is
-/// derived instead of claimed.
-fn parse_preserving_label(bytes: &[u8]) -> &'static str {
-    if parse_safetensors(bytes).is_ok() {
-        "yes"
-    } else {
-        "no"
-    }
-}
