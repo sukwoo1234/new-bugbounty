@@ -58,6 +58,24 @@ ST_SRC="$(find "$PROJECT_ROOT/vendor" -maxdepth 2 -type d -path '*safetensors*/s
 "$LLVM_COV" export -summary-only \
   -instr-profile="$OUT_DIR/cov.profdata" "$REPLAY" "$ST_SRC" > "$OUT_DIR/llvmcov.json"
 
+# llvm-cov's positional filter FAILS OPEN: a path that does not match anything in the
+# binary's coverage mapping is silently ignored and the WHOLE binary is reported, exit 0,
+# no diagnostic. ST_SRC is derived from $PROJECT_ROOT, while the mapping holds the
+# absolute path used at build time - so relocating the tree (or reaching it through a
+# symlink) turns these totals into std+serde+harness while the artifact still reads as
+# crate coverage. Demonstrated on the gguf twin: 703/12525 published as 381/1018's label.
+python3 - "$OUT_DIR/llvmcov.json" <<'PYCHECK'
+import json, re, sys
+files = json.load(open(sys.argv[1]))["data"][0]["files"]
+if not files:
+    sys.exit("[st-cov-run] fail: llvm-cov matched no source file; the filter did not apply")
+stray = [f["filename"] for f in files if not re.search(r"/safetensors[^/]*/src/", f["filename"])]
+if stray:
+    sys.exit("[st-cov-run] fail: the source filter fell back to the whole binary - "
+             f"{len(stray)} file(s) outside the safetensors crate, e.g. {stray[0]}. "
+             "Any percentage from this run would be fiction.")
+PYCHECK
+
 python3 - "$OUT_DIR/llvmcov.json" "$OUT_DIR/coverage.json" <<'PY'
 import json, subprocess, sys
 totals = json.load(open(sys.argv[1]))["data"][0]["totals"]
