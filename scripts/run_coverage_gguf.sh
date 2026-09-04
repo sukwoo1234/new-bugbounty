@@ -55,6 +55,12 @@ fi
 [[ -x "$LLVM_COV" ]]      || fail "llvm-cov not found at $LLVM_COV"
 
 RAW="$OUT_DIR/raw"
+# Per-input profraw are named by array index, so re-running a SMALLER corpus into a
+# reused OUT_DIR would leave the previous run's higher-indexed files behind and merge
+# them into this number. run_coverage_onnx.sh:36 guards the same way. Under
+# src/coverage.rs OUT_DIR is always fresh; this protects the direct-invocation path,
+# which is how the number gets re-measured by hand.
+rm -rf "$RAW" "$OUT_DIR/cov.profdata" "$OUT_DIR/llvmcov.json" "$OUT_DIR/coverage.json"
 mkdir -p "$RAW"
 
 shopt -s nullglob
@@ -111,19 +117,56 @@ fi
 
 "$LLVM_PROFDATA" merge -sparse "${usable[@]}" -o "$OUT_DIR/cov.profdata"
 
-# Positional source filter: totals are gguf.cpp's own lines/functions, not ggml's.
-"$LLVM_COV" report "$REPLAY" -instr-profile="$OUT_DIR/cov.profdata" "$GGUF_CPP" \
+# llvm-cov's positional source filter FAILS OPEN. If the path does not byte-match a
+# filename recorded in the binary's coverage mapping, llvm-cov does not error, does not
+# warn and does not report zero - it silently ignores the filter and reports EVERY file
+# in the binary. Measured: a repo reached through a symlink yielded 703/12525 (5.61%)
+# with exit 0, still labelled as gguf.cpp, where the true figure is 381/1018 (37.43%).
+# The mapping stores the ABSOLUTE path used at compile time, so this fires whenever the
+# tree is relocated - which is exactly what transferring data/ to the offline fuzzing PC
+# does. An existence check on the path cannot catch it: the path exists, it is simply
+# not the one in the mapping.
+#
+# So do not guess the path. Ask the binary which file it actually mapped, and refuse if
+# the answer is not exactly one gguf.cpp.
+MAPPED_SRC="$("$LLVM_COV" export -summary-only -instr-profile="$OUT_DIR/cov.profdata" "$REPLAY" \
+  | python3 -c 'import json,sys
+for f in json.load(sys.stdin)["data"][0]["files"]:
+    print(f["filename"])' | grep -E '/ggml/src/gguf\.cpp$' || true)"
+[[ -n "$MAPPED_SRC" ]] \
+  || fail "$REPLAY has no ggml/src/gguf.cpp in its coverage mapping; it was not built by scripts/build_coverage_gguf.sh"
+[[ "$(wc -l <<<"$MAPPED_SRC")" -eq 1 ]] \
+  || fail "coverage mapping names more than one gguf.cpp:\n$MAPPED_SRC"
+if [[ "$MAPPED_SRC" != "$GGUF_CPP" ]]; then
+  # Not fatal: the binary is self-describing, and its path is the authoritative one.
+  # Say so loudly, because it means this tree was relocated since it was built.
+  log "note: coverage mapping says $MAPPED_SRC (this run derived $GGUF_CPP); using the mapped path"
+fi
+
+"$LLVM_COV" report "$REPLAY" -instr-profile="$OUT_DIR/cov.profdata" "$MAPPED_SRC" \
   | tee "$OUT_DIR/llvm-cov-report.txt"
 "$LLVM_COV" export -summary-only \
-  -instr-profile="$OUT_DIR/cov.profdata" "$REPLAY" "$GGUF_CPP" > "$OUT_DIR/llvmcov.json"
+  -instr-profile="$OUT_DIR/cov.profdata" "$REPLAY" "$MAPPED_SRC" > "$OUT_DIR/llvmcov.json"
+
+# Belt and braces: even with a resolved path, assert the export really is scoped to that
+# one file before any number is published.
+scoped="$(python3 -c 'import json,sys
+files = json.load(open(sys.argv[1]))["data"][0]["files"]
+print(len(files)); print(files[0]["filename"] if len(files) == 1 else "")' "$OUT_DIR/llvmcov.json")"
+nfiles="$(head -1 <<<"$scoped")"
+[[ "$nfiles" == "1" ]] \
+  || fail "llvm-cov reported $nfiles files, not 1: the source filter matched nothing and fell back to the whole binary. Any percentage from this run would be fiction."
+[[ "$(tail -1 <<<"$scoped")" == "$MAPPED_SRC" ]] \
+  || fail "llvm-cov scoped to an unexpected file: $(tail -1 <<<"$scoped")"
 
 TOOL_COMMIT="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo not_available)"
 CLANG_VER="$("$CLANG_BUNDLE_DIR/clang++" --version | head -1)"
 python3 - "$OUT_DIR/llvmcov.json" "$OUT_DIR/coverage.json" "$CLANG_VER" "$TOOL_COMMIT" \
-  "$CORPUS_DIR" "${#inputs[@]}" "$DEPTH" "$LLAMA_VER" "$aborted" "$empty_profiles" <<'PY'
+  "$CORPUS_DIR" "${#inputs[@]}" "$DEPTH" "$LLAMA_VER" "$aborted" "$empty_profiles" \
+  "$MAPPED_SRC" <<'PY'
 import json, sys
 (summ, out, clangver, commit, corpus, ninputs, depth, ver, aborted,
- empty_profiles) = sys.argv[1:11]
+ empty_profiles, mapped_src) = sys.argv[1:12]
 tot = json.load(open(summ))["data"][0]["totals"]
 lines, funcs, regions = tot.get("lines", {}), tot.get("functions", {}), tot.get("regions", {})
 cov = {
@@ -136,7 +179,10 @@ cov = {
     "tool_commit": commit,
     # Provenance for the caveats in the header comment: a reader must be able to
     # tell which parser, which depth and which scope produced this number.
-    "measured_source": "ggml/src/gguf.cpp",
+    # Read back from the binary's coverage mapping, never asserted: a hardcoded
+    # label is exactly what made the fail-open filter invisible.
+    "measured_source": mapped_src[mapped_src.find("ggml/src/gguf.cpp"):] or mapped_src,
+    "measured_source_abs": mapped_src,
     "target_version": f"llama.cpp/{ver}",
     "clamp_patch": "absent",
     "depth": depth,
