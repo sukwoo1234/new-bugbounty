@@ -72,6 +72,48 @@ struct GgmlEnvInit {
 };
 GgmlEnvInit g_ggml_env_init;
 
+// ---------------------------------------------------------------------------
+// coverage-build-only: keep the profile of an input that aborts
+// ---------------------------------------------------------------------------
+// A GGML_ASSERT failure reaches abort(), which skips the atexit handler that
+// writes .profraw. Under -fprofile-instr-generate that means the very inputs
+// which prove a bug contribute ZERO coverage - and a corpus made only of such
+// inputs yields a well-formed 0% report. Measured before this existed: the three
+// gguf PoC seeds produced three 0-byte profraw files and llvm-profdata merged
+// them without complaint.
+//
+// Compiled ONLY into the coverage build (scripts/build_coverage_gguf.sh defines
+// GGUF_FUZZ_COVERAGE). Without that define this file preprocesses identically to
+// before, so the libFuzzer/AFL++ oracle contract is untouched.
+//
+// A SIGABRT handler rather than ggml's abort hook, deliberately: ggml prints
+// "GGML_ASSERT ... failed" with its file:line BEFORE calling abort(), and taking
+// over the hook would delete that line from every crash log.
+#ifdef GGUF_FUZZ_COVERAGE
+#include <csignal>
+
+extern "C" int __llvm_profile_write_file(void);
+
+void cov_write_profile_then_die(int sig) {
+    // Not async-signal-safe. Acceptable here and only here: this binary exists to
+    // count lines, it is already dying, and losing the profile is the failure this
+    // handler removes.
+    __llvm_profile_write_file();
+    signal(sig, SIG_DFL);
+    raise(sig);  // preserve the original status (134 for SIGABRT), so the runner
+                 // still sees and reports the abort
+}
+
+struct CovSignalInit {
+    CovSignalInit() {
+        signal(SIGABRT, cov_write_profile_then_die);
+        signal(SIGSEGV, cov_write_profile_then_die);
+        signal(SIGBUS,  cov_write_profile_then_die);
+    }
+};
+CovSignalInit g_cov_signal_init;
+#endif
+
 // What the harness reports back to the tool. Same vocabulary as the
 // EXIT_HARNESS_* constants in src/main.rs:45-47.
 enum Verdict {
