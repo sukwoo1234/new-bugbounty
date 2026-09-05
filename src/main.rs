@@ -275,7 +275,7 @@ struct CoverageArgs {
     #[arg(long)]
     corpus_dir: Option<PathBuf>,
 
-    /// Per-input timeout in seconds (default: 30)
+    /// Timeout in seconds: per input for proxy replay, whole command for real coverage (default: 30)
     #[arg(long, default_value_t = 30)]
     timeout_sec: u64,
 

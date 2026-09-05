@@ -20,6 +20,7 @@ SO_DIR="$ORT_SRC/$BUILD_DIR/$CONFIG"
 SO="$SO_DIR/libonnxruntime.so"
 HARNESS_SRC="${HARNESS_SRC:-$PROJECT_ROOT/harnesses/coverage-onnx/harness.cc}"
 CORPUS_DIR="${CORPUS_DIR:-$PROJECT_ROOT/seeds/onnx}"
+SOURCE_CORPUS_DIR="${SOURCE_CORPUS_DIR:-$CORPUS_DIR}"
 OUT_DIR="${OUT_DIR:-$PROJECT_ROOT/data/coverage/onnx-smoke}"
 # Toolchain MUST match the one used to build the instrumented .so (clang-17), so
 # the harness compile and the profdata/cov readers are all version-consistent.
@@ -61,7 +62,7 @@ TOOL_COMMIT="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo
 CLANG_VER="$("$CLANGXX" --version | head -1)"
 MACHINE_LABEL="${TOOL_MACHINE_LABEL:-}"
 python3 - "$OUT_DIR/llvm-cov-summary.json" "$OUT_DIR/coverage.json" \
-  "$HARNESS_BIN" "$CORPUS_DIR" "$TOOL_COMMIT" "$CLANG_VER" "$HARNESS_BUILD_CMD" \
+  "$HARNESS_BIN" "$SOURCE_CORPUS_DIR" "$TOOL_COMMIT" "$CLANG_VER" "$HARNESS_BUILD_CMD" \
   "${#MODELS[@]}" "$MACHINE_LABEL" <<'PY'
 import json, sys
 (summ_path, out_path, harness, corpus, commit, clangver,

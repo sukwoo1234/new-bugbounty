@@ -1,9 +1,12 @@
-use std::{fs, path::Path, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use crate::common::{
-    artifact_contract, command_exists, now_unix, now_unix_millis, validate_max_jobs,
-    validate_timeout_sec, AppPaths,
-    HarnessExecResult,
+    artifact_contract, command_exists, now_unix, now_unix_millis, output_with_deadline,
+    validate_max_jobs, validate_timeout_sec, AppPaths, HarnessExecResult,
 };
 use crate::json_utils::{extract_json_string_literal, extract_json_u64_field, json_escape};
 use crate::run::{execute_harness_subprocess, write_job_log, RunJob};
@@ -79,12 +82,23 @@ pub(crate) fn run_coverage_job(
         .ok()
         .filter(|s| !s.trim().is_empty())
     {
-        return run_real_coverage(
+        let staged_corpus_dir =
+            stage_real_coverage_inputs(&coverage_dir, &inputs, &format!("coverage-{coverage_id}"))?;
+        let result = run_real_coverage(
             &coverage_dir,
+            &staged_corpus_dir,
             &corpus_dir,
             &cmd,
             format!("coverage-{coverage_id}"),
+            timeout_sec,
         );
+        if let Err(err) = fs::remove_dir_all(&staged_corpus_dir) {
+            eprintln!(
+                "[coverage] warning: failed to remove staged corpus '{}': {err}",
+                staged_corpus_dir.display()
+            );
+        }
+        return result;
     }
 
     let timeout_available = command_exists("timeout");
@@ -142,26 +156,92 @@ pub(crate) fn run_coverage_job(
     Ok(())
 }
 
+// Copy only the already-selected inputs into a private directory. The real coverage
+// scripts discover files from CORPUS_DIR themselves, so passing the original corpus
+// directory would silently undo --max-jobs (and would let files added after the snapshot
+// enter the run). Hard links keep the normal same-filesystem case cheap; copying is the
+// fallback for a corpus on another filesystem.
+fn stage_real_coverage_inputs(
+    coverage_dir: &Path,
+    inputs: &[PathBuf],
+    run_id: &str,
+) -> Result<PathBuf, String> {
+    let parent = coverage_dir
+        .parent()
+        .ok_or_else(|| format!("coverage dir has no parent: {}", coverage_dir.display()))?;
+    let staged_dir = parent.join(format!(".{run_id}-inputs"));
+    fs::create_dir(&staged_dir).map_err(|e| {
+        format!(
+            "failed to create staged coverage corpus '{}': {e}",
+            staged_dir.display()
+        )
+    })?;
+
+    for input in inputs {
+        let name = match input.file_name() {
+            Some(name) => name,
+            None => {
+                let _ = fs::remove_dir_all(&staged_dir);
+                return Err(format!(
+                    "coverage input has no file name: {}",
+                    input.display()
+                ));
+            }
+        };
+        let dest = staged_dir.join(name);
+        let is_symlink = fs::symlink_metadata(input)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false);
+        if is_symlink || fs::hard_link(input, &dest).is_err() {
+            if let Err(e) = fs::copy(input, &dest) {
+                let _ = fs::remove_dir_all(&staged_dir);
+                return Err(format!(
+                    "failed to stage coverage input '{}' as '{}': {e}",
+                    input.display(),
+                    dest.display()
+                ));
+            }
+        }
+    }
+
+    Ok(staged_dir)
+}
+
 // Run the pinned instrumented coverage command, then parse the coverage.json it
 // produces and emit a schema 2.0 summary.json beside it. The command receives the
-// output dir and corpus dir via OUT_DIR / CORPUS_DIR env vars. Kept fully separate
-// from the proxy replay and from the run -> triage -> report pipeline.
+// selected corpus via CORPUS_DIR and the original corpus via SOURCE_CORPUS_DIR. The
+// command itself is bounded in-process so a missing `timeout` binary cannot make a
+// coverage run hang forever. Kept fully separate from the proxy replay and from the
+// run -> triage -> report pipeline.
 fn run_real_coverage(
     coverage_dir: &Path,
-    corpus_dir: &Path,
+    selected_corpus_dir: &Path,
+    source_corpus_dir: &Path,
     cmd: &str,
     run_id: String,
+    timeout_sec: u64,
 ) -> Result<(), String> {
     println!("[coverage] real instrumented coverage (env-gated command)");
-    let status = Command::new("bash")
+    let mut command = Command::new("bash");
+    command
         .arg("-lc")
         .arg(cmd)
         .env("OUT_DIR", coverage_dir)
-        .env("CORPUS_DIR", corpus_dir)
-        .status()
+        .env("CORPUS_DIR", selected_corpus_dir)
+        .env("SOURCE_CORPUS_DIR", source_corpus_dir);
+    let (output, timed_out) = output_with_deadline(command, timeout_sec)
         .map_err(|e| format!("failed to spawn coverage command: {e}"))?;
-    if !status.success() {
-        return Err(format!("coverage command failed ({status})"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    print!("{stdout}");
+    eprint!("{stderr}");
+    if timed_out {
+        return Err(format!(
+            "coverage command timed out after {timeout_sec} seconds"
+        ));
+    }
+    if !output.status.success() {
+        return Err(format!("coverage command failed ({})", output.status));
     }
 
     let cov_json_path = coverage_dir.join("coverage.json");
@@ -271,6 +351,53 @@ fn render_coverage_summary_v2(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static COVERAGE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn unique_test_root(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "tool-coverage-{name}-{}-{}",
+            std::process::id(),
+            now_unix_millis()
+        ));
+        fs::create_dir_all(&root).expect("test root should be created");
+        root
+    }
+
+    fn only_summary_json(app_paths: &AppPaths) -> String {
+        let coverage_root = app_paths.data_dir.join("coverage");
+        let entries = fs::read_dir(&coverage_root)
+            .expect("coverage root should exist")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("coverage dirs should be readable");
+        assert_eq!(entries.len(), 1, "expected one coverage dir");
+        fs::read_to_string(entries[0].path().join("summary.json"))
+            .expect("summary.json should be readable")
+    }
 
     // The real-coverage command is selected per target: onnx keeps its name for
     // backward compatibility, and gguf/safetensors get their own. Before this, the
@@ -327,5 +454,68 @@ mod tests {
         // no edge data in this artifact -> omitted
         assert!(!s.contains("\"edge_coverage\""));
         assert!(!s.contains("covered_edges"));
+    }
+
+    #[test]
+    fn real_coverage_honors_max_jobs_by_passing_selected_inputs() {
+        let _env_guard = COVERAGE_ENV_LOCK
+            .lock()
+            .expect("coverage env lock poisoned");
+        let root = unique_test_root("max-jobs");
+        let app_paths = AppPaths::prepare(&root.join("data"), &root.join("seeds"))
+            .expect("app paths should prepare");
+        let corpus = root.join("corpus");
+        fs::create_dir_all(&corpus).expect("corpus should be created");
+        for name in ["a.onnx", "b.onnx", "c.onnx"] {
+            fs::write(corpus.join(name), b"seed").expect("seed should be written");
+        }
+
+        let _cmd = EnvVarGuard::set(
+            "TOOL_COVERAGE_ONNX_CMD",
+            r#"count="$(find "$CORPUS_DIR" -type f -name '*.onnx' | wc -l | tr -d ' ')"
+cat > "$OUT_DIR/coverage.json" <<EOF
+{"schema_version":"2.0","coverage_kind":"line","instrumentation":"test","covered_lines":${count},"total_lines":10}
+EOF"#,
+        );
+
+        run_coverage_job(&app_paths, &TargetKind::Onnx, Some(&corpus), 30, Some(1))
+            .expect("coverage run should succeed");
+        let summary = only_summary_json(&app_paths);
+        assert!(
+            summary.contains("\"covered_lines\": 1"),
+            "real coverage should expose only the selected max_jobs input; summary was:\n{summary}"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn real_coverage_timeout_sec_bounds_the_external_command() {
+        let _env_guard = COVERAGE_ENV_LOCK
+            .lock()
+            .expect("coverage env lock poisoned");
+        let root = unique_test_root("timeout");
+        let app_paths = AppPaths::prepare(&root.join("data"), &root.join("seeds"))
+            .expect("app paths should prepare");
+        let corpus = root.join("corpus");
+        fs::create_dir_all(&corpus).expect("corpus should be created");
+        fs::write(corpus.join("a.onnx"), b"seed").expect("seed should be written");
+
+        let _cmd = EnvVarGuard::set(
+            "TOOL_COVERAGE_ONNX_CMD",
+            r#"sleep 2
+cat > "$OUT_DIR/coverage.json" <<'EOF'
+{"schema_version":"2.0","coverage_kind":"line","instrumentation":"test","covered_lines":1,"total_lines":1}
+EOF"#,
+        );
+
+        let err = run_coverage_job(&app_paths, &TargetKind::Onnx, Some(&corpus), 1, None)
+            .expect_err("timeout_sec should bound real coverage commands");
+        assert!(
+            err.contains("timed out") || err.contains("timeout"),
+            "expected timeout error, got: {err}"
+        );
+
+        let _ = fs::remove_dir_all(root);
     }
 }

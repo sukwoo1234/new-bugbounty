@@ -468,6 +468,7 @@ log "run_long: a native gguf driver must label native"
 cp "$WORK/bin/tool" "$WORK/harnesses/libfuzzer/gguf_loader_fuzzer"
 set +e
 LOOP_OUT="$(env -u REQUIRE_NATIVE -u TOOL_LIBFUZZER_CMD \
+  LIBFUZZER_DRIVER="$WORK/harnesses/libfuzzer/gguf_loader_fuzzer" \
   WORKDIR="$WORK" DATA_DIR="$WORK/data" TOOL_BIN="$WORK/bin/tool" LOOP_SLEEP_SEC=0 \
   bash "$PROJECT_ROOT/scripts/run_long.sh" --target gguf --backend libfuzzer \
     --duration-seconds 1 --tag engine-mode-check --corpus-dir "$WORK/seeds/gguf" 2>&1)"
@@ -476,6 +477,20 @@ set -e
 [ "$LOOP_EXIT" -eq 0 ] || fail "run_long gguf libfuzzer exited $LOOP_EXIT: $LOOP_OUT"
 assert_contains "libfuzzer_mode=native"
 assert_contains "gguf-native-%p.profraw"
+
+log "run_long: LIBFUZZER_DRIVER override must match the selected target before native label"
+cp "$WORK/bin/tool" "$WORK/harnesses/libfuzzer/onnxruntime_loader_fuzzer"
+set +e
+LOOP_OUT="$(env -u TOOL_LIBFUZZER_CMD REQUIRE_NATIVE=1 \
+  LIBFUZZER_DRIVER="$WORK/harnesses/libfuzzer/onnxruntime_loader_fuzzer" \
+  WORKDIR="$WORK" DATA_DIR="$WORK/data" TOOL_BIN="$WORK/bin/tool" LOOP_SLEEP_SEC=0 \
+  bash "$PROJECT_ROOT/scripts/run_long.sh" --target gguf --backend libfuzzer \
+    --duration-seconds 1 --tag engine-mode-check --corpus-dir "$WORK/seeds/gguf" 2>&1)"
+LOOP_EXIT=$?
+set -e
+[ "$LOOP_EXIT" -ne 0 ] || fail "run_long accepted an onnx LIBFUZZER_DRIVER override as native for gguf: $LOOP_OUT"
+assert_contains "does not match target gguf"
+assert_not_contains "libfuzzer_mode=native"
 
 # C3: run_long.sh is the entry point the runbook prescribes for a gguf libFuzzer
 # campaign - there is no gguf libFuzzer systemd unit - so it must choose the same seed

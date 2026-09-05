@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The TOOL_COVERAGE_GGUF_CMD target. src/coverage.rs runs this as `bash -lc` with
-# OUT_DIR and CORPUS_DIR exported, and requires $OUT_DIR/coverage.json on exit 0.
+# OUT_DIR, CORPUS_DIR, and SOURCE_CORPUS_DIR exported, and requires
+# $OUT_DIR/coverage.json on exit 0.
 #
 # Replays the corpus through the source-instrumented gguf replay and emits real
 # LLVM line/function coverage OF ggml/src/gguf.cpp.
@@ -30,6 +31,7 @@ REPLAY="${REPLAY:-$BUILD_ROOT/gguf_loader_replay_cov}"
 GGUF_CPP="${GGUF_CPP:-$BUILD_ROOT/src/ggml/src/gguf.cpp}"
 OUT_DIR="${OUT_DIR:?OUT_DIR must be set by the coverage runner}"
 CORPUS_DIR="${CORPUS_DIR:?CORPUS_DIR must be set by the coverage runner}"
+SOURCE_CORPUS_DIR="${SOURCE_CORPUS_DIR:-$CORPUS_DIR}"
 CLANG_BUNDLE_DIR="$PROJECT_ROOT/data/toolchains/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04/bin"
 # Absolute paths on purpose: this runs under `bash -lc`, and a login shell's
 # profile can put a rustup shim (or another clang) ahead of the pinned bundle on
@@ -162,7 +164,7 @@ nfiles="$(head -1 <<<"$scoped")"
 TOOL_COMMIT="$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo not_available)"
 CLANG_VER="$("$CLANG_BUNDLE_DIR/clang++" --version | head -1)"
 python3 - "$OUT_DIR/llvmcov.json" "$OUT_DIR/coverage.json" "$CLANG_VER" "$TOOL_COMMIT" \
-  "$CORPUS_DIR" "${#inputs[@]}" "$DEPTH" "$LLAMA_VER" "$aborted" "$empty_profiles" \
+  "$SOURCE_CORPUS_DIR" "${#inputs[@]}" "$DEPTH" "$LLAMA_VER" "$aborted" "$empty_profiles" \
   "$MAPPED_SRC" <<'PY'
 import json, sys
 (summ, out, clangver, commit, corpus, ninputs, depth, ver, aborted,

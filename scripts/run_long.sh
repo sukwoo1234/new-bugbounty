@@ -96,18 +96,26 @@ case "$BACKEND" in
         safetensors) NATIVE_DRIVER="${WORKDIR}/harnesses/libfuzzer/safetensors_loader_fuzzer" ;;
         *)    NATIVE_DRIVER="" ;;
       esac
-      # ops/scripts/fuzz-loop-libfuzzer.sh lets an operator name the driver directly;
-      # ignoring it here made the campaign path and the systemd path resolve different
-      # binaries - and different modes - for the same target.
+      # Keep an explicit override only when it names the canonical driver for the
+      # selected target. Checking -x alone lets an arbitrary executable earn the
+      # permanent native label in status.json, and defeats REQUIRE_NATIVE. This exact
+      # path comparison mirrors ops/scripts/fuzz-loop-libfuzzer.sh.
+      LIBFUZZER_OVERRIDE_MISMATCH=0
       if [[ -n "${LIBFUZZER_DRIVER:-}" ]]; then
-        NATIVE_DRIVER="$LIBFUZZER_DRIVER"
+        if [[ "$LIBFUZZER_DRIVER" != "$NATIVE_DRIVER" ]]; then
+          LIBFUZZER_OVERRIDE_MISMATCH=1
+          echo "[run-long] WARN: LIBFUZZER_DRIVER=$LIBFUZZER_DRIVER does not match target $TARGET native driver $NATIVE_DRIVER; refusing to label it native" >&2
+        fi
       fi
-      if [[ -n "$NATIVE_DRIVER" && -x "$NATIVE_DRIVER" ]]; then
+      if [[ "$LIBFUZZER_OVERRIDE_MISMATCH" -eq 0 \
+        && -n "$NATIVE_DRIVER" && -x "$NATIVE_DRIVER" ]]; then
         export TOOL_LIBFUZZER_MODE="native"
         export TOOL_LIBFUZZER_CMD="mkdir -p {artifact_dir} && LLVM_PROFILE_FILE={artifact_dir}/${TARGET}-native-%p.profraw ${NATIVE_DRIVER} -artifact_prefix={artifact_dir}/ -max_total_time=5 {corpus_dir} >/dev/null 2>&1"
       else
         export TOOL_LIBFUZZER_MODE="blackbox"
-        if [[ -n "$NATIVE_DRIVER" ]]; then
+        if [[ "$LIBFUZZER_OVERRIDE_MISMATCH" -eq 1 ]]; then
+          echo "[run-long] WARN: target $TARGET has no accepted native libFuzzer override; using the black-box tool wrapper. This run is NOT a native libFuzzer run." >&2
+        elif [[ -n "$NATIVE_DRIVER" ]]; then
           echo "[run-long] WARN: no native libFuzzer driver at ${NATIVE_DRIVER}; running the black-box tool wrapper. This run is NOT a native libFuzzer run." >&2
         else
           echo "[run-long] WARN: target ${TARGET} has no native libFuzzer driver; running the black-box tool wrapper. This run is NOT a native libFuzzer run." >&2
