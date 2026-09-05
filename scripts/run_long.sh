@@ -148,9 +148,9 @@ case "$BACKEND" in
           ;;
         safetensors)
           # the safetensors crate is linked statically into the Rust replay, so there
-          # is no library path. The aflpp replay is built by a follow-up
-          # (build_aflpp_safetensors_native.sh); until then this resolves to a missing
-          # binary and the arm falls back to blackbox with a warning.
+          # is no library path. Build it with build_aflpp_safetensors_native.sh on the
+          # fuzzing host; a fresh checkout without that gitignored artifact still falls
+          # back to blackbox with a warning unless REQUIRE_INSTRUMENTED=1 is set.
           NATIVE_AFLPP_REPLAY_REL="harnesses/aflpp/safetensors_loader_replay"
           AFLPP_LD_LIBRARY_PATH=""
           ;;

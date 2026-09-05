@@ -89,6 +89,13 @@ unit_env() {
 # decision turns on DEFINED symbols and a shell script has none.
 . "$PROJECT_ROOT/scripts/lib/engine_mode.sh"
 
+log "safetensors: AFL++ build route must be present"
+SAFETENSORS_AFLPP_BUILD="$PROJECT_ROOT/scripts/build_aflpp_safetensors_native.sh"
+[ -x "$SAFETENSORS_AFLPP_BUILD" ] \
+  || fail "missing executable safetensors AFL++ build script: $SAFETENSORS_AFLPP_BUILD"
+grep -q 'cargo.*afl' "$SAFETENSORS_AFLPP_BUILD" \
+  || fail "safetensors AFL++ build script does not use cargo-afl: $SAFETENSORS_AFLPP_BUILD"
+
 afl_marked_copy() {
   # afl_marked_copy <src> <dst>: a real binary that also looks AFL-instrumented.
   cp "$1" "$2"
@@ -98,6 +105,8 @@ afl_marked_copy() {
 
 SCOPE_CC="${SCOPE_CC:-$PROJECT_ROOT/data/toolchains/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04/bin/clang}"
 [ -x "$SCOPE_CC" ] || SCOPE_CC="$(command -v cc || command -v gcc || command -v clang || true)"
+SCOPE_CXX="${SCOPE_CXX:-$PROJECT_ROOT/data/toolchains/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04/bin/clang++}"
+[ -x "$SCOPE_CXX" ] || SCOPE_CXX="$(command -v c++ || command -v g++ || command -v clang++ || true)"
 
 # build_scope_fixture <dst> <with_parser_symbol:0|1>
 # A real ELF that carries the AFL marker and either does or does not DEFINE a parser
@@ -112,6 +121,20 @@ build_scope_fixture() {
     printf 'int main(void) { return 0; }\n'
   } > "$src"
   "$SCOPE_CC" -O0 "$src" -o "$dst" 2>/dev/null || return 1
+  printf '__AFL_SHM_ID __afl_area_ptr' >>"$dst"
+  chmod +x "$dst"
+}
+
+# Rust names are demangled as `safetensors::...`, so use a C++ namespace fixture to
+# exercise the same symbol-shape without relying on the gitignored Rust build artifact.
+build_safetensors_scope_fixture() {
+  local dst="$1" src="$WORK/safetensors_fixture.cpp"
+  [ -n "$SCOPE_CXX" ] && [ -x "$SCOPE_CXX" ] || return 1
+  {
+    printf 'namespace safetensors { void parser_symbol() {} }\n'
+    printf 'int main() { safetensors::parser_symbol(); return 0; }\n'
+  } > "$src"
+  "$SCOPE_CXX" -O0 "$src" -o "$dst" 2>/dev/null || return 1
   printf '__AFL_SHM_ID __afl_area_ptr' >>"$dst"
   chmod +x "$dst"
 }
@@ -182,6 +205,14 @@ elif [ -x "$GGUF_REPLAY" ]; then
   [ "$scope" = "library" ] || fail "expected library, got '$scope'"
 else
   note_skip "instrumentation_scope library case (no C compiler and no built gguf replay)"
+fi
+
+log "instrumentation_scope: a statically linked safetensors parser is library scope"
+if build_safetensors_scope_fixture "$WORK/harnesses/aflpp/safetensors_replay"; then
+  scope="$(instrumentation_scope "$WORK/harnesses/aflpp/safetensors_replay")"
+  [ "$scope" = "library" ] || fail "expected library for safetensors, got '$scope'"
+else
+  note_skip "instrumentation_scope safetensors case (no C++ compiler at ${SCOPE_CXX:-<none>})"
 fi
 
 # The real shipped binary, when it happens to be built, is worth checking too: it is the

@@ -49,7 +49,7 @@ has_afl_instrumentation() {
 # finished binary, where the two facts are no longer separable.
 #
 # has_afl_instrumentation() is deliberately left untouched: three callers depend on it.
-TOOL_PARSER_SYMBOLS="${TOOL_PARSER_SYMBOLS:-gguf_init_from_file_impl|onnxruntime::|OrtGetApiBase}"
+TOOL_PARSER_SYMBOLS="${TOOL_PARSER_SYMBOLS:-gguf_init_from_file_impl|onnxruntime::|OrtGetApiBase|safetensors::}"
 
 instrumentation_scope() {
     local bin="$1"

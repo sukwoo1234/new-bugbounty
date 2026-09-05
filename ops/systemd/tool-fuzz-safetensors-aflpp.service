@@ -13,8 +13,8 @@ WorkingDirectory=/home/ssw/bugbounty
 
 # safetensors의 파서는 Rust safetensors crate이고, replay에 정적 링크된다(gguf의 ggml처럼).
 # 따라서 계측 범위는 driver_only가 아니라 library다. 그 aflpp replay는
-# scripts/build_aflpp_safetensors_native.sh가 만든다 — 이 스크립트는 후속(설계 §12)이라,
-# 그 바이너리가 생기기 전까지 아래 ExecStartPre가 유닛 시작을 거부한다(반쯤 설정된 채 도는 것 방지).
+# scripts/build_aflpp_safetensors_native.sh가 cargo-afl로 만든다. 바이너리는 gitignore라
+# 퍼징컴에서 빌드하지 않으면 아래 ExecStartPre가 유닛 시작을 거부한다(반쯤 설정된 채 도는 것 방지).
 #
 # AFLPP_CONTAINER_TOOL을 여기서 설정하지 말 것 — wrapper는 이 변수가 설정돼 있으면 운영자의
 # 의도적 override로 보고 계측 replay로 교체하지 않는다. ONNX 유닛의 같은 결함이 1e8261f다.
